@@ -1,0 +1,23 @@
+# Modelos e arquivos grandes
+*.gguf
+*.bin
+*.ckpt
+
+# Python
+*.pyc
+__pycache__/
+.cache/
+
+# Sistema
+.DS_Store
+.env
+
+# Diretórios específicos
+logs/
+media/
+llama.cpp/build/
+
+# Outros
+*.log
+*.tmp
+*.temp 
