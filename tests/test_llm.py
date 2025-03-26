@@ -4,8 +4,15 @@ Testes para o módulo LLM do A³X.
 
 import subprocess
 import pytest
+import os
+from pathlib import Path
 from llm.inference import run_llm
 
+# Verifica se o binário do LLM existe
+llm_binary = Path('bin/llama-cli')
+has_llm = llm_binary.exists()
+
+@pytest.mark.skipif(not has_llm, reason="Binário do LLM não encontrado")
 def test_run_llm_mock(monkeypatch):
     """Testa execução do LLM com mock."""
     def fake_run(cmd, capture_output, text, check):
