@@ -5,12 +5,14 @@ Módulo Core do A³X - Execução segura de código Python.
 
 import re
 import time
+import json
 import logging
 import builtins
 import contextlib
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from pathlib import Path
 from io import StringIO
+from llm.inference import run_llm
 
 # Configuração de logging
 logging.basicConfig(
@@ -235,5 +237,118 @@ class Executor:
         except Exception as e:
             return f"Erro: {_format_error(e)}"
 
+def analyze_intent(command: str) -> Dict[str, Any]:
+    """
+    Analisa a intenção de um comando em linguagem natural usando LLM.
+    
+    Args:
+        command: Comando em linguagem natural
+        
+    Returns:
+        Dict[str, Any]: Estrutura JSON com a intenção interpretada
+        
+    Example:
+        >>> analyze_intent("me diga a capital do Japão e salve como info_japao")
+        {
+            "type": "question",
+            "action": "ask",
+            "target": "info_japao",
+            "content": "Qual é a capital do Japão?"
+        }
+    """
+    # Prompt estruturado para o LLM
+    prompt = f"""Analise a intenção do seguinte comando e retorne um JSON com a estrutura:
+{{
+    "type": "tipo do comando",
+    "action": "ação específica",
+    "target": "alvo ou chave (se aplicável)",
+    "content": "conteúdo principal"
+}}
+
+Tipos possíveis:
+- memory: operações de memória (lembrar, recuperar)
+- terminal: comandos do terminal
+- python: código Python
+- question: perguntas
+- instruction: instruções/geração de código
+- unknown: não reconhecido
+
+Ações possíveis:
+- store: armazenar na memória
+- retrieve: recuperar da memória
+- run: executar comando
+- ask: fazer pergunta
+- generate: gerar código
+- explain: explicar conceito
+- unknown: não reconhecido
+
+Comando: {command}
+
+Retorne APENAS o JSON, sem texto adicional."""
+
+    try:
+        # Executa o LLM
+        response = run_llm(prompt)
+        
+        # Tenta extrair o JSON da resposta
+        try:
+            # Remove possíveis textos antes ou depois do JSON
+            json_str = response.strip()
+            if "```json" in json_str:
+                json_str = json_str.split("```json")[1].split("```")[0]
+            elif "```" in json_str:
+                json_str = json_str.split("```")[1]
+            
+            # Tenta fazer o parse do JSON
+            intent = json.loads(json_str)
+            
+            # Validação básica da estrutura
+            required_keys = {"type", "action", "target", "content"}
+            if not all(key in intent for key in required_keys):
+                raise ValueError("JSON inválido: faltam chaves obrigatórias")
+                
+            # Normaliza valores
+            intent["type"] = intent["type"].lower()
+            intent["action"] = intent["action"].lower()
+            intent["target"] = intent["target"] if intent["target"] else None
+            intent["content"] = intent["content"].strip()
+            
+            return intent
+            
+        except json.JSONDecodeError:
+            # Se falhar, tenta uma segunda vez com um prompt mais específico
+            retry_prompt = f"""O comando anterior retornou uma resposta inválida.
+Por favor, retorne APENAS um JSON válido com a estrutura:
+{{
+    "type": "tipo do comando",
+    "action": "ação específica",
+    "target": "alvo ou chave (se aplicável)",
+    "content": "conteúdo principal"
+}}
+
+Comando: {command}"""
+            
+            retry_response = run_llm(retry_prompt)
+            try:
+                intent = json.loads(retry_response.strip())
+                return intent
+            except json.JSONDecodeError:
+                # Se ainda falhar, retorna uma intenção desconhecida
+                return {
+                    "type": "unknown",
+                    "action": "unknown",
+                    "target": None,
+                    "content": command
+                }
+                
+    except Exception as e:
+        logging.error(f"Erro ao analisar intenção: {str(e)}")
+        return {
+            "type": "unknown",
+            "action": "unknown",
+            "target": None,
+            "content": command
+        }
+
 # Interface pública
-__all__ = ['run_python_code', 'Executor'] 
+__all__ = ['run_python_code', 'Executor', 'analyze_intent'] 
