@@ -2,25 +2,22 @@ import pytest
 import sys
 import os
 
-# Adiciona o diretório raiz ao path para importar assistant_cli
+# Adiciona o diretório raiz ao path para importar os módulos
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Importa a função que queremos testar (assume que está em assistant_cli.py)
-# Se você renomeou o arquivo, ajuste o import
+# Importa a função que queremos testar
 try:
-    from assistant_cli import interpret_command
+    from core.nlu import interpret_command
 except ImportError:
-    pytest.skip("Não foi possível importar assistant_cli.py", allow_module_level=True)
+    pytest.skip("Não foi possível importar core.nlu", allow_module_level=True)
 
 # Casos de teste para NLU (Comando, Intenção Esperada, Subconjunto de Entidades Esperadas)
-# Usamos subconjunto de entidades porque a extração pode variar um pouco
 NLU_TEST_CASES = [
     ("liste os arquivos aqui", "manage_files", {"action": "list"}),
     ("gere uma função python que soma dois numeros", "generate_code", {"language": "python", "construct_type": "function"}),
-    ("qual a previsão do tempo para hoje?", "weather_forecast", {"topic": "previsão do tempo", "timeframe": "hoje"}),
-    # Adicione mais casos de teste aqui cobrindo diferentes intenções e entidades
-    ("cria um script chamado setup.py", "generate_code", {"file_name": "setup.py"}),
-    ("crie um arquivo log.txt com o conteúdo 'inicio do log'", "manage_files", {"action": "create", "file_name": "log.txt", "content": "inicio do log"}),
+    ("busque na web sobre a história do Python", "search_web", {"query": "história do Python"}),
+    ("lembre que meu email é teste@email.com", "remember_info", {"key": "meu email", "value": "teste@email.com"}),
+    ("qual a senha do wifi?", "recall_info", {"key": "senha do wifi"}),
 ]
 
 @pytest.mark.parametrize("command, expected_intent, expected_entities_subset", NLU_TEST_CASES)
@@ -30,8 +27,8 @@ def test_interpret_command_nlu(command, expected_intent, expected_entities_subse
     Verifica se a intenção e um subconjunto das entidades estão corretos.
     NOTA: Requer que o servidor llama.cpp esteja rodando!
     """
-    print(f"\nTesting NLU for: '{command}'") # Mostra qual comando está sendo testado
-    interpretation = interpret_command(command, history=[])  # Passa uma lista vazia como history
+    print(f"\nTesting NLU for: '{command}'")
+    interpretation = interpret_command(command, history=[])
 
     assert interpretation.get("intent") == expected_intent, \
         f"Intenção esperada '{expected_intent}', mas obteve '{interpretation.get('intent')}'"
@@ -41,4 +38,4 @@ def test_interpret_command_nlu(command, expected_intent, expected_entities_subse
         assert key in actual_entities and actual_entities[key] == value, \
             f"Entidade esperada '{key}={value}' não encontrada ou diferente em {actual_entities}"
 
-    print(f"  -> NLU OK: {interpretation}") # Mostra a interpretação bem-sucedida 
+    print(f"  -> NLU OK: {interpretation}") 
