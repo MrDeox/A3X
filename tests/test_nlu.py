@@ -17,9 +17,10 @@ except ImportError:
 NLU_TEST_CASES = [
     ("liste os arquivos aqui", "manage_files", {"action": "list"}),
     ("gere uma função python que soma dois numeros", "generate_code", {"language": "python", "construct_type": "function"}),
-    ("qual a previsão do tempo para hoje?", "search_info", {"topic": "previsão do tempo"}),
+    ("qual a previsão do tempo para hoje?", "weather_forecast", {"topic": "previsão do tempo", "timeframe": "hoje"}),
     # Adicione mais casos de teste aqui cobrindo diferentes intenções e entidades
     ("cria um script chamado setup.py", "generate_code", {"file_name": "setup.py"}),
+    ("crie um arquivo log.txt com o conteúdo 'inicio do log'", "manage_files", {"action": "create", "file_name": "log.txt", "content": "inicio do log"}),
 ]
 
 @pytest.mark.parametrize("command, expected_intent, expected_entities_subset", NLU_TEST_CASES)
@@ -30,7 +31,7 @@ def test_interpret_command_nlu(command, expected_intent, expected_entities_subse
     NOTA: Requer que o servidor llama.cpp esteja rodando!
     """
     print(f"\nTesting NLU for: '{command}'") # Mostra qual comando está sendo testado
-    interpretation = interpret_command(command)
+    interpretation = interpret_command(command, history=[])  # Passa uma lista vazia como history
 
     assert interpretation.get("intent") == expected_intent, \
         f"Intenção esperada '{expected_intent}', mas obteve '{interpretation.get('intent')}'"

@@ -2,6 +2,7 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
+import re
 
 # Carregar variáveis de ambiente (pode ser útil para futuras configs)
 load_dotenv()
@@ -9,77 +10,95 @@ load_dotenv()
 # URL do servidor llama.cpp (padrão)
 LLAMA_SERVER_URL = "http://127.0.0.1:8080/completion"
 
-def create_nlu_prompt(user_input: str) -> str:
-    """Cria o prompt NLU com exemplos essenciais."""
-    prompt = f"""Analise o comando e responda APENAS com JSON contendo "intent" (string snake_case) e "entities" (objeto chave-valor).
-
-### Exemplos Essenciais
-
-Comando: "gere uma função python que soma dois numeros"
-JSON Resultante:
-```json
-{{
+def create_nlu_prompt(command: str, history: list) -> str:
+    """
+    Cria um prompt básico para o NLU, incluindo histórico recente e exemplos essenciais.
+    """
+    prompt = "Analise o **Comando Atual** do usuário considerando o histórico e responda APENAS com JSON contendo \"intent\" e \"entities\".\n\n"
+    
+    # Adiciona histórico recente se houver
+    if history:
+        prompt += "### Histórico Recente da Conversa:\n"
+        for entry in history[-3:]:  # Últimos 3 pares de interação
+            prompt += f"{entry}\n"
+        prompt += "\n"
+    
+    prompt += "### Exemplos Essenciais\n\n"
+    
+    # Exemplo de geração de código
+    prompt += 'Comando: "gere um script python chamado utils.py com uma função hello world"\n'
+    prompt += "JSON Resultante:\n```json\n"
+    prompt += '''{
   "intent": "generate_code",
-  "entities": {{
+  "entities": {
     "language": "python",
     "construct_type": "function",
-    "purpose": "soma dois numeros"
-  }}
-}}
-```
-
-Comando: "crie um arquivo vazio teste.txt"
-JSON Resultante:
-```json
-{{
+    "purpose": "hello world"
+  }
+}
+```\n\n'''
+    
+    # Exemplo de gerenciamento de arquivos
+    prompt += 'Comando: "crie um arquivo vazio teste.txt"\n'
+    prompt += "JSON Resultante:\n```json\n"
+    prompt += '''{
   "intent": "manage_files",
-  "entities": {{
+  "entities": {
     "action": "create",
     "file_name": "teste.txt",
     "content": null
-  }}
-}}
-```
-
-Comando: "liste os arquivos .py"
-JSON Resultante:
-```json
-{{
+  }
+}
+```\n\n'''
+    
+    # Exemplo de listagem de arquivos
+    prompt += 'Comando: "liste os arquivos .py"\n'
+    prompt += "JSON Resultante:\n```json\n"
+    prompt += '''{
   "intent": "manage_files",
-  "entities": {{
+  "entities": {
     "action": "list",
     "file_extension": ".py"
-  }}
-}}
-```
-
-Comando Atual
-
-Comando: "{user_input}"
-JSON Resultante:
-```json
-"""
+  }
+}
+```\n\n'''
+    
+    # Exemplo de previsão do tempo
+    prompt += 'Comando: "qual a previsão do tempo para amanhã em Curitiba?"\n'
+    prompt += "JSON Resultante:\n```json\n"
+    prompt += '''{
+  "intent": "weather_forecast",
+  "entities": {
+    "topic": "previsão do tempo",
+    "timeframe": "amanhã",
+    "location": "Curitiba"
+  }
+}
+```\n\n'''
+    
+    # Adiciona o comando atual
+    prompt += "### Comando Atual\n\n"
+    prompt += f'Comando: "{command}"\n'
+    prompt += "JSON Resultante:\n```json\n"
+    
     return prompt
 
-def interpret_command(user_input: str) -> dict:
-    """Envia o comando para o servidor LLM e retorna a interpretação."""
-    nlu_prompt = create_nlu_prompt(user_input)
-    
-    print("\n[DEBUG] Enviando prompt para o LLM:")
-    print("---")
-    print(nlu_prompt)
-    print("---")
-
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "prompt": nlu_prompt,
-        "n_predict": 256,  # Máximo de tokens para a resposta JSON
-        "temperature": 0.1, # Baixa temperatura para JSON mais consistente
-        "top_p": 0.9,
-        "stop": ["```"], # Adiciona stop token para evitar geração extra
-    }
-
+def interpret_command(user_input: str, history: list) -> dict:
+    """Interpreta o comando do usuário usando o LLM."""
     try:
+        # Criar o prompt NLU com histórico
+        nlu_prompt = create_nlu_prompt(user_input, history)
+        print(f"[DEBUG] Enviando prompt para o LLM:\n---\n{nlu_prompt}\n---") # DEBUG PROMPT
+
+        # Enviar o prompt para o servidor LLM
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "prompt": nlu_prompt,
+            "n_predict": 512,
+            "temperature": 0.1,
+            "stop": ["```"],
+        }
+
         response = requests.post(LLAMA_SERVER_URL, headers=headers, json=payload)
         response.raise_for_status() # Levanta erro para status HTTP >= 400
 
@@ -142,7 +161,7 @@ def interpret_command(user_input: str) -> dict:
         return {"intent": "error_unknown", "entities": {}, "details": str(e), "original_command": user_input}
 
 # Skills (funções placeholder)
-def skill_generate_code(entities: dict, original_command: str, intent: str = None) -> str:
+def skill_generate_code(entities: dict, original_command: str, intent: str = None) -> dict:
     """Gera código usando o LLM com base nas entidades extraídas."""
     print("\n[Skill: Generate Code]")
     print(f"  Entidades recebidas: {entities}")
@@ -207,8 +226,17 @@ def skill_generate_code(entities: dict, original_command: str, intent: str = Non
         print(f"  Resposta RAW do servidor LLM: {response_data}") # DEBUG RAW RESPONSE
         generated_code = response_data.get("content", "").strip()
 
-        # USA DIRETAMENTE O CÓDIGO LIMPO OBTIDO DO 'content'
-        extracted_code = generated_code
+        # Extrair estritamente o conteúdo do primeiro bloco de código ```language ... ```
+        # (Usando re.DOTALL para '.' corresponder a newlines também)
+        code_match = re.search(rf"```{language}\s*([\s\S]*?)\s*```", generated_code, re.DOTALL)
+        extracted_code = ""
+        if code_match:
+            extracted_code = code_match.group(1).strip()
+        else:
+            # Fallback: Se não encontrar bloco, usa a resposta como estava,
+            # mas limpa possíveis inícios/fins de bloco simples que o stop pode ter deixado
+            print("  [Aviso] Bloco de código ```language ... ``` não encontrado na resposta. Usando fallback.")
+            extracted_code = generated_code.removeprefix(f"```{language}").removesuffix("```").strip()
 
         # Mensagem de resultado
         result_message = f"Código {language} gerado:\n---\n{extracted_code}\n---"
@@ -221,16 +249,33 @@ def skill_generate_code(entities: dict, original_command: str, intent: str = Non
             except Exception as e:
                  result_message += f"\nErro ao tentar salvar o arquivo '{file_name}': {e}"
 
-        return result_message
+        return {
+            "status": "success",
+            "action": "code_generated",
+            "data": {
+                "language": language,
+                "code": extracted_code,
+                "file_name": file_name, # Será None se não foi salvo
+                "message": result_message
+            }
+        }
 
     except requests.exceptions.RequestException as e:
         print(f"\n[Erro HTTP na Skill] Falha ao conectar com o servidor LLM: {e}")
-        return f"Erro ao gerar código: Falha na conexão com LLM ({e})"
+        return {
+            "status": "error",
+            "action": "code_generation_failed",
+            "data": {"message": f"Erro ao gerar código: Falha na conexão com LLM ({e})"}
+        }
     except Exception as e:
         print(f"\n[Erro Inesperado na Skill] Ocorreu um erro: {e}")
-        return f"Erro inesperado ao gerar código: {e}"
+        return {
+            "status": "error",
+            "action": "code_generation_failed",
+            "data": {"message": f"Erro inesperado ao gerar código: {e}"}
+        }
 
-def skill_manage_files(entities: dict, original_command: str) -> str:
+def skill_manage_files(entities: dict, original_command: str) -> dict:
     """Gerencia arquivos (listar, criar, deletar) no diretório atual."""
     print("\n[Skill: Manage Files]")
     print(f"  Entidades recebidas: {entities}")
@@ -247,7 +292,11 @@ def skill_manage_files(entities: dict, original_command: str) -> str:
             # Garante que estamos operando no diretório pretendido (segurança básica)
             # Por enquanto, só permitimos '.' (diretório atual)
             if directory != ".":
-                 return f"Desculpe, por segurança, só posso listar arquivos no diretório atual por enquanto."
+                 return {
+                     "status": "error",
+                     "action": "list_files_failed",
+                     "data": {"message": "Desculpe, por segurança, só posso listar arquivos no diretório atual por enquanto."}
+                 }
 
             files = os.listdir(directory)
             result_files = []
@@ -257,67 +306,152 @@ def skill_manage_files(entities: dict, original_command: str) -> str:
                     file_extension = '.' + file_extension
                 # Filtra os arquivos pela extensão
                 result_files = [f for f in files if os.path.isfile(os.path.join(directory, f)) and f.endswith(file_extension)]
-                return f"Arquivos '{file_extension}' no diretório atual: {', '.join(result_files) if result_files else 'Nenhum encontrado'}"
+                return {
+                    "status": "success",
+                    "action": "files_listed",
+                    "data": {
+                        "directory": directory,
+                        "files": result_files,
+                        "filter": file_extension,
+                        "message": f"Arquivos '{file_extension}' no diretório atual: {', '.join(result_files) if result_files else 'Nenhum encontrado'}"
+                    }
+                }
             else:
                 # Lista todos os arquivos e diretórios
                  result_files = files
-                 return f"Conteúdo do diretório atual: {', '.join(result_files) if result_files else 'Vazio'}"
+                 return {
+                     "status": "success",
+                     "action": "files_listed",
+                     "data": {
+                         "directory": directory,
+                         "files": result_files,
+                         "filter": None,
+                         "message": f"Conteúdo do diretório atual: {', '.join(result_files) if result_files else 'Vazio'}"
+                     }
+                 }
 
         except FileNotFoundError:
-            return f"Erro: O diretório '{directory}' não foi encontrado."
+            return {
+                "status": "error",
+                "action": "list_files_failed",
+                "data": {"message": f"Erro: O diretório '{directory}' não foi encontrado."}
+            }
         except Exception as e:
-            return f"Erro ao listar arquivos em '{directory}': {e}"
+            return {
+                "status": "error",
+                "action": "list_files_failed",
+                "data": {"message": f"Erro ao listar arquivos em '{directory}': {e}"}
+            }
 
     # --- Ação: Criar Arquivo ---
     elif action == "create":
         if not file_name:
-            return "Erro: Para criar um arquivo, preciso de um nome (file_name)."
+            return {
+                "status": "error",
+                "action": "create_file_failed",
+                "data": {"message": "Erro: Para criar um arquivo, preciso de um nome (file_name)."}
+            }
         try:
             # Medida de segurança simples: evitar caminhos absolutos ou que saiam do dir atual
             if os.path.isabs(file_name) or ".." in file_name:
-                 return f"Desculpe, por segurança, só posso criar arquivos diretamente no diretório atual."
+                 return {
+                     "status": "error",
+                     "action": "create_file_failed",
+                     "data": {"message": "Desculpe, por segurança, só posso criar arquivos diretamente no diretório atual."}
+                 }
 
             if os.path.exists(file_name):
-                return f"Erro: O arquivo '{file_name}' já existe."
+                return {
+                    "status": "error",
+                    "action": "create_file_failed",
+                    "data": {"message": f"Erro: O arquivo '{file_name}' já existe."}
+                }
 
             with open(file_name, "w") as f:
                 if content:
                     f.write(content)
                 else:
                     f.write("") # Cria arquivo vazio
-            return f"Arquivo '{file_name}' criado com sucesso."
+            return {
+                "status": "success",
+                "action": "file_created",
+                "data": {
+                    "file_name": file_name,
+                    "content": content,
+                    "message": f"Arquivo '{file_name}' criado com sucesso."
+                }
+            }
 
         except Exception as e:
-            return f"Erro ao criar o arquivo '{file_name}': {e}"
+            return {
+                "status": "error",
+                "action": "create_file_failed",
+                "data": {"message": f"Erro ao criar o arquivo '{file_name}': {e}"}
+            }
 
     # --- Ação: Deletar Arquivo ---
     elif action == "delete":
         if not file_name:
-            return "Erro: Para deletar um arquivo, preciso de um nome (file_name)."
+            return {
+                "status": "error",
+                "action": "delete_file_failed",
+                "data": {"message": "Erro: Para deletar um arquivo, preciso de um nome (file_name)."}
+            }
         try:
              # Medida de segurança simples
             if os.path.isabs(file_name) or ".." in file_name:
-                 return f"Desculpe, por segurança, só posso deletar arquivos diretamente no diretório atual."
+                 return {
+                     "status": "error",
+                     "action": "delete_file_failed",
+                     "data": {"message": "Desculpe, por segurança, só posso deletar arquivos diretamente no diretório atual."}
+                 }
 
             if not os.path.exists(file_name):
-                 return f"Erro: O arquivo '{file_name}' não existe."
+                 return {
+                     "status": "error",
+                     "action": "delete_file_failed",
+                     "data": {"message": f"Erro: O arquivo '{file_name}' não existe."}
+                 }
             if not os.path.isfile(file_name):
-                 return f"Erro: '{file_name}' não é um arquivo."
+                 return {
+                     "status": "error",
+                     "action": "delete_file_failed",
+                     "data": {"message": f"Erro: '{file_name}' não é um arquivo."}
+                 }
 
             # !! Ação Destrutiva !! Adicionar confirmação seria ideal no futuro
             os.remove(file_name)
-            return f"Arquivo '{file_name}' deletado com sucesso."
+            return {
+                "status": "success",
+                "action": "file_deleted",
+                "data": {
+                    "file_name": file_name,
+                    "message": f"Arquivo '{file_name}' deletado com sucesso."
+                }
+            }
 
         except Exception as e:
-            return f"Erro ao deletar o arquivo '{file_name}': {e}"
+            return {
+                "status": "error",
+                "action": "delete_file_failed",
+                "data": {"message": f"Erro ao deletar o arquivo '{file_name}': {e}"}
+            }
 
     # --- Ação Desconhecida ---
     else:
         # Se a intenção foi 'manage_files' mas a ação específica não foi reconhecida/implementada
         if entities.get("intent") == "manage_files": # Usando entities.get para evitar KeyError
-             return f"Não sei como realizar a ação específica '{action}' solicitada em '{original_command}'. Ações suportadas: list, create, delete."
+             return {
+                 "status": "error",
+                 "action": "unknown_action",
+                 "data": {"message": f"Não sei como realizar a ação específica '{action}' solicitada em '{original_command}'. Ações suportadas: list, create, delete."}
+             }
         # Se a intenção não foi 'manage_files' (fallback do dispatcher)
-        return f"Platzhalter: Ação de arquivo não reconhecida para '{original_command}'."
+        return {
+            "status": "error",
+            "action": "unknown_action",
+            "data": {"message": f"Platzhalter: Ação de arquivo não reconhecida para '{original_command}'."}
+        }
 
 def skill_search_web(entities: dict, original_command: str):
     print("\n[Skill: Search Web]")
@@ -329,10 +463,19 @@ def skill_remember_info(entities: dict, original_command: str):
     print(f"  Recebido pedido para lembrar informação com entidades: {entities}")
     return f"Platzhalter: Armazenamento de informação com base em '{original_command}' seria realizado aqui."
 
-def skill_unknown(entities: dict, original_command: str):
+def skill_unknown(entities: dict, original_command: str, intent: str = None) -> dict:
+    """Skill padrão para comandos não reconhecidos."""
     print("\n[Skill: Unknown]")
     print(f"  Não sei como lidar com a intenção (ou foi um erro) para: '{original_command}'")
-    return f"Desculpe, não entendi ou não posso realizar a ação: '{original_command}'"
+    return {
+        "status": "not_understood",
+        "action": "unknown_intent",
+        "data": {
+            "message": f"Desculpe, não entendi ou não posso realizar a ação: '{original_command}'",
+            "original_command": original_command,
+            "intent": intent
+        }
+    }
 
 # Dispatcher (mapeia intenções para funções de skill)
 SKILL_DISPATCHER = {
@@ -347,6 +490,10 @@ SKILL_DISPATCHER = {
     "unknown": skill_unknown  # Intenção padrão se o LLM não tiver certeza
 }
 
+# Inicializar histórico de conversa
+conversation_history = []
+MAX_HISTORY_TURNS = 5 # Quantos pares (usuário + assistente) lembrar
+
 # Loop principal da CLI
 if __name__ == "__main__":
     print("Assistente Pessoal (conectado ao servidor llama.cpp)")
@@ -359,23 +506,56 @@ if __name__ == "__main__":
             if not user_input:
                 continue
 
-            interpretation = interpret_command(user_input)
+            # Interpretar o comando do usuário
+            interpretation = interpret_command(user_input, conversation_history)
             # Opcional: imprimir para depuração
             # print("\n[Interpretação NLU]:")
-            # print(json.dumps(interpretation, indent=2, ensure_ascii=False))
+            # print(json.dumps(interpretation, indent=2))
 
+            # Extrair intent e entities
             intent = interpretation.get("intent", "unknown")
             entities = interpretation.get("entities", {})
-            original_command = interpretation.get("original_command", user_input)  # Pega o original
+            original_command = interpretation.get("original_command", user_input)
 
-            # Encontra a função da skill no dispatcher, ou usa unknown como padrão
-            skill_function = SKILL_DISPATCHER.get(intent, skill_unknown)
+            # Chama a skill apropriada
+            if intent == "generate_code":
+                skill_result = skill_generate_code(entities, original_command, intent=intent)
+            elif intent == "manage_files":
+                skill_result = skill_manage_files(entities, original_command)
+            else:
+                skill_result = skill_unknown(entities, original_command, intent=intent)
 
-            # Chama a skill e obtém o resultado
-            result = skill_function(entities, original_command)
+            # --- Processamento do Resultado (Temporário) ---
+            print("\n[Resultado da Skill (Estruturado)]:")
+            print(json.dumps(skill_result, indent=2, ensure_ascii=False))
 
-            print("\n[Assistente]:")
-            print(result)
+            # Cria uma resposta simples para o usuário e para o histórico (TEMPORÁRIO)
+            if skill_result.get("status") == "success":
+                final_response_text = f"Ação '{skill_result.get('action', 'desconhecida')}' concluída."
+                # Poderia ser mais descritivo baseado na action/data
+                if skill_result.get("action") == "file_created":
+                     final_response_text = f"Arquivo '{skill_result['data'].get('file_name')}' criado."
+                elif skill_result.get("action") == "files_listed":
+                     final_response_text = f"Listei {len(skill_result['data'].get('files', []))} itens."
+                elif skill_result.get("action") == "code_generated":
+                     final_response_text = f"Gerei o código {skill_result['data'].get('language', '')}."
+                     if skill_result['data'].get('file_name'):
+                          final_response_text += f" Salvei como '{skill_result['data']['file_name']}'."
+
+            elif skill_result.get("status") == "not_understood":
+                final_response_text = skill_result["data"].get("message", "Não entendi.")
+            else: # status == "error"
+                 final_response_text = skill_result["data"].get("message", "Ocorreu um erro.")
+
+            print("\n[Assistente (Resposta Temporária)]:")
+            print(final_response_text)
+            # --- Fim do Processamento Temporário ---
+
+            # --- Adicionar ao Histórico ---
+            conversation_history.append({"role": "user", "content": user_input})
+            # Adiciona a resposta temporária ao histórico
+            conversation_history.append({"role": "assistant", "content": final_response_text})
+            # --- Fim da Adição ao Histórico ---
 
         except KeyboardInterrupt:
             print("\nSaindo...")
