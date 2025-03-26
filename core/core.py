@@ -210,5 +210,30 @@ def run_python_code(code: str) -> str:
         _log_execution(code, False, error=error_msg)
         return error_msg
 
+class Executor:
+    """Executor de comandos do A³X."""
+    
+    def __init__(self):
+        """Inicializa o executor."""
+        self.memory = {}
+        self.history = []
+        
+    def process_command(self, command: str) -> str:
+        """
+        Processa um comando e retorna o resultado.
+        
+        Args:
+            command: Comando a ser processado
+            
+        Returns:
+            str: Resultado do comando
+        """
+        try:
+            # Executa o código Python
+            result = run_python_code(command)
+            return result
+        except Exception as e:
+            return f"Erro: {_format_error(e)}"
+
 # Interface pública
-__all__ = ['run_python_code'] 
+__all__ = ['run_python_code', 'Executor'] 
