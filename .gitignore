@@ -65,4 +65,13 @@ llama.cpp/build/
 
 # Outros
 *.tmp
-*.temp 
+*.temp
+
+# Dependências compiladas (llama.cpp) - Ignora a pasta inteira
+llama.cpp/
+
+# Arquivos de sistema
+Thumbs.db
+
+# Arquivos .env (contêm segredos ou caminhos locais)
+.env 
