@@ -4,17 +4,27 @@ Testes de integração para o Executor Principal do A³X.
 
 from core.executor import Executor
 import pytest
+import time
+import os
+from pathlib import Path
 
 executor = Executor()
 
+# Verifica se o binário do LLM existe
+llm_binary = Path('bin/llama-cli')
+has_llm = llm_binary.exists()
+
 def test_memoria_store_and_retrieve():
     """Testa operações de memória via Executor."""
+    # Gera uma chave única baseada no timestamp
+    chave = f"teste_memoria_{int(time.time())}"
+    
     # Armazenar valor
-    result_store = executor.process_command("lembre teste_memoria isto é um teste")
+    result_store = executor.process_command(f"lembre {chave} isto é um teste")
     assert "sucesso" in result_store.lower() or "ok" in result_store.lower()
-
+    
     # Recuperar valor
-    result_retrieve = executor.process_command("recupere teste_memoria")
+    result_retrieve = executor.process_command(f"recupere {chave}")
     assert "isto é um teste" in result_retrieve.lower()
 
 def test_codigo_python():
@@ -27,6 +37,7 @@ def test_comando_terminal():
     result = executor.process_command("execute o comando echo funcionando")
     assert "funcionando" in result.lower()
 
+@pytest.mark.skipif(not has_llm, reason="Binário do LLM não encontrado")
 def test_pergunta_llm():
     """Testa processamento de perguntas via LLM."""
     result = executor.process_command("Qual é a capital do Brasil?")
@@ -34,6 +45,7 @@ def test_pergunta_llm():
     assert len(result.strip()) > 0
     assert "brasília" in result.lower() or "brasilia" in result.lower()
 
+@pytest.mark.skipif(not has_llm, reason="Binário do LLM não encontrado")
 def test_instrucao_llm():
     """Testa geração de código via LLM."""
     result = executor.process_command("Crie uma função que calcule o fatorial")

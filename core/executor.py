@@ -22,6 +22,13 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# Padrões de comando
+python_code = re.compile(r'^(rode|execute|execute o comando|rode o comando)\s+python\s+(.+)$', re.IGNORECASE)
+shell_command = re.compile(r'^(execute|rode|rode o comando)\s+(.+)$', re.IGNORECASE)
+llm_query = re.compile(r'^(.+)$')
+memory_store = re.compile(r'^lembre\s+(\w+)\s+(.+)$')
+memory_retrieve = re.compile(r'^recupere\s+(\w+)$')
+
 class Executor:
     """
     Executor Principal do A³X.
@@ -34,10 +41,10 @@ class Executor:
         self.last_result: Optional[str] = None
         self.context: Dict[str, Any] = {}
         
-        # Padrões de reconhecimento
+        # Padrões de reconhecimento (ordenados por prioridade)
         self.patterns = {
-            'terminal_command': r'^(execute|rode|execute o comando|rode o comando)\s+',
             'python_code': r'^(run|execute|rode)\s+python\s+',
+            'terminal_command': r'^(execute|rode|execute o comando|rode o comando)\s+',
             'memory_store': r'^(lembre|memorize|store)\s+',
             'memory_retrieve': r'^(recupere|busque|retrieve)\s+',
             'question': r'^(qual|como|quando|onde|por que|quem)\s+',
@@ -49,20 +56,22 @@ class Executor:
         print(f"[{level}] {message}")
         logging.info(message)
     
-    def _extract_code(self, text: str) -> str:
-        """Extrai código Python do texto."""
-        # Remove prefixos comuns
-        for prefix in ['rode python', 'execute python', 'run python']:
-            if text.lower().startswith(prefix):
-                return text[len(prefix):].strip()
-        return text
+    def _extract_code(self, command: str) -> Optional[str]:
+        """Extrai código Python do comando."""
+        match = python_code.match(command)
+        if match:
+            return match.group(2)
+        return None
     
     def _extract_command(self, text: str) -> str:
         """Extrai comando shell do texto."""
         # Remove prefixos comuns
         for prefix in ['execute o comando', 'rode o comando', 'execute', 'rode']:
             if text.lower().startswith(prefix):
-                return text[len(prefix):].strip()
+                command = text[len(prefix):].strip()
+                print(f"DEBUG - Comando extraído no Executor: '{command}'")
+                return command
+        print(f"DEBUG - Comando original no Executor: '{text}'")
         return text
     
     def _extract_key_value(self, text: str) -> tuple[str, str]:
