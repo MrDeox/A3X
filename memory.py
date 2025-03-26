@@ -70,7 +70,7 @@ def _init_db() -> None:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS memory (
                 key TEXT PRIMARY KEY,
-                value TEXT,
+                value TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -99,42 +99,42 @@ def store(key: str, value: str, overwrite: bool = False) -> None:
     """
     # Validações
     if not _validate_key(key):
-        raise ValueError(f"Chave inválida: {key}")
+        raise ValueError("Chave inválida")
     if not _validate_value(value):
-        raise ValueError(f"Valor inválido: {value}")
+        raise ValueError("Valor inválido")
         
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
         
         # Verifica se chave existe
-        cursor.execute('SELECT 1 FROM memory WHERE key = ?', (key,))
+        cursor.execute("SELECT 1 FROM memory WHERE key = ?", (key,))
         exists = cursor.fetchone() is not None
         
         if exists and not overwrite:
-            raise KeyError(f"Chave já existe: {key}")
+            raise KeyError(f"Chave '{key}' já existe")
             
         # Insere ou atualiza
         if exists:
-            cursor.execute('''
-                UPDATE memory 
-                SET value = ?, created_at = CURRENT_TIMESTAMP 
-                WHERE key = ?
-            ''', (value, key))
+            cursor.execute(
+                "UPDATE memory SET value = ?, created_at = CURRENT_TIMESTAMP WHERE key = ?",
+                (value, key)
+            )
         else:
-            cursor.execute('''
-                INSERT INTO memory (key, value) 
-                VALUES (?, ?)
-            ''', (key, value))
+            cursor.execute(
+                "INSERT INTO memory (key, value) VALUES (?, ?)",
+                (key, value)
+            )
             
         conn.commit()
-        conn.close()
-        
-        logging.info(f"Armazenado com sucesso: {key}")
+        logging.info(f"Valor armazenado para chave: {key}")
         
     except Exception as e:
-        logging.error(f"Erro ao armazenar {key}: {e}")
+        logging.error(f"Erro ao armazenar valor: {str(e)}")
         raise
+        
+    finally:
+        conn.close()
 
 def retrieve(key: str) -> Optional[str]:
     """
@@ -147,28 +147,28 @@ def retrieve(key: str) -> Optional[str]:
         Optional[str]: Valor armazenado ou None se não encontrado
     """
     if not _validate_key(key):
-        logging.warning(f"Tentativa de recuperar chave inválida: {key}")
-        return None
+        raise ValueError("Chave inválida")
         
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
         
-        cursor.execute('SELECT value FROM memory WHERE key = ?', (key,))
+        cursor.execute("SELECT value FROM memory WHERE key = ?", (key,))
         result = cursor.fetchone()
         
-        conn.close()
-        
-        if result is None:
-            logging.info(f"Chave não encontrada: {key}")
+        if result:
+            logging.info(f"Valor recuperado para chave: {key}")
+            return result[0]
+        else:
+            logging.warning(f"Chave não encontrada: {key}")
             return None
             
-        logging.info(f"Recuperado com sucesso: {key}")
-        return result[0]
-        
     except Exception as e:
-        logging.error(f"Erro ao recuperar {key}: {e}")
-        return None
+        logging.error(f"Erro ao recuperar valor: {str(e)}")
+        raise
+        
+    finally:
+        conn.close()
 
 # Inicializa o banco de dados
 _init_db()

@@ -1,5 +1,5 @@
 """
-Módulo Core do A³X - Contém o Executor Principal e funções de execução de código.
+Módulo Core do A³X.
 """
 
 from .executor import Executor

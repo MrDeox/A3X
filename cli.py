@@ -115,68 +115,44 @@ def execute(command: str, capture_output: bool = True) -> str:
     
     Args:
         command: Comando a ser executado
-        capture_output: Se True, retorna stdout/stderr como string
+        capture_output: Se True, retorna stdout/stderr
         
     Returns:
         str: Saída do comando ou mensagem de erro
         
     Raises:
         ValueError: Se o comando for inválido
-        PermissionError: Se o comando for bloqueado
-        subprocess.CalledProcessError: Se o comando falhar
-        subprocess.TimeoutExpired: Se exceder o tempo limite
+        subprocess.TimeoutExpired: Se exceder o timeout
     """
-    # Validação inicial
+    # Validação
     if not _validate_command(command):
-        error_msg = "Comando inválido ou não permitido"
-        _log_execution(command, False, error=error_msg)
-        raise ValueError(error_msg)
+        raise ValueError("Comando não permitido por questões de segurança")
         
-    # Prepara o comando
-    cmd = command.split()
-    
     try:
-        # Inicia o timer
-        start_time = time.time()
-        
         # Executa o comando
         result = subprocess.run(
-            cmd,
+            command,
+            shell=True,
             capture_output=capture_output,
             text=True,
-            timeout=TIMEOUT,
-            shell=False
+            timeout=TIMEOUT
         )
         
-        # Calcula duração
-        duration = time.time() - start_time
-        
-        # Verifica sucesso
-        if result.returncode != 0:
-            error_msg = _format_error(result)
-            _log_execution(command, False, error=error_msg, duration=duration)
-            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
-            
         # Log de sucesso
-        _log_execution(
-            command,
-            True,
-            output=result.stdout if capture_output else None,
-            duration=duration
-        )
+        logging.info(f"Comando executado: {command}")
         
-        # Retorna resultado
-        return result.stdout if capture_output else ""
+        # Retorna saída
+        if capture_output:
+            return result.stdout or result.stderr
+        return ""
         
     except subprocess.TimeoutExpired:
-        error_msg = "Tempo limite excedido"
-        _log_execution(command, False, error=error_msg)
+        logging.error(f"Timeout no comando: {command}")
         raise
         
     except Exception as e:
-        error_msg = _format_error(e)
-        _log_execution(command, False, error=error_msg)
-        raise
+        logging.error(f"Erro ao executar comando: {command} - {str(e)}")
+        return f"Erro ao executar comando: {str(e)}"
 
 # Interface pública
 __all__ = ['execute'] 
