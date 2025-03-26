@@ -4,173 +4,251 @@ Executor Principal do A³X - Núcleo de controle inteligente do sistema.
 Responsável por interpretar comandos e acionar os módulos apropriados.
 """
 
-import re
 import logging
 from typing import Optional, Dict, Any, List
-from pathlib import Path
+from datetime import datetime
 
-# Importações dos módulos
-from llm.inference import run_llm
-from cli import execute
-from core import run_python_code
-from memory import store, retrieve
+from memory.system import MemorySystem
+from memory.models import SemanticMemoryEntry
+from core import code_runner
+from core import llm
 
-# Configuração de logging
-logging.basicConfig(
-    filename='logs/executor.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-# Padrões de comando
-python_code = re.compile(r'^(rode|execute|execute o comando|rode o comando)\s+python\s+(.+)$', re.IGNORECASE)
-shell_command = re.compile(r'^(execute|rode|rode o comando)\s+(.+)$', re.IGNORECASE)
-llm_query = re.compile(r'^(.+)$')
-memory_store = re.compile(r'^lembre\s+(\w+)\s+(.+)$')
-memory_retrieve = re.compile(r'^recupere\s+(\w+)$')
+# Configurar logger
+logger = logging.getLogger(__name__)
 
 class Executor:
     """
-    Executor Principal do A³X.
-    Responsável por processar comandos em linguagem natural e acionar os módulos apropriados.
+    Executor de comandos do A³X.
+    Responsável por executar diferentes tipos de comandos e manter o histórico.
     """
     
-    def __init__(self):
-        """Inicializa o Executor com suas dependências e configurações."""
-        self.command_history: List[Dict[str, Any]] = []
-        self.last_result: Optional[str] = None
-        self.context: Dict[str, Any] = {}
-        
-        # Padrões de reconhecimento (ordenados por prioridade)
-        self.patterns = {
-            'python_code': r'^(run|execute|rode)\s+python\s+',
-            'terminal_command': r'^(execute|rode|execute o comando|rode o comando)\s+',
-            'memory_store': r'^(lembre|memorize|store)\s+',
-            'memory_retrieve': r'^(recupere|busque|retrieve)\s+',
-            'question': r'^(qual|como|quando|onde|por que|quem)\s+',
-            'instruction': r'^(faça|crie|implemente|desenvolva)\s+'
-        }
-    
-    def _log(self, message: str, level: str = "INFO") -> None:
-        """Registra uma mensagem no log interno."""
-        print(f"[{level}] {message}")
-        logging.info(message)
-    
-    def _extract_code(self, command: str) -> Optional[str]:
-        """Extrai código Python do comando."""
-        match = python_code.match(command)
-        if match:
-            return match.group(2)
-        return None
-    
-    def _extract_command(self, text: str) -> str:
-        """Extrai comando shell do texto."""
-        # Remove prefixos comuns
-        for prefix in ['execute o comando', 'rode o comando', 'execute', 'rode']:
-            if text.lower().startswith(prefix):
-                command = text[len(prefix):].strip()
-                print(f"DEBUG - Comando extraído no Executor: '{command}'")
-                return command
-        print(f"DEBUG - Comando original no Executor: '{text}'")
-        return text
-    
-    def _extract_key_value(self, text: str) -> tuple[str, str]:
-        """Extrai chave e valor do texto para armazenamento."""
-        # Remove prefixos
-        for prefix in ['lembre', 'memorize', 'store']:
-            if text.lower().startswith(prefix):
-                text = text[len(prefix):].strip()
-                break
-                
-        # Divide em chave e valor
-        parts = text.split(maxsplit=1)
-        if len(parts) != 2:
-            raise ValueError("Formato inválido. Use: lembre chave valor")
-            
-        return parts[0], parts[1]
-    
-    def process_command(self, input_text: str) -> str:
+    def __init__(self, memory_system: Optional[MemorySystem] = None):
         """
-        Processa um comando em linguagem natural.
+        Inicializa o executor.
         
         Args:
-            input_text: Texto do comando
-            
-        Returns:
-            str: Resultado da execução
+            memory_system: Sistema de memória para armazenar resultados.
+                         Se None, não armazena resultados.
         """
-        try:
-            # Registra comando no histórico
-            self.command_history.append({
-                'input': input_text,
-                'timestamp': None  # TODO: Adicionar timestamp
-            })
+        self.memory_system = memory_system
+        self.command_history: List[Dict[str, Any]] = []
+        logger.info("Executor inicializado")
+        if memory_system:
+            logger.info("Sistema de memória configurado")
+        else:
+            logger.warning("Sistema de memória não configurado")
+    
+    def execute(self, intent: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Executa uma intenção e retorna o resultado."""
+        if not intent:
+            return {
+                'status': 'error',
+                'action': 'unknown',
+                'message': 'Intenção não fornecida'
+            }
             
-            # Identifica tipo de comando
-            command_type = None
-            for cmd_type, pattern in self.patterns.items():
-                if re.match(pattern, input_text.lower()):
-                    command_type = cmd_type
-                    break
+        intent_type = intent.get('type')
+        
+        # Processa o comando e registra no histórico
+        result = self.process_command(intent)
+        
+        # Adiciona entrada no histórico
+        command_entry = {
+            'timestamp': datetime.now(),
+            'intent': intent,
+            'result': result
+        }
+        self.command_history.append(command_entry)
+        
+        return result
+        
+    def process_command(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Analisa a intenção do comando e executa."""
+        intent_type = intent.get('type')
+        
+        if intent_type == 'memory':
+            return self._handle_memory(intent)
+        elif intent_type == 'python':
+            return self._handle_python(intent)
+        elif intent_type == 'terminal':
+            return self._handle_terminal(intent)
+        elif intent_type == 'question':
+            return self._handle_question(intent)
+        elif intent_type == 'instruction':
+            return self._handle_instruction(intent)
+        else:
+            return {
+                'status': 'error',
+                'action': 'unknown',
+                'message': f'Tipo de intenção {intent_type} não suportado'
+            }
             
-            if not command_type:
-                # Se não identificou, trata como pergunta
-                command_type = 'question'
+    def _handle_memory(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Processa operações de memória."""
+        if not self.memory_system:
+            return {
+                'status': 'error',
+                'action': intent.get('action', 'unknown'),
+                'message': 'Sistema de memória não configurado'
+            }
             
-            # Processa comando
-            if command_type == 'terminal_command':
-                command = self._extract_command(input_text)
-                result = execute(command)
-                
-            elif command_type == 'python_code':
-                code = self._extract_code(input_text)
-                result = run_python_code(code)
-                
-            elif command_type == 'memory_store':
-                key, value = self._extract_key_value(input_text)
-                store(key, value)
-                result = "Valor armazenado com sucesso"
-                
-            elif command_type == 'memory_retrieve':
-                key = input_text.split(maxsplit=1)[1]
-                result = retrieve(key) or "Chave não encontrada"
-                
-            elif command_type == 'question':
-                result = run_llm(input_text)
-                
-            elif command_type == 'instruction':
-                result = run_llm(input_text)
-                
+        action = intent.get('action')
+        target = intent.get('target')
+        
+        if action == 'store':
+            content = intent.get('content')
+            entry = SemanticMemoryEntry(
+                key=target,
+                value=content,
+                timestamp=datetime.now()
+            )
+            self.memory_system.store(target, entry)
+            return {
+                'status': 'success',
+                'action': 'store',
+                'message': f'Valor armazenado em {target}'
+            }
+            
+        elif action == 'retrieve':
+            value = self.memory_system.retrieve(target)
+            if value:
+                return {
+                    'status': 'success',
+                    'action': 'retrieve',
+                    'value': value
+                }
             else:
-                result = "Comando não reconhecido"
+                return {
+                    'status': 'error',
+                    'action': 'retrieve',
+                    'message': f'Valor não encontrado para chave {target}'
+                }
+                
+        return {
+            'status': 'error',
+            'action': action,
+            'message': f'Ação de memória {action} não suportada'
+        }
             
-            # Atualiza último resultado
-            self.last_result = result
+    def _handle_python(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Executa código Python."""
+        code = intent.get('content', '').strip()
+        result = code_runner.run_python_code(code)
+        
+        if isinstance(result, dict) and 'error' in result:
+            return {
+                'status': 'error',
+                'action': 'execute_python',
+                'message': result['error']
+            }
             
-            # Registra resultado no histórico
-            self.command_history[-1]['result'] = result
+        if isinstance(result, str):
+            return {
+                'status': 'success',
+                'action': 'execute_python',
+                'output': result.strip()
+            }
             
-            return result
+        return {
+            'status': 'error',
+            'action': 'execute_python',
+            'message': 'Resultado inesperado da execução'
+        }
+        
+    def _handle_terminal(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Executa comando no terminal."""
+        command = intent.get('content', '').strip()
+        result = code_runner.execute_terminal_command(command)
+        
+        if isinstance(result, dict):
+            if 'error' in result:
+                return {
+                    'status': 'error',
+                    'action': 'execute_terminal',
+                    'message': result['error']
+                }
+            elif 'output' in result:
+                return {
+                    'status': 'success',
+                    'action': 'execute_terminal',
+                    'output': result['output'].strip()
+                }
+                
+        return {
+            'status': 'error',
+            'action': 'execute_terminal',
+            'message': 'Resultado inesperado do comando'
+        }
+        
+    def _handle_question(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Processa perguntas usando LLM."""
+        question = intent.get('content', '').strip()
+        response = llm.run_llm(question)
+        
+        if isinstance(response, str):
+            return {
+                'status': 'success',
+                'action': 'ask',
+                'response': response.strip()
+            }
             
-        except Exception as e:
-            error_msg = f"Erro ao processar comando: {str(e)}"
-            self._log(error_msg, "ERROR")
-            return error_msg
+        return {
+            'status': 'error',
+            'action': 'ask',
+            'message': 'Erro ao processar pergunta'
+        }
+        
+    def _handle_instruction(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Processa instruções usando LLM."""
+        instruction = intent.get('content', '').strip()
+        response = llm.run_llm(instruction)
+        
+        if isinstance(response, str):
+            return {
+                'status': 'success',
+                'action': 'instruction',
+                'response': response.strip()
+            }
+            
+        return {
+            'status': 'error',
+            'action': 'instruction',
+            'message': 'Erro ao processar instrução'
+        }
 
 if __name__ == "__main__":
     # Exemplo de uso
-    executor = Executor()
+    from memory.system import MemorySystem
+    
+    # Inicializa o sistema de memória
+    memory_system = MemorySystem()
+    
+    # Cria o executor
+    executor = Executor(memory_system=memory_system)
     
     # Teste com diferentes tipos de comandos
-    test_commands = [
-        "Execute o comando ls na pasta atual",
-        "Qual é a capital do Brasil?",
-        "Lembre que preciso comprar pão",
-        "Recupere o que pedi para lembrar sobre pão",
-        "rode python print('Hello, World!')"
+    test_intents = [
+        {
+            'type': 'memory',
+            'action': 'store',
+            'target': 'test_key',
+            'content': 'test_value'
+        },
+        {
+            'type': 'python',
+            'content': 'print("Hello, World!")'
+        },
+        {
+            'type': 'terminal',
+            'content': 'ls'
+        },
+        {
+            'type': 'question',
+            'content': 'Qual é a capital do Brasil?'
+        }
     ]
     
-    for cmd in test_commands:
-        print(f"\nProcessando comando: {cmd}")
-        result = executor.process_command(cmd)
+    for intent in test_intents:
+        print(f"\nExecutando intenção: {intent}")
+        result = executor.execute(intent)
         print(f"Resultado: {result}") 

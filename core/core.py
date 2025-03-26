@@ -12,7 +12,13 @@ import contextlib
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
 from io import StringIO
-from llm.inference import run_llm
+
+# Importação correta do run_llm
+try:
+    from llm.inference import run_llm
+except ImportError:
+    print("ERRO: Módulo llm.inference não encontrado")
+    raise
 
 # Configuração de logging
 logging.basicConfig(
@@ -212,31 +218,6 @@ def run_python_code(code: str) -> str:
         _log_execution(code, False, error=error_msg)
         return error_msg
 
-class Executor:
-    """Executor de comandos do A³X."""
-    
-    def __init__(self):
-        """Inicializa o executor."""
-        self.memory = {}
-        self.history = []
-        
-    def process_command(self, command: str) -> str:
-        """
-        Processa um comando e retorna o resultado.
-        
-        Args:
-            command: Comando a ser processado
-            
-        Returns:
-            str: Resultado do comando
-        """
-        try:
-            # Executa o código Python
-            result = run_python_code(command)
-            return result
-        except Exception as e:
-            return f"Erro: {_format_error(e)}"
-
 def analyze_intent(command: str) -> Dict[str, Any]:
     """
     Analisa a intenção de um comando em linguagem natural usando LLM.
@@ -246,58 +227,97 @@ def analyze_intent(command: str) -> Dict[str, Any]:
         
     Returns:
         Dict[str, Any]: Estrutura JSON com a intenção interpretada
-        
-    Example:
-        >>> analyze_intent("me diga a capital do Japão e salve como info_japao")
-        {
-            "type": "question",
-            "action": "ask",
-            "target": "info_japao",
-            "content": "Qual é a capital do Japão?"
-        }
     """
     # Prompt estruturado para o LLM
-    prompt = f"""Analise a intenção do seguinte comando e retorne um JSON com a estrutura:
+    prompt = f"""Você é o analisador de intenções do A³X, um sistema de IA local.
+Analise o comando em linguagem natural e identifique a intenção do usuário.
+
+IMPORTANTE: Para cumprimentos como "oi", "olá", "bom dia", etc, retorne EXATAMENTE:
 {{
-    "type": "tipo do comando",
-    "action": "ação específica",
-    "target": "alvo ou chave (se aplicável)",
-    "content": "conteúdo principal"
+    "type": "question",
+    "action": "ask",
+    "target": null,
+    "content": "Olá! Como posso ajudar?"
 }}
 
-Tipos possíveis:
-- memory: operações de memória (lembrar, recuperar)
-- terminal: comandos do terminal
-- python: código Python
-- question: perguntas
-- instruction: instruções/geração de código
-- unknown: não reconhecido
+Para outros comandos, use a estrutura:
 
-Ações possíveis:
-- store: armazenar na memória
-- retrieve: recuperar da memória
-- run: executar comando
-- ask: fazer pergunta
-- generate: gerar código
-- explain: explicar conceito
-- unknown: não reconhecido
+1. Memória:
+"lembre que minha GPU é RX 6400" ->
+{{
+    "type": "memory",
+    "action": "store",
+    "target": "gpu",
+    "content": "RX 6400"
+}}
 
-Comando: {command}
+2. Terminal:
+"execute ls na pasta atual" ->
+{{
+    "type": "terminal",
+    "action": "run",
+    "target": null,
+    "content": "ls"
+}}
 
-Retorne APENAS o JSON, sem texto adicional."""
+3. Python:
+"rode o código print('hello')" ->
+{{
+    "type": "python",
+    "action": "run",
+    "target": null,
+    "content": "print('hello')"
+}}
+
+4. Perguntas:
+"qual é a capital do Brasil?" ->
+{{
+    "type": "question",
+    "action": "ask",
+    "target": null,
+    "content": "Qual é a capital do Brasil?"
+}}
+
+5. Instruções:
+"crie uma função que calcule fibonacci" ->
+{{
+    "type": "instruction",
+    "action": "generate",
+    "target": null,
+    "content": "criar função fibonacci"
+}}
+
+RETORNE APENAS O JSON, sem nenhum texto adicional.
+
+Comando: {command}"""
+
+    print("\n=== DEBUG: PROMPT ===")
+    print(prompt)
+    print("===================\n")
 
     try:
         # Executa o LLM
         response = run_llm(prompt)
         
+        print("\n=== DEBUG: RESPOSTA DO MODELO ===")
+        print(response)
+        print("==============================\n")
+        
         # Tenta extrair o JSON da resposta
         try:
             # Remove possíveis textos antes ou depois do JSON
             json_str = response.strip()
-            if "```json" in json_str:
-                json_str = json_str.split("```json")[1].split("```")[0]
-            elif "```" in json_str:
-                json_str = json_str.split("```")[1]
+            
+            # Encontra o primeiro { e o último }
+            start = json_str.find('{')
+            end = json_str.rfind('}') + 1
+            
+            if start >= 0 and end > start:
+                json_str = json_str[start:end]
+            
+            print("\n=== DEBUG: JSON EXTRAÍDO ===")
+            print(json_str)
+            print("=========================\n")
             
             # Tenta fazer o parse do JSON
             intent = json.loads(json_str)
@@ -313,24 +333,54 @@ Retorne APENAS o JSON, sem texto adicional."""
             intent["target"] = intent["target"] if intent["target"] else None
             intent["content"] = intent["content"].strip()
             
+            print("\n=== DEBUG: INTENT FINAL ===")
+            print(json.dumps(intent, indent=2))
+            print("========================\n")
+            
             return intent
             
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"\nERRO ao fazer parse do JSON: {e}")
             # Se falhar, tenta uma segunda vez com um prompt mais específico
-            retry_prompt = f"""O comando anterior retornou uma resposta inválida.
-Por favor, retorne APENAS um JSON válido com a estrutura:
+            retry_prompt = f"""Analise o comando e retorne APENAS um JSON válido com a estrutura:
 {{
-    "type": "tipo do comando",
-    "action": "ação específica",
-    "target": "alvo ou chave (se aplicável)",
-    "content": "conteúdo principal"
+    "type": "tipo do comando (greeting, memory, terminal, python, question, instruction)",
+    "action": "ação (respond, store, retrieve, run, ask, generate)",
+    "target": "alvo ou chave se aplicável, null caso contrário",
+    "content": "conteúdo principal do comando"
 }}
+
+Para cumprimentos como "oi", "olá", etc, use EXATAMENTE:
+{{
+    "type": "question",
+    "action": "ask",
+    "target": null,
+    "content": "Olá! Como posso ajudar?"
+}}
+
+RETORNE APENAS O JSON, sem nenhum texto adicional.
 
 Comando: {command}"""
             
+            print("\n=== DEBUG: RETRY PROMPT ===")
+            print(retry_prompt)
+            print("========================\n")
+            
             retry_response = run_llm(retry_prompt)
+            
+            print("\n=== DEBUG: RETRY RESPONSE ===")
+            print(retry_response)
+            print("==========================\n")
+            
             try:
-                intent = json.loads(retry_response.strip())
+                # Encontra o primeiro { e o último }
+                start = retry_response.find('{')
+                end = retry_response.rfind('}') + 1
+                
+                if start >= 0 and end > start:
+                    retry_response = retry_response[start:end]
+                
+                intent = json.loads(retry_response)
                 return intent
             except json.JSONDecodeError:
                 # Se ainda falhar, retorna uma intenção desconhecida
@@ -342,6 +392,7 @@ Comando: {command}"""
                 }
                 
     except Exception as e:
+        print(f"\nERRO ao executar LLM: {e}")
         logging.error(f"Erro ao analisar intenção: {str(e)}")
         return {
             "type": "unknown",
@@ -351,4 +402,4 @@ Comando: {command}"""
         }
 
 # Interface pública
-__all__ = ['run_python_code', 'Executor', 'analyze_intent'] 
+__all__ = ['run_python_code', 'analyze_intent'] 

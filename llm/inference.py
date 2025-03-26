@@ -68,9 +68,17 @@ def run_llm(prompt: str, max_tokens: int = 128) -> str:
         # Extrai a resposta do modelo
         output = result.stdout
         
-        # Remove o prompt e tokens especiais
+        # Remove tokens especiais e limpa a resposta
         response = output.split("<|im_start|>assistant")[-1].strip()
         response = response.replace("<|im_end|>", "").strip()
+        response = response.replace("[end of text]", "").strip()
+        response = response.replace("<|im_start|>", "").strip()
+        response = response.replace("user", "").strip()
+        response = response.replace("assistant:", "").strip()
+        
+        # Remove o prompt original da resposta
+        if prompt in response:
+            response = response.replace(prompt, "").strip()
         
         # Log de sucesso
         logging.info(f"Resposta gerada para prompt: {prompt[:50]}...")

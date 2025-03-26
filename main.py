@@ -69,6 +69,12 @@ class A3XInterface:
         """Mostra a ajuda."""
         print(f"\n{Colors.BOLD}A³X - Interface Interativa{Colors.ENDC}")
         print("\nComandos disponíveis:")
+        print("1. Cumprimentos: 'oi', 'olá', 'bom dia'")
+        print("2. Memória: 'lembre que...', 'recupere...'")
+        print("3. Terminal: 'rode o comando...'")
+        print("4. Python: 'rode python...'")
+        print("5. Perguntas: 'qual é...', 'me diga...'")
+        print("\nComandos especiais:")
         print(f"{Colors.GREEN}!help{Colors.ENDC} - Mostra esta ajuda")
         print(f"{Colors.GREEN}!clear{Colors.ENDC} - Limpa o terminal")
         print(f"{Colors.GREEN}!exit{Colors.ENDC} - Sai do programa")
@@ -76,14 +82,6 @@ class A3XInterface:
         print("\nModo multilinha:")
         print("Digite ... para entrar no modo multilinha")
         print("Digite >>> para sair do modo multilinha")
-        print("\nExemplos de uso:")
-        print("1. Cálculo simples: 2 + 2")
-        print("2. Modo multilinha:")
-        print("   ...")
-        print("   x = 10")
-        print("   y = 20")
-        print("   print(x + y)")
-        print("   >>>")
         print("\nDica: Use Ctrl+C para interromper um comando\n")
         
     def _get_next_command(self):
@@ -137,23 +135,6 @@ class A3XInterface:
             return False
         return True
     
-    def _process_command(self, command):
-        """Processa um comando."""
-        start_time = time.time()
-        result = self.executor.process_command(command)
-        execution_time = time.time() - start_time
-        
-        # Salva no histórico
-        self.history.append({
-            'command': command,
-            'result': str(result),
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'execution_time': execution_time
-        })
-        self._save_history()
-        
-        return result, execution_time
-    
     def _clear_screen(self):
         """Limpa o terminal."""
         os.system('clear' if os.name == 'posix' else 'cls')
@@ -174,10 +155,29 @@ class A3XInterface:
                     if self._process_special_command(command):
                         continue
                 
-                result, execution_time = self._process_command(command)
-                print(f"\n{Colors.GREEN}Resultado:{Colors.ENDC}")
-                print(result)
-                print(f"\n{Colors.CYAN}Tempo de execução: {self._format_time(execution_time)}{Colors.ENDC}\n")
+                # Registra início da execução
+                start_time = time.time()
+                
+                # Processa o comando através do Executor
+                result = self.executor.process_command(command)
+                
+                # Calcula tempo de execução
+                execution_time = time.time() - start_time
+                
+                # Registra no histórico
+                self.history.append({
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'command': command,
+                    'result': str(result),
+                    'execution_time': execution_time
+                })
+                self._save_history()
+                
+                # Exibe resultado
+                if result:
+                    print(f"\n{Colors.GREEN}Resultado:{Colors.ENDC}")
+                    print(result)
+                print(f"\n{Colors.CYAN}Tempo: {self._format_time(execution_time)}{Colors.ENDC}\n")
                 
             except KeyboardInterrupt:
                 print("\nUse !exit para sair.")
