@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 """
-Wrapper Python para execução de modelos GGUF usando llama.cpp com suporte a GPU AMD via ROCm.
+Módulo LLM do A³X - Interface com modelo de linguagem.
 """
 
 import subprocess
+import logging
 from pathlib import Path
-import os
 
-# Configurações do modelo e binário
-LLAMA_CPP_DIR = Path(__file__).parent.parent / "llama.cpp"
-MODEL_PATH = LLAMA_CPP_DIR / "models" / "dolphin-2.2.1-mistral-7b.Q4_K_M.gguf"
-BINARY_PATH = LLAMA_CPP_DIR / "build" / "bin" / "llama-cli"
+# Configuração de logging
+logging.basicConfig(
+    filename='logs/llm.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Caminhos
+BINARY_PATH = Path('bin/llama-cli')
+MODEL_PATH = Path('models/llama-2-7b-chat.gguf')
 
 def format_prompt(prompt: str) -> str:
-    """
-    Formata o prompt no estilo chat/instruct do modelo.
-    
-    Args:
-        prompt: O prompt do usuário
-        
-    Returns:
-        str: O prompt formatado
-    """
-    return f"<|im_start|>user {prompt} <|im_end|> <|im_start|>assistant"
+    """Formata o prompt para o modelo."""
+    return f"<|im_start|>user\n{prompt}\n<|im_start|>assistant"
 
 def run_llm(prompt: str, max_tokens: int = 128) -> str:
     """
@@ -74,10 +72,13 @@ def run_llm(prompt: str, max_tokens: int = 128) -> str:
         response = output.split("<|im_start|>assistant")[-1].strip()
         response = response.replace("<|im_end|>", "").strip()
         
+        # Log de sucesso
+        logging.info(f"Resposta gerada para prompt: {prompt[:50]}...")
+        
         return response
         
     except subprocess.CalledProcessError as e:
-        print(f"Erro na execução: {e.stderr}")
+        logging.error(f"Erro na execução: {e.stderr}")
         raise
 
 if __name__ == "__main__":

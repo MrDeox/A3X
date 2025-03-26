@@ -1,7 +1,7 @@
 """
-Wrapper Python para execução de modelos GGUF usando llama.cpp com suporte a GPU AMD via ROCm.
+Módulo LLM do A³X.
 """
 
-from .inference import run_llm, format_prompt
+from .inference import run_llm
 
-__all__ = ['run_llm', 'format_prompt'] 
+__all__ = ['run_llm'] 

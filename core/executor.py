@@ -5,7 +5,8 @@ Responsável por interpretar comandos e acionar os módulos apropriados.
 """
 
 import re
-from typing import Optional, Dict, Any
+import logging
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 # Importações dos módulos
@@ -13,6 +14,13 @@ from llm.inference import run_llm
 from cli import execute
 from core import run_python_code
 from memory import store, retrieve
+
+# Configuração de logging
+logging.basicConfig(
+    filename='logs/executor.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class Executor:
     """
@@ -22,7 +30,7 @@ class Executor:
     
     def __init__(self):
         """Inicializa o Executor com suas dependências e configurações."""
-        self.command_history: list = []
+        self.command_history: List[Dict[str, Any]] = []
         self.last_result: Optional[str] = None
         self.context: Dict[str, Any] = {}
         
@@ -39,189 +47,38 @@ class Executor:
     def _log(self, message: str, level: str = "INFO") -> None:
         """Registra uma mensagem no log interno."""
         print(f"[{level}] {message}")
+        logging.info(message)
     
-    def _think(self, input_text: str) -> Dict[str, Any]:
-        """
-        [Pensar] Analisa o texto e identifica a intenção.
-        
-        Args:
-            input_text: Texto do comando
-            
-        Returns:
-            Dict com informações sobre a intenção e ação necessária
-        """
-        self._log(f"Analisando comando: {input_text}")
-        
-        # Identifica o tipo de comando
-        command_type = None
-        for cmd_type, pattern in self.patterns.items():
-            if re.match(pattern, input_text.lower()):
-                command_type = cmd_type
+    def _extract_code(self, text: str) -> str:
+        """Extrai código Python do texto."""
+        # Remove prefixos comuns
+        for prefix in ['rode python', 'execute python', 'run python']:
+            if text.lower().startswith(prefix):
+                return text[len(prefix):].strip()
+        return text
+    
+    def _extract_command(self, text: str) -> str:
+        """Extrai comando shell do texto."""
+        # Remove prefixos comuns
+        for prefix in ['execute o comando', 'rode o comando', 'execute', 'rode']:
+            if text.lower().startswith(prefix):
+                return text[len(prefix):].strip()
+        return text
+    
+    def _extract_key_value(self, text: str) -> tuple[str, str]:
+        """Extrai chave e valor do texto para armazenamento."""
+        # Remove prefixos
+        for prefix in ['lembre', 'memorize', 'store']:
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):].strip()
                 break
-        
-        # Se não encontrou padrão, assume ser uma pergunta geral
-        if not command_type:
-            command_type = 'general_question'
-        
-        self._log(f"Tipo de comando identificado: {command_type}")
-        
-        return {
-            'type': command_type,
-            'original_text': input_text,
-            'context': self.context
-        }
-    
-    def _decide(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        [Decidir] Determina qual ação executar baseado na análise.
-        
-        Args:
-            analysis: Resultado da análise do comando
+                
+        # Divide em chave e valor
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2:
+            raise ValueError("Formato inválido. Use: lembre chave valor")
             
-        Returns:
-            Dict com a decisão tomada e parâmetros necessários
-        """
-        self._log("Decidindo ação apropriada...")
-        
-        command_type = analysis['type']
-        text = analysis['original_text']
-        
-        # Mapeia tipo de comando para ação
-        action_map = {
-            'terminal_command': {
-                'module': 'cli',
-                'action': 'execute',
-                'params': {'command': re.sub(self.patterns['terminal_command'], '', text)}
-            },
-            'python_code': {
-                'module': 'core',
-                'action': 'run_python_code',
-                'params': {'code': re.sub(self.patterns['python_code'], '', text)}
-            },
-            'memory_store': {
-                'module': 'memory',
-                'action': 'store',
-                'params': {'key': text.split()[1], 'value': ' '.join(text.split()[2:])}
-            },
-            'memory_retrieve': {
-                'module': 'memory',
-                'action': 'retrieve',
-                'params': {'key': re.sub(self.patterns['memory_retrieve'], '', text)}
-            },
-            'question': {
-                'module': 'llm',
-                'action': 'run_llm',
-                'params': {'prompt': text, 'max_tokens': 128}
-            },
-            'instruction': {
-                'module': 'llm',
-                'action': 'run_llm',
-                'params': {'prompt': text, 'max_tokens': 256}
-            },
-            'general_question': {
-                'module': 'llm',
-                'action': 'run_llm',
-                'params': {'prompt': text, 'max_tokens': 128}
-            }
-        }
-        
-        decision = action_map.get(command_type)
-        if not decision:
-            decision = {
-                'module': 'llm',
-                'action': 'run_llm',
-                'params': {'prompt': text, 'max_tokens': 128}
-            }
-        
-        self._log(f"Ação decidida: {decision['module']}.{decision['action']}")
-        return decision
-    
-    def _execute(self, decision: Dict[str, Any]) -> str:
-        """
-        [Executar] Aciona o módulo correspondente com os parâmetros definidos.
-        
-        Args:
-            decision: Decisão tomada com módulo e parâmetros
-            
-        Returns:
-            str: Resultado da execução
-        """
-        self._log("Executando ação...")
-        
-        module = decision['module']
-        action = decision['action']
-        params = decision['params']
-        
-        try:
-            if module == 'cli':
-                result = execute(**params)
-            elif module == 'core':
-                result = run_python_code(**params)
-            elif module == 'memory':
-                if action == 'store':
-                    result = store(**params)
-                else:
-                    result = retrieve(**params)
-            elif module == 'llm':
-                result = run_llm(**params)
-            else:
-                raise ValueError(f"Módulo desconhecido: {module}")
-            
-            self._log("Ação executada com sucesso")
-            return str(result)
-            
-        except Exception as e:
-            self._log(f"Erro na execução: {str(e)}", "ERROR")
-            raise
-    
-    def _evaluate(self, result: str) -> bool:
-        """
-        [Avaliar] Verifica se o resultado é satisfatório.
-        
-        Args:
-            result: Resultado da execução
-            
-        Returns:
-            bool: True se o resultado é satisfatório
-        """
-        self._log("Avaliando resultado...")
-        
-        # Verifica se o resultado está vazio
-        if not result or result.isspace():
-            self._log("Resultado vazio", "WARNING")
-            return False
-            
-        # Verifica se houve erro explícito
-        if "error" in result.lower() or "exception" in result.lower():
-            self._log("Erro detectado no resultado", "WARNING")
-            return False
-            
-        self._log("Resultado avaliado como satisfatório")
-        return True
-    
-    def _correct(self, result: str, decision: Dict[str, Any]) -> Optional[str]:
-        """
-        [Corrigir] Tenta uma abordagem alternativa se necessário.
-        
-        Args:
-            result: Resultado anterior
-            decision: Decisão anterior
-            
-        Returns:
-            Optional[str]: Novo resultado ou None se não houver correção
-        """
-        self._log("Tentando correção...")
-        
-        # Se for uma pergunta, tenta reformular
-        if decision['module'] == 'llm':
-            new_params = decision['params'].copy()
-            new_params['prompt'] = f"Por favor, reformule sua resposta de forma mais clara e direta: {new_params['prompt']}"
-            try:
-                return run_llm(**new_params)
-            except Exception as e:
-                self._log(f"Erro na correção: {str(e)}", "ERROR")
-        
-        return None
+        return parts[0], parts[1]
     
     def process_command(self, input_text: str) -> str:
         """
@@ -231,37 +88,65 @@ class Executor:
             input_text: Texto do comando
             
         Returns:
-            str: Resultado do processamento
+            str: Resultado da execução
         """
         try:
-            # [Pensar]
-            analysis = self._think(input_text)
+            # Registra comando no histórico
+            self.command_history.append({
+                'input': input_text,
+                'timestamp': None  # TODO: Adicionar timestamp
+            })
             
-            # [Decidir]
-            decision = self._decide(analysis)
+            # Identifica tipo de comando
+            command_type = None
+            for cmd_type, pattern in self.patterns.items():
+                if re.match(pattern, input_text.lower()):
+                    command_type = cmd_type
+                    break
             
-            # [Executar]
-            result = self._execute(decision)
+            if not command_type:
+                # Se não identificou, trata como pergunta
+                command_type = 'question'
             
-            # [Avaliar]
-            if not self._evaluate(result):
-                # [Corrigir]
-                corrected_result = self._correct(result, decision)
-                if corrected_result:
-                    result = corrected_result
+            # Processa comando
+            if command_type == 'terminal_command':
+                command = self._extract_command(input_text)
+                result = execute(command)
+                
+            elif command_type == 'python_code':
+                code = self._extract_code(input_text)
+                result = run_python_code(code)
+                
+            elif command_type == 'memory_store':
+                key, value = self._extract_key_value(input_text)
+                store(key, value)
+                result = "Valor armazenado com sucesso"
+                
+            elif command_type == 'memory_retrieve':
+                key = input_text.split(maxsplit=1)[1]
+                result = retrieve(key) or "Chave não encontrada"
+                
+            elif command_type == 'question':
+                result = run_llm(input_text)
+                
+            elif command_type == 'instruction':
+                result = run_llm(input_text)
+                
+            else:
+                result = "Comando não reconhecido"
             
-            # Atualiza histórico e contexto
-            self.command_history.append(input_text)
+            # Atualiza último resultado
             self.last_result = result
-            self.context['last_command'] = input_text
-            self.context['last_result'] = result
+            
+            # Registra resultado no histórico
+            self.command_history[-1]['result'] = result
             
             return result
             
         except Exception as e:
-            error_msg = f"Erro no processamento: {str(e)}"
+            error_msg = f"Erro ao processar comando: {str(e)}"
             self._log(error_msg, "ERROR")
-            return f"Preciso de mais contexto para agir com precisão. Pode reformular?\nErro: {error_msg}"
+            return error_msg
 
 if __name__ == "__main__":
     # Exemplo de uso
