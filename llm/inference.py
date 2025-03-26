@@ -16,7 +16,7 @@ logging.basicConfig(
 
 # Caminhos
 BINARY_PATH = Path('bin/llama-cli')
-MODEL_PATH = Path('models/llama-2-7b-chat.gguf')
+MODEL_PATH = Path('models/dolphin-2.2.1-mistral-7b.Q4_K_M.gguf')
 
 def format_prompt(prompt: str) -> str:
     """Formata o prompt para o modelo."""
