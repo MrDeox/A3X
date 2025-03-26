@@ -1,7 +1,7 @@
 """
-Módulo Core do A³X.
+Módulo Core do A³X - Funcionalidades principais.
 """
 
-from .executor import Executor
+from .core import run_python_code
 
-__all__ = ['Executor'] 
+__all__ = ['run_python_code'] 

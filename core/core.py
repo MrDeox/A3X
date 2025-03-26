@@ -10,6 +10,7 @@ import builtins
 import contextlib
 from typing import Dict, Any, Optional
 from pathlib import Path
+from io import StringIO
 
 # Configuração de logging
 logging.basicConfig(
@@ -174,7 +175,7 @@ def run_python_code(code: str) -> str:
         
         # Captura stdout
         output = []
-        with contextlib.redirect_stdout(contextlib.StringIO()) as stdout:
+        with contextlib.redirect_stdout(StringIO()) as stdout:
             # Executa o código
             exec(code, sandbox)
             
