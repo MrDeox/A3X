@@ -52,14 +52,30 @@ def skill_manage_files(action_input: dict, agent_memory: dict, agent_history: li
                  return {"status": "error", "action": "manage_files_failed", "data": {"message": "A modificação de arquivos só é permitida no diretório atual."}}
             if not os.path.exists(file_name):
                 return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Arquivo '{file_name}' não encontrado para adicionar conteúdo."}}
-            with open(file_name, "a", encoding="utf-8") as f:
-                # Adiciona newline se o arquivo não estiver vazio E não terminar com newline
-                if os.path.getsize(file_name) > 0:
-                     f.seek(0, os.SEEK_END)
-                     f.seek(f.tell() - 1, os.SEEK_SET)
-                     if f.read(1) != '\n':
-                          f.write('\n')
+            with open(file_name, "a+", encoding="utf-8") as f:
+                # Ir para o final para anexar, mas verificar antes
+                f.seek(0, os.SEEK_END) # Garante estar no final
+                needs_newline = False
+                if f.tell() > 0: # Se o arquivo não estiver vazio
+                    # Recua 1 caractere para ler o último
+                    # Usar f.tell() - 1 pode ser problemático com encodings multibyte no final.
+                    # Uma abordagem mais segura é ler um pouco mais e verificar o último caractere.
+                    # Mas para simplicidade e casos comuns, vamos tentar com seek -1 primeiro.
+                    try:
+                        f.seek(f.tell() - 1, os.SEEK_SET)
+                        if f.read(1) != '\n':
+                            needs_newline = True
+                    except OSError as seek_err:
+                         # Pode falhar em arquivos muito pequenos ou com problemas de encoding
+                         print(f"[Warn Manage Files] Erro ao tentar verificar último caractere em '{file_name}' (seek -1): {seek_err}. Assumindo que precisa de newline.")
+                         needs_newline = True # Assume que precisa por segurança
+
+                # Volta para o final para escrever
+                f.seek(0, os.SEEK_END)
+                if needs_newline:
+                    f.write('\n')
                 f.write(content)
+
             return {"status": "success", "action": "file_appended", "data": {"message": f"Conteúdo adicionado ao arquivo '{file_name}'."}}
 
         # --- Ação: Listar Arquivos ---

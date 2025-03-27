@@ -103,11 +103,30 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
                     # Attempt to fix common JSON errors before parsing
                     json_str = json_str.replace(r'\\"', r'"').replace(r"\'", r"'") # Handle escaped quotes if needed
                     try:
-                        action_input = json.loads(json_str)
-                    except json.JSONDecodeError as json_e:
-                        print(f"[Agent Parse ERROR] Falha ao decodificar JSON: {json_e}\nJSON String Tentada: {json_str}")
-                        # Try a more lenient parse? Or return error? For now, return None.
-                        action_input = None
+                        # Ensure proper JSON parsing even with potential surrounding text/markdown
+                        # Find the start and end of the JSON block
+                        json_start = json_str.find('{')
+                        json_end = json_str.rfind('}') + 1
+                        if json_start != -1 and json_end != 0:
+                            json_str = json_str[json_start:json_end]
+                            # Clean potential markdown backticks
+                            json_str = json_str.strip().strip('`')
+                            # Attempt to parse the cleaned JSON string
+                            action_input = json.loads(json_str)
+                        else:
+                            # Handle cases where JSON block markers aren't found
+                            print(f"[Agent Parse WARN] Could not find JSON block in action string: {json_str}")
+                            action = "error_parsing_action"
+                            action_input = {"error": "Malformed action block, JSON markers not found."}
+                    except json.JSONDecodeError as e:
+                        print(f"[Agent Parse ERROR] JSON Decode Error: {e} in string: '{json_str}'")
+                        # Fallback or error handling if JSON is truly malformed
+                        action = "error_parsing_action"
+                        action_input = {"error": f"Invalid JSON format: {e}", "original_string": json_str}
+                    except Exception as e: # Catch other potential errors during parsing
+                        print(f"[Agent Parse ERROR] Unexpected error parsing action JSON: {e} in string: '{json_str}'")
+                        action = "error_parsing_action"
+                        action_input = {"error": f"Unexpected error: {e}", "original_string": json_str}
                 else:
                      # If no JSON block found, maybe it's a simple string for final_answer?
                      if action_name == "final_answer" and input_str:
