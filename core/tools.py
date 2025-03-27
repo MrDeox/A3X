@@ -25,7 +25,7 @@ except ImportError as e:
     def skill_generate_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_generate_code não carregada"}}
     def skill_execute_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_execute_code não carregada"}}
     def skill_modify_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_modify_code não carregada"}}
-
+    def skill_final_answer(*args, **kwargs): return {"status": "error", "data": {"message": "skill_final_answer não carregada"}}
 
 # Definição inicial das ferramentas (Formato pode evoluir)
 # Usaremos um dicionário onde a chave é o nome da ferramenta
@@ -46,7 +46,7 @@ TOOLS = {
     },
     "list_files": {
         "function": skill_manage_files,
-        "description": "Lista arquivos em um diretório com base em uma extensão ou padrão. NÃO use para criar, deletar ou modificar arquivos.",
+        "description": "Lista os arquivos e diretórios no diretório de trabalho atual ou em um subdiretório especificado.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -55,12 +55,12 @@ TOOLS = {
                     "description": "A ação a ser realizada (DEVE ser 'list')",
                     "enum": ["list"]
                 },
-                "file_extension": {
+                "directory": {
                     "type": "string",
-                    "description": "A extensão dos arquivos a serem listados (ex: '.py', '.txt') ou um padrão glob (ex: '*.log'). (obrigatório para listagem)"
-                },
+                    "description": "O subdiretório opcional para listar (relativo ao diretório de trabalho). Deixe vazio ou omita para listar o diretório atual."
+                }
             },
-            "required": ["action", "file_extension"]
+            "required": ["action"] # Only action is required for list
         }
     },
     "generate_code": {
@@ -119,20 +119,86 @@ TOOLS = {
             "required": ["modification", "target_code_description"]
         }
     },
-    # --- Adicionaremos create_file, append_to_file, delete_file, execute_code, etc., aqui depois ---
+    # --- File Management Tools (Using the single refactored skill) ---
+    "create_file": {
+        "function": skill_manage_files,
+        "description": "Cria um NOVO arquivo de texto com o nome e conteúdo EXATAMENTE como especificados. Se o arquivo já existir, seu conteúdo será COMPLETAMENTE SUBSTITUÍDO.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "A ação a ser realizada (DEVE ser 'create')",
+                    "enum": ["create"]
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "O nome completo (incluindo extensão, ex: 'notas.txt', 'config.json') do arquivo a ser criado/sobrescrito (obrigatório)."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "O conteúdo de texto EXATO a ser escrito no arquivo (obrigatório)."
+                }
+            },
+            "required": ["action", "file_name", "content"]
+        }
+    },
+    "append_to_file": {
+        "function": skill_manage_files,
+        "description": "Adiciona (anexa) conteúdo de texto AO FINAL de um arquivo JÁ EXISTENTE. Se o arquivo não existir, esta ferramenta falhará.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "A ação a ser realizada (DEVE ser 'append')",
+                    "enum": ["append"]
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "O nome do arquivo EXISTENTE ao qual adicionar conteúdo (obrigatório)."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "O conteúdo de texto EXATO a ser adicionado ao final do arquivo (obrigatório)."
+                }
+            },
+            "required": ["action", "file_name", "content"]
+        }
+    },
+    "delete_file": {
+        "function": skill_manage_files,
+        "description": "Exclui um arquivo especificado do diretório de trabalho. Use com cuidado!",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "A ação a ser realizada (DEVE ser 'delete')",
+                    "enum": ["delete"]
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "O nome do arquivo a ser excluído (obrigatório)."
+                }
+            },
+            "required": ["action", "file_name"]
+        }
+    },
+    # --- End File Management Tools ---
     "final_answer": {
-         "function": skill_final_answer,
-         "description": "Fornece a resposta final e completa para a solicitação original do usuário, APÓS todas as ferramentas necessárias terem sido usadas e as informações coletadas.",
-         "parameters": {
-             "type": "object",
-             "properties": {
-                 "answer": {
-                     "type": "string",
-                     "description": "A resposta final e concisa para apresentar ao usuário."
-                 }
-             },
-             "required": ["answer"]
-         }
+        "function": skill_final_answer,
+        "description": "Fornece a resposta final ao usuário quando o objetivo foi completamente alcançado.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "answer": {
+                    "type": "string",
+                    "description": "A resposta final e completa para a solicitação original do usuário."
+                }
+            },
+            "required": ["answer"]
+        }
     }
 }
 
