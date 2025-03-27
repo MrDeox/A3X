@@ -1,23 +1,22 @@
 # Importa as funções de skill
 from skills.generate_code import skill_generate_code
 from skills.manage_files import skill_manage_files
-from skills.web_search import skill_search_web
-from skills.memory import skill_remember_info, skill_recall_info
+from skills.search_web import skill_search_web
+from skills.remember_info import skill_remember_info
+from skills.recall_info import skill_recall_info
 from skills.modify_code import skill_modify_code
+from skills.execute_code import skill_execute_code
 from skills.unknown import skill_unknown
 
 # Dispatcher agora usa as funções importadas
 SKILL_DISPATCHER = {
     "generate_code": skill_generate_code,
     "manage_files": skill_manage_files,
-    "list_files": skill_manage_files, # Variação mapeada para a mesma função
-    "search_web": skill_search_web,     # Placeholder
-    "weather_forecast": skill_search_web, # Mapear intenção específica para skill genérica por enquanto
-    "remember_info": skill_remember_info, # Skill real
-    "recall_info": skill_recall_info,     # Nova skill
-    "get_value": skill_recall_info,       # Mapear variações
-    "get_population": skill_search_web, # Mapear intenção específica para skill genérica por enquanto
+    "search_web": skill_search_web,
+    "remember_info": skill_remember_info,
+    "recall_info": skill_recall_info,
     "modify_code": skill_modify_code,
+    "execute_code": skill_execute_code,
     # Mapeamentos de erro e fallback
     "error_parsing": skill_unknown,
     "error_connection": skill_unknown,

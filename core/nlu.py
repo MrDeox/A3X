@@ -4,171 +4,195 @@ import re
 from .config import LLAMA_SERVER_URL, MAX_HISTORY_TURNS
 
 def create_nlu_prompt(command: str, history: list = None) -> str:
-    """Cria o prompt para o LLM analisar o comando."""
-    # Construir o histórico recente
-    history_text = ""
-    if history:
-        history_text = "### Histórico Recente da Conversa:\n"
-        for entry in history[-MAX_HISTORY_TURNS:]:
-            history_text += f"{entry}\n"
+    """Cria o prompt para o LLM com exemplos few-shot."""
     
-    return f"""Analise o **Comando Atual** do usuário considerando o histórico e responda APENAS com JSON contendo "intent" e "entities".
-               
-{history_text}
-### Exemplos Essenciais
-
+    # Exemplos essenciais (few-shot)
+    examples = """
 Comando: "gere um script python chamado utils.py com uma função hello world"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "generate_code",
-  "entities": {{
+  "entities": {
     "language": "python",
     "construct_type": "function",
     "purpose": "hello world",
     "file_name": "utils.py"
-  }}
-}}
+  }
+}
 ```
 
-Comando: "crie um arquivo config.ini com [DB]\nuser=admin"
+Comando: "crie um arquivo config.ini com [DB]
+user=admin"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "manage_files",
-  "entities": {{
+  "entities": {
     "action": "create",
     "file_name": "config.ini",
-    "content": "[DB]\nuser=admin"
-  }}
-}}
+    "content": "[DB]
+user=admin"
+  }
+}
 ```
 
 Comando: "liste os arquivos .py"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "manage_files",
-  "entities": {{
+  "entities": {
     "action": "list",
     "file_extension": ".py"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "busque na web sobre a história do Python"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "search_web",
-  "entities": {{
+  "entities": {
     "query": "história do Python"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "quem descobriu o Brasil?"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "search_web",
-  "entities": {{
+  "entities": {
     "query": "quem descobriu o Brasil"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "qual a previsão do tempo para amanhã em Curitiba?"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "search_web",
-  "entities": {{
+  "entities": {
     "query": "previsão do tempo Curitiba amanhã"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "Lembre que meu email é arthur@email.com"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "remember_info",
-  "entities": {{
+  "entities": {
     "key": "meu email",
     "value": "arthur@email.com"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "Qual é o meu email?"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "recall_info",
-  "entities": {{
+  "entities": {
     "key": "meu email"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "me diga qual é o objetivo do A3X"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "recall_info",
-  "entities": {{
+  "entities": {
     "key": "objetivo do A3X"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "mostre o objetivo do projeto"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "recall_info",
-  "entities": {{
+  "entities": {
     "key": "objetivo do projeto"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "qual a senha do wifi?"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "recall_info",
-  "entities": {{
+  "entities": {
     "key": "senha do wifi"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "adicione um print 'Feito!' ao final da função anterior"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "modify_code",
-  "entities": {{
+  "entities": {
     "target": "função anterior",
     "modification": "adicione um print 'Feito!' ao final"
-  }}
-}}
+  }
+}
 ```
 
 Comando: "refatore o script hello.py para usar uma função"
 JSON Resultante:
 ```json
-{{
+{
   "intent": "modify_code",
-  "entities": {{
+  "entities": {
     "target": "script hello.py",
     "modification": "refatorar para usar uma função",
     "file_name": "hello.py"
-  }}
-}}
+  }
+}
 ```
+
+Comando: "execute o código anterior"
+JSON Resultante:
+```json
+{
+  "intent": "execute_code",
+  "entities": {}
+}
+```
+
+Comando: "execute o script teste.py"
+JSON Resultante:
+```json
+{
+  "intent": "execute_code",
+  "entities": {
+    "file_name": "teste.py"
+  }
+}
+```
+"""
+    
+    # Construir o prompt completo
+    prompt = f"""Analise o **Comando Atual** do usuário considerando o histórico e responda APENAS com JSON contendo "intent" e "entities".
+               
+### Histórico Recente da Conversa:
+{history}
+
+### Exemplos Essenciais
+
+{examples}
 
 ### Comando Atual
 
@@ -176,6 +200,8 @@ Comando: "{command}"
 JSON Resultante:
 ```json
 """
+    
+    return prompt
 
 def interpret_command(user_input: str, history: list) -> dict:
     """Interpreta o comando do usuário usando o LLM."""

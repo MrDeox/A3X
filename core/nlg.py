@@ -2,7 +2,7 @@ import requests
 import json
 from .config import LLAMA_SERVER_URL, MAX_HISTORY_TURNS
 
-def generate_natural_response(skill_result: dict, history: list) -> str:
+def generate_simplified_response(skill_result: dict, history: list) -> str:
     """Retorna a mensagem principal do resultado da skill (NLG Simplificada)."""
     print("\n[NLG Simplificada]")
     status = skill_result.get("status")
@@ -22,69 +22,110 @@ def generate_natural_response(skill_result: dict, history: list) -> str:
     else: # Erro
          return "Desculpe, ocorreu um erro ao processar seu comando."
 
-def generate_natural_response_old(skill_result: dict, history: list) -> str:
-    """Gera uma resposta natural baseada na ação e dados recebidos."""
-    print("\n[NLG] Gerando resposta natural...")
+def generate_natural_response(skill_result: dict, history: list) -> str:
+    """Gera uma resposta natural usando o LLM local baseada na ação e histórico."""
+    print("\n[NLG-LLM] Gerando resposta natural...")
     
     # Extrair informações do skill_result
     status = skill_result.get("status")
     action = skill_result.get("action")
     data = skill_result.get("data", {})
     
-    # Primeiro, criar um resumo da ação para o prompt
-    action_summary = f"A ação '{action}' foi tentada."
+    # Pegar o último comando do usuário do histórico
+    last_user_command = ""
+    if history and len(history) > 0:
+        for turn in reversed(history):
+            if turn.get("role") == "user":
+                last_user_command = turn.get("content", "")
+                break
+    
+    # Criar um resumo conciso da ação
+    action_summary = f"Status: {status}\nAção: {action}"
+
+    # Adicionar detalhes específicos baseados na ação
     if status == "success":
-        if action == "info_remembered":
-            action_summary += f" Resultado: Sucesso."
-        elif action == "info_recalled":
-            action_summary += f" Resultado: Sucesso."
-        elif action == "web_search_completed":
-            query = data.get('query')
+        if action == "files_listed":
+            files = data.get('files', [])
+            if files:
+                action_summary += f"\nResumo dos dados: Arquivos encontrados:\n{files}"
+            else:
+                action_summary += "\nResumo dos dados: Nenhum arquivo encontrado."
+
+        elif action == "web_search":
             results = data.get('results', [])
             if results:
-                action_summary += f" Encontrei {len(results)} resultado(s) para '{query}'."
-                # Incluir títulos e snippets no resumo para o LLM
-                action_summary += "\nResultados:\n"
-                for i, result in enumerate(results, 1):
-                    action_summary += f"{i}. {result['title']}\n{result['snippet']}\n"
+                action_summary += f"\nResumo dos dados: Resultados encontrados:\n{results}"
             else:
-                action_summary += f" Não encontrei resultados para '{query}'."
+                action_summary += "\nResumo dos dados: Nenhum resultado encontrado."
+
+        elif action == "code_executed":
+            output = data.get('output', '').strip()
+            if output:
+                # Limita o tamanho do output no prompt para não ficar gigante
+                output_summary = output[:200] + ('...' if len(output) > 200 else '')
+                action_summary += f"\nResumo dos dados: Código executado com a seguinte saída:\n---\n{output_summary}\n---"
+            else:
+                action_summary += f"\nResumo dos dados: Código executado sem saída visível."
+            # Opcional: Adicionar info de 'final_locals' se desejado e não muito grande
+
+        elif action == "web_search_completed" and isinstance(data.get('results'), list):
+            num_results = len(data['results'])
+            titles = [r.get('title', 'Sem título') for r in data['results']]
+            action_summary += f"\nResumo dos dados: {num_results} resultado(s) da web encontrado(s), títulos: {'; '.join(titles)}"
+        
+        elif action in ["code_generated", "code_modified"] and data.get('file_name'):
+            action_summary += f"\nResumo dos dados: Código {'gerado' if action == 'code_generated' else 'modificado'} no arquivo: {data['file_name']}"
+        
+        elif action == "info_recalled" and data.get('value'):
+            action_summary += f"\nResumo dos dados: Informação recuperada para a chave '{data.get('key', '?')}': {data['value']}"
+        
+        # Para outras ações ou se nenhum caso específico se aplicar
+        elif data.get('message'):
+            action_summary += f"\nDetalhes: {data.get('message')}"
     else:
-        action_summary += f" Resultado: {status}. Mensagem: {data.get('message', 'Erro desconhecido')}"
+        # Para ações não bem-sucedidas, manter o comportamento original
+        if data.get('message'):
+            action_summary += f"\nDetalhes: {data.get('message')}"
+    
+    # Construir o prompt para o LLM com instrução atualizada
+    prompt = f"""Você é A³X, um assistente de IA local e prestativo.
+O usuário disse: "{last_user_command}"
+A seguinte ação interna foi realizada:
+{action_summary}
 
-    # Criar o prompt para o LLM
-    prompt = f"""Você é um assistente prestativo. O usuário deu um comando, e a seguinte ação foi realizada internamente:
-'{action_summary}'
+Com base nisso (especialmente no resumo dos dados, se houver) e na conversa recente, gere uma resposta curta, útil e amigável para o usuário final. Não explique a ação interna em detalhes, apenas responda ao usuário de forma natural.
+Resposta para o usuário:"""
 
-Com base nessa ação e na conversa recente, formule uma resposta **concisa e natural** para o usuário final. Seja direto e útil. Evite formalidades excessivas. Não inclua o resumo da ação na sua resposta final, apenas a resposta para o usuário.
-"""
-
-    print(f"  [NLG] Prompt enviado ao LLM:\n---\n{prompt}\n---")
+    print(f"[NLG-LLM] Prompt: {prompt}")
 
     try:
         # Enviar o prompt para o servidor LLM
         headers = {"Content-Type": "application/json"}
         payload = {
             "prompt": prompt,
-            "n_predict": 512,
-            "temperature": 0.7,  # Aumentado para mais criatividade nas respostas
-            "stop": ["```"],
+            "n_predict": 128,  # Limitando para respostas mais concisas
+            "temperature": 0.7,
+            "stop": ["\n", "Usuário:", "A³X:"]
         }
 
         response = requests.post(LLAMA_SERVER_URL, headers=headers, json=payload)
         response.raise_for_status()
 
         response_data = response.json()
-        llm_output = response_data.get("content", "").strip()
+        raw_response = response_data.get("content", "").strip()
+        print(f"[NLG-LLM] Raw Response: {raw_response}")
 
-        # Extrair apenas a resposta, removendo qualquer formatação
-        if "Resposta:" in llm_output:
-            llm_output = llm_output.split("Resposta:")[-1].strip()
+        # Limpar a resposta
+        if "Resposta para o usuário:" in raw_response:
+            raw_response = raw_response.split("Resposta para o usuário:")[-1].strip()
         
-        # Limpa a resposta pegando a primeira linha
-        first_line_response = llm_output.splitlines()[0].strip()
-        return first_line_response if first_line_response else "(Resposta natural gerada estava vazia.)"
+        # Pegar apenas a primeira linha significativa
+        response_lines = [line.strip() for line in raw_response.splitlines() if line.strip()]
+        if response_lines:
+            return response_lines[0]
+        else:
+            raise ValueError("Resposta vazia do LLM")
 
     except Exception as e:
-        print(f"[Erro NLG] Falha ao gerar resposta: {e}")
-        return "(Erro ao gerar resposta natural.)" 
+        print(f"[NLG-LLM] Erro ao gerar resposta: {e}")
+        return f"[LLM indisponível] {generate_simplified_response(skill_result, history)}" 

@@ -1,4 +1,5 @@
 import os
+import glob
 
 def skill_manage_files(entities: dict, original_command: str, intent: str = None, history: list = None) -> dict:
     """Gerencia arquivos (criar, listar, deletar)."""
@@ -22,25 +23,36 @@ def skill_manage_files(entities: dict, original_command: str, intent: str = None
             if not file_name:
                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "Nome do arquivo não especificado."}}
             
-            # Se content for None, cria arquivo vazio
-            if content is None:
-                with open(file_name, "w") as f:
-                    pass
-                return {"status": "success", "action": "file_created", "data": {"message": f"Arquivo vazio '{file_name}' criado."}}
-            else:
-                with open(file_name, "w") as f:
-                    f.write(content)
-                return {"status": "success", "action": "file_created", "data": {"message": f"Arquivo '{file_name}' criado com conteúdo."}}
+            if not content:
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Conteúdo não especificado."}}
+            
+            with open(file_name, "w", encoding="utf-8") as f:
+                f.write(content)
+            return {"status": "success", "action": "file_created", "data": {"message": f"Arquivo '{file_name}' criado com conteúdo."}}
+
+        elif action == "append":
+            if not file_name:
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Nome do arquivo não especificado."}}
+            
+            if not content:
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Conteúdo para adicionar não especificado."}}
+            
+            if not os.path.exists(file_name):
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Arquivo '{file_name}' não encontrado para adicionar conteúdo."}}
+            
+            with open(file_name, "a", encoding="utf-8") as f:
+                f.write(f"\n{content}")
+            return {"status": "success", "action": "file_appended", "data": {"message": f"Conteúdo adicionado ao arquivo '{file_name}'."}}
 
         elif action == "list":
             if not file_extension:
                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "Extensão de arquivo não especificada."}}
             
-            files = [f for f in os.listdir(".") if f.endswith(file_extension)]
+            files = glob.glob(f"*{file_extension}")
             if not files:
                 return {"status": "success", "action": "files_listed", "data": {"message": f"Nenhum arquivo{file_extension} encontrado."}}
             
-            return {"status": "success", "action": "files_listed", "data": {"message": f"Arquivos{file_extension} encontrados:", "files": files}}
+            return {"status": "success", "action": "files_listed", "data": {"message": f"{len(files)} arquivo(s) encontrado(s), como: {', '.join(files[:3])}{'...' if len(files) > 3 else ''}"}}
 
         elif action == "delete":
             if not file_name:
