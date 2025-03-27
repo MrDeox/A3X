@@ -1,0 +1,2 @@
+crie o arquivo teste_planner_ops.txt com o conteúdo 'Linha inicial.'
+adicione a linha 'Segunda linha adicionada.' ao arquivo teste_planner_ops.txt

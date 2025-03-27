@@ -1,0 +1,3 @@
+gere uma função python chamada 'dobrar' que multiplica o input por 2
+modifique o código anterior para adicionar uma linha que imprime o resultado de dobrar(15)
+execute o código modificado 

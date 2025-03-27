@@ -4,71 +4,41 @@ import json
 # Limite de resultados por busca
 MAX_SEARCH_RESULTS = 3
 
-def skill_search_web(entities: dict, original_command: str, intent: str = None, history: list = None) -> dict:
-    """
-    Realiza uma busca na web usando DuckDuckGo.
-    
-    Args:
-        entities (dict): Dicionário contendo as entidades extraídas do comando
-        original_command (str): Comando original do usuário
-        intent (str): Intenção identificada (default: None)
-        history (list): Histórico de interações (default: None)
-        
-    Returns:
-        dict: Resultado estruturado contendo os resultados da busca
-    """
-    print("\n[Skill: Web Search]")
-    print(f"  Entidades recebidas: {entities}")
-    if history:
-        print(f"  Histórico recebido (últimos turnos): {history[-4:]}") # Mostra parte do histórico
-    else:
-        print("  Nenhum histórico fornecido")
-    
-    # Verifica se temos uma query para buscar
-    query = entities.get("query") or entities.get("topic")
+def skill_search_web(action_input: dict, agent_memory: dict, agent_history: list | None = None) -> dict:
+    """Realiza busca web usando DuckDuckGo (Assinatura ReAct)."""
+    print("\n[Skill: Web Search (ReAct)]")
+    print(f"  Action Input: {action_input}")
+
+    # --- Use action_input ---
+    query = action_input.get("query")
     if not query:
         return {
             "status": "error",
             "action": "web_search_failed",
-            "data": {
-                "message": "Não entendi o que buscar."
-            }
+            "data": {"message": "Parâmetro 'query' ausente no Action Input."} # Updated error message
         }
-    
+
     print(f"  Buscando por: '{query}'...")
-    
     try:
-        # Realiza a busca usando DuckDuckGo
+        # --- DDGS logic remains the same ---
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=MAX_SEARCH_RESULTS))
-            
         print(f"  Encontrados {len(results)} resultados.")
-        
-        # Formata os resultados
-        formatted_results = []
-        for result in results:
-            formatted_results.append({
-                "title": result.get("title", ""),
-                "snippet": result.get("body", ""),
-                "url": result.get("link", "")
-            })
-        
+
+        # Use href for url
+        formatted_results = [{"title": r.get("title", ""), "snippet": r.get("body", ""), "url": r.get("href", "")} for r in results]
+
+        # --- Return structure remains the same ---
         return {
             "status": "success",
             "action": "web_search_completed",
             "data": {
                 "query": query,
                 "results": formatted_results,
-                "message": f"Busca por '{query}' concluída."
+                "message": f"Busca por '{query}' concluída com {len(results)} resultado(s)."
             }
         }
-        
     except Exception as e:
-        print(f"  [Erro] Falha na busca: {e}")
-        return {
-            "status": "error",
-            "action": "web_search_failed",
-            "data": {
-                "message": f"Erro ao realizar a busca: {str(e)}"
-            }
-        } 
+        print(f"  [Erro Web Search] Falha na busca: {e}")
+        # traceback.print_exc() # Uncomment for debug
+        return {"status": "error", "action": "web_search_failed", "data": {"message": f"Erro ao realizar a busca: {str(e)}"}} 

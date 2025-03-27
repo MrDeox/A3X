@@ -2,166 +2,106 @@ import requests
 import json
 import re
 from core.config import LLAMA_SERVER_URL
+from core.dispatcher import SKILL_DISPATCHER # Importado para validação
+# from core.llm_clients import call_llm # Assuming you have this - Keep commented if not used
 
-def generate_plan(user_goal: str, nlu_result: dict, history: list, available_skills: list) -> list:
+# Placeholder for keywords that might trigger planning
+PLANNING_KEYWORDS = ["depois", "então", "primeiro", "segundo", "e então", "em seguida", "antes de", "após"]
+
+# Placeholder for intents that are inherently simple
+SIMPLE_INTENTS = ["get_value", "recall_info", "remember_info", "weather_forecast", "search_web", "unknown", "greet", "goodbye"] # Add more as needed
+
+def generate_plan(command: str, nlu_result: dict, history: list, available_skills: list) -> list[dict]:
     """
-    Tenta gerar um plano sequencial de sub-tarefas (skills) para atingir um objetivo do usuário.
+    Analisa o comando e o resultado da NLU para determinar se um plano de múltiplos passos é necessário.
+    Se sim, tenta gerar um plano (atualmente desativado).
+    Se não, retorna um plano de passo único baseado na NLU.
 
     Args:
-        user_goal: O comando original do usuário.
-        nlu_result: O resultado da interpretação inicial da NLU.
+        command: O comando original do usuário.
+        nlu_result: O resultado da interpretação da NLU.
         history: O histórico da conversa.
-        available_skills: Uma lista de strings com os nomes das intenções/skills disponíveis.
+        available_skills: Lista de nomes de skills disponíveis.
 
     Returns:
-        Uma lista de dicionários representando os passos do plano, onde cada dicionário
-        tem 'intent' e 'entities' (similar ao formato nlu_result).
-        Retorna uma lista vazia [] se nenhum plano for necessário ou se o planejamento falhar.
+        Uma lista de dicionários representando os passos do plano,
+        ou uma lista com um único passo se o planejamento não for necessário/possível.
+        Retorna [] se nenhuma ação puder ser determinada.
     """
-    print("\n[Planner] Tentando gerar plano sequencial...")
-    
-    # Lógica para decidir SE o planejamento é necessário
     intent = nlu_result.get("intent", "unknown")
     entities = nlu_result.get("entities", {})
+    needs_planning = False
 
-    # Keywords que indicam sequência de ações
-    keywords_sequence = [" e depois", " e então", " primeiro ", " segundo ", " após ", " em seguida"]
-    contains_sequence_keyword = any(keyword in user_goal.lower() for keyword in keywords_sequence)
+    # 1. Verificar se a intenção é complexa ou se há keywords de planejamento
+    #    Consideramos planejamento necessário se a intenção NÃO for simples.
+    if intent not in SIMPLE_INTENTS:
+        needs_planning = True
+        print(f"[Planner] Intenção '{intent}' pode necessitar de planejamento.")
+    # elif any(keyword in command.lower() for keyword in PLANNING_KEYWORDS):
+    #     needs_planning = True
+    #     print(f"[Planner] Comando contém keywords de planejamento.")
 
-    # Verifica se a intenção é específica (não genérica)
-    is_specific_intent = intent not in ["unknown", "error_parsing", "error_connection", "error_unknown"]
+    # 2. Se o planejamento NÃO for considerado necessário
+    if not needs_planning:
+        print(f"[Planner] Intenção '{intent}' considerada simples. Executando como ação única.")
+        # Retorna um plano de passo único com a intenção original da NLU
+        if intent != "unknown": # Só retorna plano se a NLU achou algo útil
+             # Usamos 'intent' como chave para consistência com NLU
+             return [{"intent": intent, "entities": entities}]
+        else:
+             print("[Planner] NLU retornou 'unknown' e não há necessidade de planejamento complexo. Retornando plano vazio.")
+             return [] # NLU não ajudou, planejamento não necessário, retorna vazio
 
-    # Condição Simplificada: Se NÃO houver keyword de sequência E a intenção for específica, pule.
-    if not contains_sequence_keyword and is_specific_intent:
-        print("[Planner] Nenhuma keyword de sequência e NLU específica. Pulando planejamento.")
-        return [] # Retorna lista vazia, indicando para usar a NLU inicial
+    # 3. Se o planejamento FOI considerado necessário
+    print("[Planner] Comando parece necessitar de planejamento sequencial.")
+
+    # --- CHAMADA AO LLM PARA PLANEJAMENTO (Atualmente Desativado) ---
+    use_llm_planning = False # Mudar para True para ativar
+    if use_llm_planning:
+        print("[Planner] Tentando gerar plano via LLM...")
+        # Placeholder para lógica LLM
+        # prompt = f"..."
+        # try:
+        #     llm_response = call_llm(prompt)
+        #     plan = json.loads(llm_response)
+        #     # Validar plano...
+        #     print(f"[Planner] Plano gerado pelo LLM: {plan}")
+        #     return plan
+        # except Exception as e:
+        #     print(f"[Erro Planner] Falha ao gerar ou parsear plano do LLM: {e}")
+        #     # Fallback: Tentar executar o primeiro passo identificado pela NLU
+        #     print("[Planner] Fallback: Executando primeiro passo da NLU.")
+        #     if intent != "unknown":
+        #          return [{"intent": intent, "entities": entities}]
+        #     else:
+        #          return []
+        pass # Mantém desativado
     else:
-        # Se chegou aqui (tem keyword OU intenção não é específica), prossegue
-        print("[Planner] Comando pode precisar de planejamento (keyword encontrada ou NLU não específica). Consultando LLM...")
-
-    # Construção do prompt para o LLM
-    planning_prompt = f"""<s> Você é um planejador sequencial especializado em decompor objetivos complexos em sub-tarefas.
-    
-### Objetivo do Usuário:
-{user_goal}
-
-### Skills Disponíveis:
-{', '.join(available_skills)}
-
-### Instruções:
-1. Analise o objetivo do usuário e decida se ele pode ser satisfeito por uma única skill ou se precisa ser decomposto.
-2. Se precisar decompor, crie uma sequência de passos usando as skills disponíveis.
-3. Cada passo deve ser um dicionário com:
-   - "intent": uma das skills disponíveis
-   - "entities": parâmetros necessários para essa skill
-4. Se o objetivo pode ser satisfeito por uma única skill, retorne uma lista vazia []
-5. Para criar um arquivo de texto simples com conteúdo específico, use a skill `manage_files` com a entidade `action: create` e o `content` desejado.
-6. Para adicionar conteúdo a um arquivo de texto existente, use a skill `modify_code` com a `modification` apropriada (ex: 'adicione a linha X ao final do arquivo').
-7. Use `generate_code` APENAS quando o objetivo for gerar CÓDIGO executável (Python, etc.), não para simples manipulação de arquivos de texto.
-
-### Exemplos:
-
-Exemplo 1:
-Goal: "Crie um script python hello.py que imprime ola e depois adicione um comentário # Feito"
-Skills: ["generate_code", "modify_code", "manage_files", ...]
-Resultado:
-```json
-[
-    {{"intent": "generate_code", "entities": {{"language": "python", "file_name": "hello.py", "purpose": "imprime ola"}}}},
-    {{"intent": "modify_code", "entities": {{"file_name": "hello.py", "modification": "adicione um comentário # Feito"}}}}
-]
-```
-
-Exemplo 2:
-Goal: "Lembre que meu projeto é o A3X e depois me diga qual o nome dele"
-Skills: ["remember_info", "recall_info", "search_web", ...]
-Resultado:
-```json
-[
-    {{"intent": "remember_info", "entities": {{"key": "meu projeto", "value": "A3X"}}}},
-    {{"intent": "recall_info", "entities": {{"key": "nome do meu projeto"}}}}
-]
-```
-
-Exemplo 3:
-Goal: "Qual a capital da França?"
-Skills: ["search_web", "manage_files", ...]
-Resultado:
-```json
-[]
-```
-
-Exemplo 4:
-Goal: "Crie um arquivo notas.txt com 'Lembrete 1' e depois adicione 'Lembrete 2'"
-Skills: ["manage_files", "modify_code", "generate_code", ...]
-Resultado:
-```json
-[
-    {{"intent": "manage_files", "entities": {{"action": "create", "file_name": "notas.txt", "content": "Lembrete 1"}}}},
-    {{"intent": "modify_code", "entities": {{"file_name": "notas.txt", "modification": "adicione a linha 'Lembrete 2' ao final"}}}}
-]
-```
-
-### Plano para o Objetivo Atual:
-```json
-"""
-
-    print(f"[Planner] Planning Prompt:\n{planning_prompt}")
-
-    try:
-        # Chamada ao LLM
-        payload = {
-            "prompt": planning_prompt,
-            "n_predict": 1024,
-            "temperature": 0.2,
-            "stop": ["```"]
-        }
-        
-        response = requests.post(LLAMA_SERVER_URL, json=payload)
-        response.raise_for_status()
-        response_data = response.json()
-        
-        print(f"[Planner] Raw Plan Response:\n{response_data}")
-        
-        # Extração e limpeza da resposta
-        content = response_data.get("content", "").strip()
-        if not content:
-            print("[Planner] Resposta vazia do LLM")
+        print("[Planner] Planejamento via LLM está DESATIVADO.")
+        # Fallback: Se o planejamento é necessário mas o LLM está off,
+        # retorna um plano de passo único com a intenção original da NLU.
+        # Isso permite que sequências simples (onde a NLU acerta o primeiro passo) funcionem.
+        if intent != "unknown":
+            print(f"[Planner] Retornando plano de passo único com base na NLU: {intent}")
+            return [{"intent": intent, "entities": entities}]
+        else:
+            # Se a NLU retornou unknown e o planejamento LLM está off, não há o que fazer.
+            print("[Planner] NLU retornou 'unknown' e planejamento LLM desativado. Retornando plano vazio.")
             return []
-            
-        # Limpeza do JSON
-        json_match = re.search(r'\[.*\]', content, re.DOTALL)
-        if not json_match:
-            print("[Planner] Nenhuma lista JSON encontrada na resposta")
-            return []
-            
-        json_str = json_match.group(0)
-        print(f"[Planner] JSON extraído:\n{json_str}")
-        
-        # Parsing do JSON
-        try:
-            plan = json.loads(json_str)
-            print(f"[Planner] Plano parseado:\n{json.dumps(plan, indent=2)}")
-            
-            # Validação simples do plano
-            if not isinstance(plan, list):
-                print("[Planner] Resultado não é uma lista")
-                return []
-                
-            for step in plan:
-                if not isinstance(step, dict) or "intent" not in step:
-                    print("[Planner] Passo inválido no plano")
-                    return []
-                    
-            return plan
-            
-        except json.JSONDecodeError as e:
-            print(f"[Planner] Erro ao decodificar JSON: {e}")
-            return []
-            
-    except requests.exceptions.RequestException as e:
-        print(f"[Planner] Erro na requisição ao LLM: {e}")
-        return []
-    except Exception as e:
-        print(f"[Planner] Erro inesperado: {e}")
-        return [] 
+
+    # --- Geração do Plano usando LLM (REMOVIDO/COMENTADO TEMPORARIAMENTE) ---
+    # print("[Planner] Gerando plano com LLM...")
+    # formatted_history = "\n".join([f"{turn['role']}: {turn['content']}" for turn in history])
+    # planning_prompt = f"""...""" # Prompt removido
+    # try:
+    #     headers = {"Content-Type": "application/json"}
+    #     payload = {...} # Payload removido
+    #     print(f"[Planner] Enviando payload ao LLM...")
+    #     response = requests.post(LLAMA_SERVER_URL, headers=headers, json=payload)
+    #     # ... resto da lógica de request e parsing removida ...
+    # except requests.exceptions.RequestException as e_req:
+    #     print(f"[Planner Error] Erro na requisição ao LLM: {e_req}")
+    #     return []
+    # except Exception as e_other:
+    #     print(f"[Planner Error] Erro inesperado durante planejamento: {e_other}")
+    #     return [] 
