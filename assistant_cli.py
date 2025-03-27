@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 import argparse
 import time
 import traceback # Para debug de erros
+import logging # Usar logging
+
+# Configurar logging básico para o CLI
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s CLI] %(message)s')
+logger = logging.getLogger(__name__)
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -16,11 +21,13 @@ from core.nlg import generate_natural_response, generate_simplified_response # M
 from core.config import MAX_HISTORY_TURNS # Pode ser usado para histórico geral
 # from core.dispatcher import get_skill, SKILL_DISPATCHER
 # from core.planner import generate_plan
+from core.db_utils import initialize_database # <<< IMPORT DB INIT >>>
 from core.agent import ReactAgent # <-- NOVO IMPORT
 
 # Função process_command agora recebe a instância do agente
 def process_command(agent: ReactAgent, command: str, conversation_history: list) -> None:
     """Processa um único comando usando a instância fornecida do Agente ReAct."""
+    logger.info(f"Processing command: '{command}'")
     print(f"\n> {command}")
     conversation_history.append({"role": "user", "content": command})
 
@@ -33,12 +40,11 @@ def process_command(agent: ReactAgent, command: str, conversation_history: list)
         # Usa a instância do agente passada como argumento
         final_response = agent.run(objective=command)
         agent_outcome = {"status": "success", "action": "react_cycle_completed", "data": {"message": final_response}}
-        print(f"\n[CLI] Agente concluiu. Resposta final: {final_response}")
+        logger.info(f"Agent completed. Final response: {final_response}")
 
     except Exception as e:
-        print(f"[Erro Fatal Agent] Erro ao executar agente: {e}")
-        traceback.print_exc() # Imprime traceback completo para debug
-        final_response = f"Desculpe, ocorreu um erro interno grave ao processar seu comando."
+        logger.exception(f"Fatal Agent Error processing command '{command}':")
+        final_response = f"Sorry, a critical internal error occurred while processing your command."
         agent_outcome = {"status": "error", "action": "react_cycle_failed", "data": {"message": str(e)}}
 
     # --- LÓGICA DE RESPOSTA (NLG) ---
@@ -57,11 +63,18 @@ def main():
     # Garante execução no diretório raiz do projeto
     project_root = "/home/arthur/Projects/A3X" # AJUSTE SE NECESSÁRIO
     try:
-        os.chdir(project_root)
-        print(f"[Info] Executando em: {os.getcwd()}")
+        # Tenta ir para a raiz apenas se não estiver lá
+        if os.getcwd() != project_root:
+             os.chdir(project_root)
+        logger.info(f"Running in directory: {os.getcwd()}")
     except FileNotFoundError:
-        print(f"[Erro Fatal] Diretório do projeto não encontrado: {project_root}")
+        logger.error(f"Project root directory not found: {project_root}. Exiting.")
+        print(f"[Fatal Error] Project directory not found: {project_root}")
         exit(1)
+    except Exception as cd_err:
+         logger.error(f"Error changing directory to {project_root}: {cd_err}. Exiting.")
+         print(f"[Fatal Error] Could not change to project directory: {cd_err}")
+         exit(1)
 
     parser = argparse.ArgumentParser(description='Assistente CLI A³X (ReAct)')
     group = parser.add_mutually_exclusive_group()
@@ -72,11 +85,21 @@ def main():
 
     conversation_history = [] # Histórico da conversa geral
 
-    # <<< MOVER INSTANCIAÇÃO PARA CÁ >>>
-    print("[Info] Inicializando Agente ReAct...")
-    agent = ReactAgent() # Instancia o agente UMA VEZ AQUI
-    print("[Info] Agente pronto.")
-    # <<< FIM DA MUDANÇA >>>
+    # <<< INICIALIZA DB AQUI >>>
+    logger.info("Initializing database...")
+    initialize_database()
+    # <<< FIM INICIALIZAÇÃO DB >>>
+
+    # <<< INSTANCIAÇÃO DO AGENTE >>>
+    logger.info("Initializing ReactAgent...")
+    try:
+        agent = ReactAgent() # Agora carrega estado do DB no init
+        logger.info("Agent ready.")
+    except Exception as agent_init_err:
+         logger.exception("Fatal error initializing ReactAgent:")
+         print(f"[Fatal Error] Could not initialize the agent: {agent_init_err}")
+         exit(1)
+    # <<< FIM DA INSTANCIAÇÃO >>>
 
     if args.command:
         # Modo comando único
@@ -85,21 +108,24 @@ def main():
     elif args.input_file:
         # Modo arquivo de entrada
         try:
-            print(f"[Info] Lendo comandos de: {args.input_file}")
+            logger.info(f"Reading commands from: {args.input_file}")
             with open(args.input_file, 'r', encoding='utf-8') as f:
                 commands = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-                print(f"[Info] Encontrados {len(commands)} comandos para processar.")
+                logger.info(f"Found {len(commands)} commands to process.")
 
                 for line_num, command in enumerate(commands, 1):
-                    print(f"\n--- Comando da Linha {line_num} ---")
+                    logger.info(f"--- Processing command from line {line_num} ---")
+                    print(f"\n--- Command from Line {line_num} ---")
                     process_command(agent, command, conversation_history) # Passa a MESMA instância agent
                     time.sleep(1) # Pausa opcional
-            print("\n[Info] Fim do arquivo de entrada.")
+            logger.info("Finished processing input file.")
+            print("\n[Info] End of input file.")
         except FileNotFoundError:
-            print(f"[Erro Fatal] Arquivo de entrada não encontrado: {args.input_file}")
-        except Exception as e:
-            print(f"\n[Erro Fatal] Ocorreu um erro ao processar o arquivo '{args.input_file}': {e}")
-            traceback.print_exc()
+            logger.error(f"Input file not found: {args.input_file}")
+            print(f"[Fatal Error] Input file not found: {args.input_file}")
+        except Exception as file_proc_err:
+            logger.exception(f"Error processing input file '{args.input_file}':")
+            print(f"\n[Fatal Error] An error occurred while processing the file '{args.input_file}': {file_proc_err}")
 
     else:
         # Modo interativo
@@ -108,17 +134,21 @@ def main():
             try:
                 command = input("\n> ").strip()
                 if command.lower() in ['sair', 'exit', 'quit']:
-                    print("Encerrando o assistente...")
+                    logger.info("Exit command received. Shutting down.")
+                    print("Exiting assistant...")
                     break
                 if not command:
                     continue
                 process_command(agent, command, conversation_history) # Passa a MESMA instância agent
             except KeyboardInterrupt:
-                print("\nEncerrando o assistente...")
+                logger.info("KeyboardInterrupt received. Shutting down.")
+                print("\nExiting assistant...")
                 break
-            except Exception as e:
-                print(f"\n[Erro Inesperado no Loop Principal] {e}")
-                traceback.print_exc()
+            except Exception as loop_err:
+                logger.exception("Unexpected error in main interactive loop:")
+                print(f"\n[Unexpected Error] {loop_err}")
+                # Decide se continua ou sai em caso de erro no loop principal
+                # Por enquanto, continua
 
 if __name__ == "__main__":
     main() 

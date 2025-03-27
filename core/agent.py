@@ -5,14 +5,23 @@ import os
 import sys
 import datetime
 import traceback # Keep for debugging
+import logging
 
 # Ajuste para importar do diretório pai
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 sys.path.insert(0, project_root)
 
-from core.config import LLAMA_SERVER_URL, MAX_REACT_ITERATIONS
+from core.config import LLAMA_SERVER_URL, MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS
 from core.tools import get_tool, get_tool_descriptions, TOOLS # <-- MODIFIED IMPORT
+from core.db_utils import load_agent_state, save_agent_state
+
+# Configure logging for the agent
+agent_logger = logging.getLogger("ReactAgent")
+agent_logger.setLevel(logging.INFO)
+# Add handlers if necessary, e.g., logging.StreamHandler()
+
+AGENT_STATE_ID = "main_agent_react" # ID fixo para nosso agente único
 
 class ReactAgent:
     def __init__(self, llm_url=LLAMA_SERVER_URL):
@@ -23,10 +32,25 @@ class ReactAgent:
             'last_lang': None,
         }
 
+        # <<< CARREGAR ESTADO DO DB >>>
+        agent_logger.info(f"Loading state for agent '{AGENT_STATE_ID}' from database...")
+        self._memory = load_agent_state(AGENT_STATE_ID) # Carrega o estado persistente
+        # Garante que as chaves esperadas existam, mesmo se o load falhar ou for vazio
+        self._memory.setdefault('last_code', None)
+        self._memory.setdefault('last_lang', None)
+        # Log resumido do estado carregado
+        loaded_summary = {k: (v[:30]+'...' if isinstance(v, str) and v and len(v) > 30 else v)
+                          for k, v in self._memory.items()}
+        agent_logger.info(f"Initial agent memory state: {loaded_summary}")
+        # <<< FIM CARREGAR ESTADO >>>
+
+        self.tools = get_tool_descriptions() # Carrega descrições das ferramentas
+        agent_logger.info("Agent initialized.")
+
     def _build_react_messages(self, objective: str) -> list[dict]:
         """Constrói a lista de mensagens para o endpoint /v1/chat/completions."""
 
-        tool_desc = get_tool_descriptions()
+        tool_desc = self.tools
 
         # System Message defining the agent's role and instructions
         system_message = f"""Você é A³X, um agente de IA autônomo e prestativo. Use as ferramentas disponíveis para atingir o objetivo do usuário.
@@ -44,6 +68,11 @@ class ReactAgent:
     *   **Se a última ação produziu um resultado direto (ex: saída de 'execute_code', código de 'generate_code'/'modify_code', resposta de 'search_web'),** formule a 'answer' para apresentar esse resultado de forma clara ao usuário (ex: "A execução produziu: 30", "Gerei o seguinte código: ...", "A busca encontrou: Paris é a capital...").
     *   **Se a última ação foi bem-sucedida mas sem um resultado direto para mostrar (ex: 'execute_code' rodou uma definição, arquivo foi criado),** a 'answer' deve apenas confirmar a conclusão da tarefa (ex: "A função foi definida com sucesso.", "Arquivo criado.").
     *   **Não** diga apenas "a informação está na observação anterior". Use a informação da observação para criar a resposta final.
+7.  **Ação Inválida/Erro:** Se uma ação falhar (indicado na 'Observation'), analise o erro. Se for um erro de parâmetro (ex: faltando 'file_name'), corrija o 'Action Input' e tente novamente. Se for um erro irrecuperável (ex: arquivo não existe para 'append', código com erro de sintaxe grave), use 'final_answer' para informar o usuário sobre o problema.
+8.  **Erro de Módulo (ModuleNotFoundError):** Se a 'Observation' de 'execute_code' indicar claramente um 'ModuleNotFoundError' (ex: "Erro Crítico na Execução: Módulo não encontrado ('ModuleNotFoundError: No module named 'pandas')"), **NÃO** tente instalar o pacote (você não tem essa capacidade). Em vez disso:
+    *   Use 'final_answer'.
+    *   Informe ao usuário que o código falhou porque o módulo necessário ('XYZ') não está disponível no ambiente de execução seguro.
+    *   (Opcional) Se parecer viável, sugira brevemente ao usuário gerar um código alternativo usando apenas bibliotecas padrão do Python.
 
 **Formato OBRIGATÓRIO de Resposta:**
 Thought: [Seu processo de raciocínio claro e passo-a-passo.]
@@ -78,86 +107,185 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
         # print("[DEBUG] Mensagens construídas:", json.dumps(messages, indent=2, ensure_ascii=False)) # Optional debug
         return messages
 
-    def _parse_llm_response(self, response_text: str) -> tuple[str | None, str | None, dict | None]:
-        """Extrai Thought, Action e Action Input da resposta do LLM."""
-        # Adiciona 'Thought:' ao início se não estiver presente (LLM pode começar direto)
-        if not response_text.strip().startswith("Thought:"):
-             response_text = "Thought: " + response_text
+    def _parse_llm_response(self, llm_output: str) -> tuple[str | None, str | None, dict | None]:
+        """
+        Analisa a resposta do LLM para extrair Pensamento e Ação, com logs detalhados.
+        Retorna (thought, action_name, action_input_dict).
+        """
+        agent_logger.debug(f"[Agent Parse DEBUG] Raw LLM Output:\n{llm_output}") # Log raw output
 
-        thought = re.search(r"Thought:(.*?)Action:", response_text, re.DOTALL)
-        action = re.search(r"Action:(.*?)Action Input:", response_text, re.DOTALL)
-        action_input_str = re.search(r"Action Input:(.*)", response_text, re.DOTALL)
+        # Initialize return values
+        thought_content = None
+        action_name = None
+        action_input = None # IMPORTANT: Initialize to None
 
-        thought_content = thought.group(1).strip() if thought else None
-        action_name = action.group(1).strip() if action else None
+        # <<< REGEX and Initial Extraction (Keep Previous Version's Logic) >>>
+        flags = re.DOTALL | re.IGNORECASE
 
-        action_input = None
-        if action_input_str:
-            input_str = action_input_str.group(1).strip()
+        thought_match = re.search(r"Thought:\s*(.*?)(?:\nAction:|$)", llm_output, flags)
+        if thought_match:
+            thought_content = thought_match.group(1).strip()
+            # agent_logger.info(f"[Agent Parse INFO] Thought extraído: '{thought_content[:100]}...'") # Reduced noise
+        else:
+            agent_logger.warning("[Agent Parse WARN] Bloco 'Thought:' não encontrado ou mal formatado.")
+            # Tenta pegar qualquer coisa antes de 'Action:' como pensamento se o match acima falhar
+            fallback_thought_match = re.search(r"^(.*?)Action:", llm_output, flags)
+            if fallback_thought_match:
+                thought_content = fallback_thought_match.group(1).strip()
+                agent_logger.info(f"[Agent Parse INFO] Thought extraído (fallback): '{thought_content[:100]}...'")
+
+
+        action_match = re.search(r"Action:\s*([\w_]+)(?:\s*Action Input:|$)", llm_output, flags)
+        if action_match:
+            action_name = action_match.group(1).strip()
+            # agent_logger.info(f"[Agent Parse INFO] Action Name extraído: '{action_name}'") # Reduced noise
+        else:
+             agent_logger.warning("[Agent Parse WARN] Bloco 'Action:' não encontrado ou nome da ação não extraído.")
+             # Check if maybe it's just a final answer without the Action keyword
+             if "final answer" in llm_output.lower() and not thought_content and not action_name:
+                 # Se não achou Thought nem Action, mas "final answer" está no texto
+                 action_name = "final_answer"
+                 agent_logger.warning("[Agent Parse WARN] Nem Thought nem Action encontrados, mas 'final answer' no texto. Assumindo action 'final_answer'.")
+
+
+        action_input_match = re.search(r"Action Input:\s*(.*)", llm_output, flags)
+        input_str = None # Initialize input_str
+
+        if action_input_match:
+            input_str = action_input_match.group(1).strip()
+            # <<< LOG 1 >>>
+            print(f"[Agent Parse DEBUG] Raw Action Input String: '{input_str}'")
             try:
-                # Tenta encontrar e extrair um JSON válido, lidando com ```json ``` opcional
+                # Tenta encontrar JSON dentro de ```json ou direto
+                # Prioritize finding JSON block, allows garbage around it
                 json_match = re.search(r"```json\s*(\{.*?\})\s*```|(\{.*?\})", input_str, re.DOTALL | re.MULTILINE)
                 if json_match:
-                    # Pega o primeiro grupo que não for None (prioriza o JSON dentro de ```json)
-                    json_str = next(group for group in json_match.groups() if group is not None)
-                    # Attempt to fix common JSON errors before parsing
-                    json_str = json_str.replace(r'\\"', r'"').replace(r"\'", r"'") # Handle escaped quotes if needed
-                    try:
-                        # Ensure proper JSON parsing even with potential surrounding text/markdown
-                        # Find the start and end of the JSON block
-                        json_start = json_str.find('{')
-                        json_end = json_str.rfind('}') + 1
-                        if json_start != -1 and json_end != 0:
-                            json_str = json_str[json_start:json_end]
-                            # Clean potential markdown backticks
-                            json_str = json_str.strip().strip('`')
-                            # Attempt to parse the cleaned JSON string
-                            action_input = json.loads(json_str)
+                    json_str = next((group for group in json_match.groups() if group is not None), None)
+
+                    if json_str:
+                        # <<< LOG 2 >>>
+                        print(f"[Agent Parse DEBUG] JSON String encontrada por regex: '{json_str}'")
+
+                        # Limpeza de Aspas
+                        cleaned_json_str = json_str.replace('"', '"').replace("'", "'").replace('\\"', '"')
+                        cleaned_json_str = cleaned_json_str.replace('"', '"').replace("'", "'").replace('\\"', '"')
+                        cleaned_json_str = cleaned_json_str.replace('\\"', '"')
+                        json_str_to_parse = cleaned_json_str.strip() # Strip before parsing
+
+                        if cleaned_json_str != json_str:
+                             # <<< LOG 3 >>>
+                             print(f"[Agent Parse DEBUG] JSON String após limpeza de aspas/escape: '{json_str_to_parse}'")
                         else:
-                            # Handle cases where JSON block markers aren't found
-                            print(f"[Agent Parse WARN] Could not find JSON block in action string: {json_str}")
-                            action = "error_parsing_action"
-                            action_input = {"error": "Malformed action block, JSON markers not found."}
-                    except json.JSONDecodeError as e:
-                        print(f"[Agent Parse ERROR] JSON Decode Error: {e} in string: '{json_str}'")
-                        # Fallback or error handling if JSON is truly malformed
-                        action = "error_parsing_action"
-                        action_input = {"error": f"Invalid JSON format: {e}", "original_string": json_str}
-                    except Exception as e: # Catch other potential errors during parsing
-                        print(f"[Agent Parse ERROR] Unexpected error parsing action JSON: {e} in string: '{json_str}'")
-                        action = "error_parsing_action"
-                        action_input = {"error": f"Unexpected error: {e}", "original_string": json_str}
-                else:
-                     # If no JSON block found, maybe it's a simple string for final_answer?
+                             # <<< LOG 4 >>>
+                             print("[Agent Parse DEBUG] Nenhuma aspa curva/escape encontrada/substituída.")
+
+
+                        try:
+                             action_input = json.loads(json_str_to_parse)
+                             # <<< LOG 5 >>>
+                             print(f"[Agent Parse INFO] JSON parseado com sucesso na primeira tentativa. Tipo: {type(action_input)}")
+
+                        except json.JSONDecodeError as json_e:
+                             # <<< LOG 6 >>>
+                             print(f"[Agent Parse ERROR] Falha ao decodificar JSON inicial: {json_e}\nJSON String Tentada: {json_str_to_parse}")
+                             # Segunda tentativa: Remover vírgula extra...
+                             json_str_fixed = re.sub(r",\s*(\})$", r"\1", json_str_to_parse) # No strip needed here
+                             if json_str_fixed != json_str_to_parse:
+                                  # <<< LOG 7 >>>
+                                  print(f"[Agent Parse INFO] Tentando remover vírgula final. String corrigida: '{json_str_fixed}'")
+                                  try:
+                                       action_input = json.loads(json_str_fixed)
+                                       # <<< LOG 8 >>>
+                                       print(f"[Agent Parse INFO] JSON parseado com sucesso após remover vírgula. Tipo: {type(action_input)}")
+                                  except json.JSONDecodeError as json_e2:
+                                       # <<< LOG 9 >>>
+                                       print(f"[Agent Parse ERROR] Falha ao decodificar JSON mesmo após remover vírgula: {json_e2}\nJSON String Tentada: {json_str_fixed}")
+                                       action_input = None # Set to None on failure
+                                  except Exception as parse_err2:
+                                       print(f"[Agent Parse ERROR] Erro inesperado durante SEGUNDO json.loads: {parse_err2}\nJSON String Tentada: {json_str_fixed}")
+                                       action_input = None
+                             else:
+                                  print("[Agent Parse DEBUG] Correção de vírgula final não alterou a string.")
+                                  action_input = None # Set to None if comma fix didn't help
+                        except Exception as parse_err: # Captura outros erros de json.loads
+                             # <<< LOG 10 >>>
+                             print(f"[Agent Parse ERROR] Erro inesperado durante json.loads principal: {parse_err}\nJSON String Tentada: {json_str_to_parse}")
+                             action_input = None # Set to None on failure
+                    else: # json_str was None after regex match
+                         print("[Agent Parse ERROR] Regex encontrou match JSON no Input, mas não conseguiu extrair grupo JSON.")
+                         action_input = None
+
+                else: # Se json_match falhou (não encontrou '{...}' ou ```json{...}```)
+                     # <<< LOG 11 >>>
+                     print(f"[Agent Parse WARN] Bloco JSON não encontrado via regex no Action Input: '{input_str}'")
+                     # Lógica de fallback para final_answer como string simples
                      if action_name == "final_answer" and input_str:
                           # Heuristic: If it doesn't look like JSON, wrap it
-                          if not input_str.strip().startswith('{'):
-                               action_input = {"answer": input_str}
-                               print(f"[Agent Parse WARN] Action Input não era JSON, mas Action é final_answer. Envolvendo: {action_input}")
+                          if not input_str.strip().startswith('{') and len(input_str.strip()) > 0:
+                               action_input = {"answer": input_str.strip()} # Use the raw string as answer
+                               # <<< LOG 12 >>>
+                               print(f"[Agent Parse WARN] Action Input não era JSON, mas Action é final_answer. Envolvendo em dict: {action_input}")
                           else:
-                               print(f"[Agent Parse WARN] Não foi possível encontrar/parsear JSON no Action Input: {input_str}")
+                               # Começa com '{' mas falhou no regex match - provavelmente inválido
+                               # <<< LOG 13 >>>
+                               print("[Agent Parse WARN] Input começa com '{' ou é vazio, mas falhou no match regex JSON - considerado inválido.")
+                               action_input = None # Set to None if invalid format
                      else:
-                          print(f"[Agent Parse WARN] Não foi possível encontrar/parsear JSON no Action Input: {input_str}")
-            except Exception as e:
-                 print(f"[Agent Parse ERROR] Erro inesperado ao parsear Action Input: {e}\nInput String: {input_str}")
+                          # Se não é final_answer e não achou JSON, é None
+                          action_input = None
 
+            except Exception as e: # Captura erro no processamento GERAL do input_str
+                 # <<< LOG 14 >>>
+                 print(f"[Agent Parse ERROR] Erro inesperado ao processar Action Input String: {e}\nInput String: {input_str}")
+                 action_input = None # Ensure None on general error
 
-        # Validações básicas
-        if not thought_content: print("[Agent Parse WARN] Não encontrou 'Thought:' na resposta.")
-        if not action_name: print("[Agent Parse WARN] Não encontrou 'Action:' na resposta.")
-        if not action_input: print("[Agent Parse WARN] Não encontrou 'Action Input:' ou falhou ao parsear JSON.")
+        else: # Se action_input_match falhou (não encontrou 'Action Input:')
+             # <<< LOG 15 >>>
+             print("[Agent Parse WARN] Bloco 'Action Input:' não encontrado na resposta do LLM.")
+             # Handle final_answer case specifically when Action Input block is missing
+             if action_name == "final_answer":
+                 agent_logger.info("[Agent Parse INFO] Action é 'final_answer' sem 'Action Input:' bloco. Tentando extrair 'answer' do texto.")
+                 answer_match = re.search(r"(?:Final Answer:|Answer:)\s*(.*)", llm_output, flags)
+                 if answer_match:
+                     action_input = {"answer": answer_match.group(1).strip()}
+                     print("[Agent Parse INFO] 'answer' extraído de 'Final Answer:' fallback.")
+                 elif thought_content and len(thought_content) > 5: # Fallback to thought if reasonable length
+                      action_input = {"answer": thought_content}
+                      print("[Agent Parse WARN] 'answer' não encontrado, usando 'Thought' como fallback para 'final_answer'.")
+                 else:
+                      action_input = None # Set to None if no answer found
+                      print("[Agent Parse WARN] Não foi possível extrair 'answer' para 'final_answer' sem Action Input.")
+             else:
+                action_input = None # Garante None se o bloco inteiro faltar E não for final_answer fallback
+
+        # --- Final Logging (Adjusted) ---
+        if action_input is None:
+             if action_name == 'final_answer':
+                  print("[Agent Parse WARN - FINAL] Final action_input é None para Action 'final_answer'.")
+             elif action_name:
+                  print(f"[Agent Parse WARN - FINAL] Final action_input é None para Action '{action_name}'.")
+             else:
+                  print("[Agent Parse WARN - FINAL] Final action_input é None e Action Name também é None.")
+        elif action_name:
+             print(f"[Agent Parse INFO - FINAL] Parse finalizado. Action: '{action_name}', Input Type: {type(action_input)}")
+        # else: action_input is not None but action_name is None (should be rare)
+
+        # Ensure final_answer always has a dict, even if empty/default, if action_name is final_answer
+        if action_name == "final_answer" and action_input is None:
+            action_input = {"answer": "Não foi possível determinar a resposta final (erro de parse)."}
+            print("[Agent Parse WARN] Definindo action_input padrão para final_answer após falha no parse.")
+
 
         return thought_content, action_name, action_input
 
-
     def run(self, objective: str) -> str:
         """Executa o ciclo ReAct para atingir o objetivo."""
-        print(f"\n[ReactAgent] Iniciando ciclo ReAct para objetivo: '{objective}'")
+        agent_logger.info(f"\n[ReactAgent] Iniciando ciclo ReAct para objetivo: '{objective}'")
         self._history = [] # Limpa histórico ReAct para novo objetivo
 
         for i in range(MAX_REACT_ITERATIONS):
             start_cycle_time = datetime.datetime.now()
-            print(f"\n--- Ciclo ReAct {i+1}/{MAX_REACT_ITERATIONS} (Início: {start_cycle_time.strftime('%H:%M:%S.%f')[:-3]}) ---")
+            agent_logger.info(f"\n--- Ciclo ReAct {i+1}/{MAX_REACT_ITERATIONS} (Início: {start_cycle_time.strftime('%H:%M:%S.%f')[:-3]}) ---")
 
             # 1. Construir Prompt
             messages = self._build_react_messages(objective)
@@ -169,21 +297,21 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
                  response_text = self._call_llm(messages)
                  end_llm_time = datetime.datetime.now()
                  llm_duration = end_llm_time - start_llm_time
-                 print(f"[ReactAgent] Resposta LLM Recebida (Duração: {llm_duration.total_seconds():.3f}s)")
+                 agent_logger.info(f"[ReactAgent] Resposta LLM Recebida (Duração: {llm_duration.total_seconds():.3f}s)")
                  # Log the raw content received for easier debugging
-                 print(f"[ReactAgent] Resposta LLM (Raw Content):\n---\n{response_text}\n---")
+                 agent_logger.info(f"[ReactAgent] Resposta LLM (Raw Content):\n---\n{response_text}\n---")
             except requests.exceptions.RequestException as req_err:
-                 print(f"[ReactAgent ERROR] Erro de conexão ao chamar LLM: {req_err}")
+                 agent_logger.error(f"[ReactAgent ERROR] Erro de conexão ao chamar LLM: {req_err}")
                  return f"Erro: Não foi possível conectar ao servidor LLM em {self.llm_url}. Verifique se ele está rodando."
             except Exception as llm_err:
-                 print(f"[ReactAgent ERROR] Erro inesperado ao chamar LLM: {llm_err}")
+                 agent_logger.error(f"[ReactAgent ERROR] Erro inesperado ao chamar LLM: {llm_err}")
                  return f"Erro inesperado ao comunicar com o LLM: {llm_err}"
 
             # 3. Parsear Resposta
             thought, action_name, action_input = self._parse_llm_response(response_text)
 
             if not action_name or action_input is None:
-                print("[ReactAgent ERROR] Falha ao parsear Ação ou Input JSON da resposta do LLM. Verifique a 'Resposta LLM (Raw Content)' acima.")
+                agent_logger.error("[ReactAgent ERROR] Falha ao parsear Ação ou Input JSON da resposta do LLM. Verifique a 'Resposta LLM (Raw Content)' acima.")
                 observation = "Erro: Não consegui entender a resposta do LLM (formato inválido). Verifique a resposta raw acima e o formato esperado."
                 # Add raw response to history for context if parsing fails
                 self._history.append(f"Thought: {thought if thought else 'N/A - Falha no Parse'}")
@@ -205,7 +333,7 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
             # 4. Executar Ação ou Finalizar
             if action_name == "final_answer":
                 final_response = action_input.get("answer", "Não foi possível gerar uma resposta final.")
-                print(f"\n[ReactAgent] Resposta Final Decidida pelo LLM: {final_response}")
+                agent_logger.info(f"\n[ReactAgent] Resposta Final Decidida pelo LLM: {final_response}")
                 # Add final answer action to history before returning
                 self._history.append(f"Observation: Resposta final fornecida.")
                 return final_response # Encerra o loop
@@ -222,22 +350,22 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
 
 
             # Adiciona Observação ao histórico
-            print(f"[ReactAgent] Observação: {observation}")
+            agent_logger.info(f"[ReactAgent] Observação: {observation}")
             self._history.append(f"Observation: {observation}")
 
             end_cycle_time = datetime.datetime.now()
             cycle_duration = end_cycle_time - start_cycle_time
-            print(f"--- Fim Ciclo ReAct {i+1} (Duração Total: {cycle_duration.total_seconds():.3f}s) ---")
+            agent_logger.info(f"--- Fim Ciclo ReAct {i+1} (Duração Total: {cycle_duration.total_seconds():.3f}s) ---")
 
         # Se sair do loop por limite de iterações
-        print("[ReactAgent WARN] Limite de iterações atingido.")
+        agent_logger.warning("[ReactAgent WARN] Limite de iterações atingido.")
         # Add final warning to history
         self._history.append("Observation: Limite de iterações atingido sem resposta final.")
         return "Desculpe, não consegui completar a tarefa após várias tentativas."
 
     # --- Método _call_llm (sem alterações) ---
     def _call_llm(self, messages: list[dict]) -> str:
-        print(f"[ReactAgent] Chamando LLM ({len(messages)} mensagens)...")
+        agent_logger.info(f"[ReactAgent] Chamando LLM ({len(messages)} mensagens)...")
         headers = {"Content-Type": "application/json"}
 
         # Ensure the URL points to the chat completions endpoint
@@ -246,7 +374,7 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
              if chat_url.endswith("/v1") or chat_url.endswith("/v1/"):
                   chat_url = chat_url.rstrip('/') + "/chat/completions"
              else:
-                  print(f"[ReactAgent WARN] URL LLM '{self.llm_url}' pode não ser para /v1/chat/completions. Tentando mesmo assim.")
+                  agent_logger.warning(f"[ReactAgent WARN] URL LLM '{self.llm_url}' pode não ser para /v1/chat/completions. Tentando mesmo assim.")
                   # Optionally force it if you know the base URL is correct:
                   # chat_url = self.llm_url.rstrip('/') + "/v1/chat/completions"
 
@@ -258,7 +386,7 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
              "stream": False
          }
         try:
-             print(f"[ReactAgent DEBUG] Enviando para URL: {chat_url}") # Debug URL
+             agent_logger.debug(f"[ReactAgent DEBUG] Enviando para URL: {chat_url}") # Debug URL
              # print(f"[ReactAgent DEBUG] Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Debug Payload
              response = requests.post(chat_url, headers=headers, json=payload, timeout=120)
              response.raise_for_status()
@@ -269,20 +397,20 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
 
              # print(f"[ReactAgent DEBUG] Resposta LLM Recebida (raw dict): {response_data}") # Optional debug
              if not content:
-                  print("[ReactAgent WARN] LLM retornou conteúdo vazio na resposta de chat.")
+                  agent_logger.warning("[ReactAgent WARN] LLM retornou conteúdo vazio na resposta de chat.")
              return content
         except requests.exceptions.Timeout:
-             print(f"[ReactAgent LLM ERROR] Timeout ao chamar LLM em {chat_url}")
+             agent_logger.error(f"[ReactAgent LLM ERROR] Timeout ao chamar LLM em {chat_url}")
              # Return an error message in the expected ReAct format for the parser
              return "Thought: Ocorreu um timeout ao tentar comunicar com o modelo de linguagem. Action: final_answer Action Input: {\"answer\": \"Desculpe, demorei muito para pensar e a conexão expirou.\"}"
         except requests.exceptions.RequestException as e:
-             print(f"[ReactAgent LLM ERROR] Erro na requisição LLM para {chat_url}: {e}")
+             agent_logger.error(f"[ReactAgent LLM ERROR] Erro na requisição LLM para {chat_url}: {e}")
              # Check if it's a 404 specifically
              if e.response is not None and e.response.status_code == 404:
                   return f"Thought: Erro de conexão. O endpoint {chat_url} não foi encontrado. Verifique a URL do LLM. Action: final_answer Action Input: {{\"answer\": \"Desculpe, não consigo conectar ao meu cérebro principal (endpoint não encontrado).\"}}"
              return f"Thought: Ocorreu um erro ao tentar comunicar com o modelo de linguagem principal. Action: final_answer Action Input: {{\"answer\": \"Desculpe, estou com problemas para conectar ao meu cérebro principal ({e}).\"}}"
         except Exception as e:
-             print(f"[ReactAgent LLM ERROR] Erro inesperado na chamada LLM: {e}")
+             agent_logger.error(f"[ReactAgent LLM ERROR] Erro inesperado na chamada LLM: {e}")
              traceback.print_exc() # Print traceback for unexpected errors
              return "Thought: Ocorreu um erro inesperado durante a chamada LLM. Action: final_answer Action Input: {\"answer\": \"Desculpe, ocorreu um erro interno inesperado.\"}"
 
@@ -293,23 +421,23 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
         Executes the chosen tool with the provided input and context using the standard signature.
         Returns the observation string.
         """
-        print(f"[ReactAgent] Executando ferramenta: {tool_name} com input: {action_input}") # Debug
+        agent_logger.info(f"[ReactAgent] Executando ferramenta: {tool_name} com input: {action_input}") # Debug
         if tool_name not in TOOLS:
-            print(f"[ReactAgent ERROR] Ferramenta '{tool_name}' desconhecida.")
+            agent_logger.error(f"[ReactAgent ERROR] Ferramenta '{tool_name}' desconhecida.")
             return f"Erro: A ferramenta '{tool_name}' não existe. Ferramentas disponíveis: {', '.join(TOOLS.keys())}"
 
         tool_info = TOOLS[tool_name]
         tool_function = tool_info.get("function")
 
         if not tool_function:
-            print(f"[ReactAgent ERROR] Ferramenta '{tool_name}' não tem função associada.")
+            agent_logger.error(f"[ReactAgent ERROR] Ferramenta '{tool_name}' não tem função associada.")
             return f"Erro: A ferramenta '{tool_name}' está configurada incorretamente (sem função)."
 
         # Validate parameters (basic check)
         required_params = tool_info.get("parameters", {}).get("required", [])
         missing_params = [p for p in required_params if p not in action_input]
         if missing_params:
-            print(f"[ReactAgent EXEC WARN] Parâmetros faltando para {tool_name}: {missing_params}")
+            agent_logger.warning(f"[ReactAgent EXEC WARN] Parâmetros faltando para {tool_name}: {missing_params}")
             # Provide more context in the error message
             return f"Erro: Parâmetros obrigatórios ausentes para a ferramenta {tool_name}: {', '.join(missing_params)}. Input recebido: {action_input}"
 
@@ -325,30 +453,50 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
             )
             # --- End of new call ---
 
-            print(f"[ReactAgent] Resultado da Ferramenta ({tool_name}): {result}") # Debug
+            agent_logger.info(f"[ReactAgent] Resultado da Ferramenta ({tool_name}): {result}") # Debug
 
             # --- Handle Skill Results ---
             status = result.get("status", "error") # Default to error if status missing
             result_data = result.get("data", {})
             message = result_data.get("message", f"Ferramenta {tool_name} executada.")
+            skill_action = result.get("action") # Get the specific action performed by the skill
 
             if status == "success":
-                # --- Update memory using the dictionary ---
-                action = result.get("action")
-                if action in ["code_generated", "code_modified"]:
+                # --- ATUALIZA E SALVA MEMÓRIA ---
+                updated_memory = False # Flag to track if memory changed
+
+                if skill_action in ["code_generated", "code_modified"]:
                     new_code = result_data.get("modified_code") or result_data.get("code")
                     new_lang = result_data.get("language")
-                    if new_code:
+                    # Check if the code actually changed before updating and saving
+                    if new_code is not None and self._memory.get('last_code') != new_code:
                         self._memory['last_code'] = new_code # Update dictionary
                         self._memory['last_lang'] = new_lang if new_lang else self._memory.get('last_lang') # Update dictionary
-                        print("[ReactAgent MEM] Memória do agente atualizada com novo código.")
-                # --- End of memory update ---
+                        agent_logger.info("[ReactAgent MEM] Memória do agente atualizada com novo código.")
+                        updated_memory = True
+                    elif new_lang is not None and self._memory.get('last_lang') != new_lang:
+                        # Also update if only the language changed (less likely but possible)
+                         self._memory['last_lang'] = new_lang
+                         agent_logger.info(f"[ReactAgent MEM] Memória do agente atualizada com nova linguagem: {new_lang}.")
+                         updated_memory = True
+
+                # <<< GARANTIR QUE O SAVE ESTÁ AQUI >>>
+                if updated_memory:
+                    try:
+                        save_agent_state(AGENT_STATE_ID, self._memory)
+                        # Log message is inside save_agent_state now
+                    except Exception as db_save_err:
+                         # Use agent_logger for consistency
+                         agent_logger.error(f"[ReactAgent ERROR] Falha ao salvar estado no DB após atualização: {db_save_err}")
+                # <<< FIM DA GARANTIA >>>
+                # --- Fim da atualização e salvamento ---
+
 
                 # Format observation message based on action/data
                 observation_parts = [message] # Start with the base message
 
                 # Specific formatting for different tools/actions
-                if action == "code_executed":
+                if skill_action == "code_executed":
                     code_output = result_data.get("output", "").strip()
                     code_stderr = result_data.get("stderr", "").strip()
                     if code_output:
@@ -357,18 +505,18 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
                          observation_parts.append(f"Saída de Erro/Warning (stderr):\n```\n{code_stderr}\n```")
                     else:
                          observation_parts.append("(Execução sem saída stdout/stderr visível)")
-                elif action in ["code_generated", "code_modified"]:
+                elif skill_action in ["code_generated", "code_modified"]:
                     code_to_show = result_data.get("modified_code") or result_data.get("code")
                     # Use memory for language fallback if not in result_data
                     lang_to_show = result_data.get("language", self._memory.get('last_lang') or "text")
                     if code_to_show:
-                        code_type = "Modificado" if action == "code_modified" else "Gerado"
+                        code_type = "Modificado" if skill_action == "code_modified" else "Gerado"
                         observation_parts.append(f"Código {code_type}:\n```{lang_to_show}\n{code_to_show}\n```")
-                elif action == "web_search_completed" and isinstance(result_data.get("results"), list):
+                elif skill_action == "web_search_completed" and isinstance(result_data.get("results"), list):
                      snippets = [f"- {r.get('title', 'N/T')}: {r.get('snippet', 'N/A')[:100]}..." for r in result_data["results"]]
                      if snippets:
                           observation_parts.append("Resultados (snippets):\n" + "\n".join(snippets))
-                elif action == "file_operation_success": # Example for manage_files
+                elif skill_action == "file_operation_success": # Example for manage_files
                     # Message already contains details, maybe add filename if useful
                     pass
 
@@ -377,22 +525,43 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
 
             elif status == "error":
                 error_message = result_data.get("message", f"Erro desconhecido ao executar {tool_name}.")
-                print(f"[ReactAgent EXEC ERROR] Erro na ferramenta {tool_name}: {error_message}")
-                observation = f"Erro ao executar a ferramenta {tool_name}: {error_message}"
-                if result.get("action") == "execute_code_failed" and result_data.get("stderr"):
-                     observation += f"\nSaída de Erro (stderr):\n```\n{result_data['stderr']}\n```"
+                agent_logger.error(f"[ReactAgent EXEC ERROR] Erro na ferramenta {tool_name}: {error_message}")
+
+                # <<< ADICIONAR LÓGICA PARA ModuleNotFoundError >>>
+                is_module_not_found = False
+                stderr_content = result_data.get("stderr", "") # Get stderr safely
+
+                # Check specifically for execute_code failures
+                if skill_action == "execute_code_failed":
+                     if "ModuleNotFoundError" in stderr_content:
+                          is_module_not_found = True
+                          # Try to extract the module name
+                          module_match = re.search(r"ModuleNotFoundError: No module named '([^']+)'", stderr_content)
+                          module_name = module_match.group(1) if module_match else "desconhecido"
+                          # Format observation specifically for this error
+                          observation = f"Erro Crítico na Execução: Módulo não encontrado ('ModuleNotFoundError: No module named \\'{module_name}\\''). O ambiente de execução seguro não possui este módulo."
+                          agent_logger.error(f"[ReactAgent EXEC ERROR] ModuleNotFoundError detectado para módulo: {module_name}") # Specific log
+                     else:
+                          # Standard error format for execute_code failure (not ModuleNotFound)
+                          observation = f"Erro ao executar a ferramenta {tool_name}: {error_message}"
+                          if stderr_content:
+                               observation += f"\nSaída de Erro (stderr):\n```\n{stderr_content.strip()}\n```"
+                else:
+                     # Standard error format for failures in other tools
+                     observation = f"Erro ao executar a ferramenta {tool_name}: {error_message}"
+                # <<< FIM DA LÓGICA >>>
 
             else: # Handle other statuses like 'warning'
-                print(f"[ReactAgent EXEC WARN] Status não tratado '{status}' da ferramenta {tool_name}: {message}")
+                agent_logger.warning(f"[ReactAgent EXEC WARN] Status não tratado '{status}' da ferramenta {tool_name}: {message}")
                 observation = f"Aviso/Info da ferramenta {tool_name}: {message}"
 
         except TypeError as e:
             # Catch signature mismatches during the call
-            print(f"[ReactAgent EXEC ERROR] Erro de tipo ao chamar {tool_name}: {e}")
+            agent_logger.error(f"[ReactAgent EXEC ERROR] Erro de tipo ao chamar {tool_name}: {e}")
             traceback.print_exc() # Print detailed traceback for debugging
             observation = f"Erro interno ao chamar a ferramenta {tool_name}. Assinatura incompatível? Detalhe: {e}"
         except Exception as e:
-            print(f"[ReactAgent EXEC ERROR] Exceção inesperada ao executar {tool_name}: {e}")
+            agent_logger.error(f"[ReactAgent EXEC ERROR] Exceção inesperada ao executar {tool_name}: {e}")
             traceback.print_exc() # Print detailed traceback for debugging
             observation = f"Erro inesperado ao executar a ferramenta {tool_name}: {e}"
 
@@ -402,3 +571,17 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
             observation = observation[:MAX_OBSERVATION_LEN] + "... (Observação truncada)"
 
         return observation 
+
+    def _trim_history(self):
+        """Mantém o histórico da sessão dentro dos limites."""
+        # Mantém a primeira mensagem (objetivo) e as últimas N*2 interações (ação+obs ou assistente+tool)
+        max_keep = 1 + (MAX_HISTORY_TURNS * 2) # +1 for initial user objective
+        if len(self._history) > max_keep:
+            agent_logger.debug(f"Trimming session history from {len(self._history)} entries.")
+            # Keep the first user message and the last max_keep-1 messages
+            self._history = [self._history[0]] + self._history[-(max_keep-1):]
+            agent_logger.debug(f"History trimmed to {len(self._history)} entries.")
+
+        # <<< REMOVED SAVE FROM HERE >>>
+        # save_agent_state(AGENT_STATE_ID, self._memory) # No longer needed here
+        # <<< FIM DA REMOÇÃO >>> 
