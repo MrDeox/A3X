@@ -1,14 +1,14 @@
 import os
 import glob
 
-def skill_manage_files(entities: dict, original_command: str, intent: str = None, history: list = None) -> dict:
+def skill_manage_files(entities: dict, user_command: str, intent: str = None, react_history: list = None, last_code: str = None, last_lang: str = None) -> dict:
     """Gerencia arquivos (criar, listar, deletar)."""
     print("\n[Skill: Manage Files]")
     print(f"  Entidades recebidas: {entities}")
-    if history:
-        print(f"  Histórico recebido (últimos turnos): {history[-4:]}") # Mostra parte do histórico
+    if react_history:
+        print(f"  Histórico ReAct recebido (últimos turnos): {react_history[-4:]}") # Mostra parte do histórico
     else:
-        print("  Nenhum histórico fornecido")
+        print("  Nenhum histórico ReAct fornecido")
 
     action = entities.get("action")
     file_name = entities.get("file_name")
@@ -16,7 +16,7 @@ def skill_manage_files(entities: dict, original_command: str, intent: str = None
     file_extension = entities.get("file_extension")
 
     if not action:
-        return {"status": "error", "action": "manage_files_failed", "data": {"message": "Não entendi qual ação realizar."}}
+        return {"status": "error", "action": "manage_files_failed", "data": {"message": "Não entendi qual ação realizar (parâmetro 'action' faltando)."}}
 
     try:
         if action == "create":
@@ -46,13 +46,32 @@ def skill_manage_files(entities: dict, original_command: str, intent: str = None
 
         elif action == "list":
             if not file_extension:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Extensão de arquivo não especificada."}}
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Extensão ou padrão de arquivo não especificado para listar."}}
             
-            files = glob.glob(f"*{file_extension}")
-            if not files:
-                return {"status": "success", "action": "files_listed", "data": {"message": f"Nenhum arquivo{file_extension} encontrado."}}
-            
-            return {"status": "success", "action": "files_listed", "data": {"message": f"{len(files)} arquivo(s) encontrado(s), como: {', '.join(files[:3])}{'...' if len(files) > 3 else ''}"}}
+            try:
+                print(f"  Listando arquivos com padrão: '{file_extension}'")
+                # Usar glob para encontrar arquivos. Considerar diretório atual.
+                # Adicionar '*' se for apenas extensão (ex: .py -> *.py)
+                pattern = file_extension if '*' in file_extension or '?' in file_extension else f"*{file_extension}"
+                
+                # Lista arquivos no diretório atual
+                found_files = glob.glob(pattern)
+                
+                if not found_files:
+                    message = f"Nenhum arquivo encontrado com o padrão '{pattern}'."
+                else:
+                    # Limita a quantidade de arquivos listados para não poluir a resposta
+                    max_files_to_list = 15
+                    file_list_str = ", ".join(found_files[:max_files_to_list])
+                    if len(found_files) > max_files_to_list:
+                        file_list_str += f", ... (e mais {len(found_files) - max_files_to_list})"
+                    message = f"{len(found_files)} arquivo(s) encontrado(s): {file_list_str}"
+                    
+                print(f"  Resultado da listagem: {message}")
+                return {"status": "success", "action": "files_listed", "data": {"message": message, "files": found_files}}
+            except Exception as e:
+                print(f"  Erro ao listar arquivos: {e}")
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro ao listar arquivos: {e}"}}
 
         elif action == "delete":
             if not file_name:
@@ -72,11 +91,11 @@ def skill_manage_files(entities: dict, original_command: str, intent: str = None
             }
 
         else:
-            return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Ação '{action}' não suportada."}}
+            return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Ação '{action}' não suportada ou não reconhecida."}}
 
     except Exception as e:
-        print(f"\n[Erro na Skill Manage Files] Ocorreu um erro: {e}")
-        return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro ao gerenciar arquivos: {e}"}}
+        print(f"\n[Erro na Skill Manage Files] Ocorreu um erro inesperado: {e}")
+        return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro inesperado ao gerenciar arquivos: {e}"}}
 
 def execute_delete_file(file_name: str) -> dict:
     """Executa a deleção de um arquivo após confirmação."""
