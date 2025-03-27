@@ -15,9 +15,14 @@ from core.config import MAX_HISTORY_TURNS
 from core.dispatcher import get_skill, SKILL_DISPATCHER
 from core.planner import generate_plan
 
-def process_command(command: str, conversation_history: list) -> None:
+def process_command(command: str, conversation_history: list, is_sequence: bool = False) -> None:
     """
     Processa um comando do usuário, incluindo planejamento sequencial se necessário.
+    
+    Args:
+        command: O comando a ser processado
+        conversation_history: Histórico da conversa
+        is_sequence: Se True, indica que este comando faz parte de uma sequência
     """
     print(f"\n> {command}") # Ecoa o comando recebido
     conversation_history.append({"role": "user", "content": command})
@@ -32,6 +37,10 @@ def process_command(command: str, conversation_history: list) -> None:
 
     # Planner
     print("[Planner] Verificando necessidade de plano...")
+    # Se for parte de uma sequência, força o planejamento
+    if is_sequence:
+        print("[Planner] Comando faz parte de uma sequência. Forçando planejamento...")
+        nlu_result["intent"] = "unknown" # Força intenção genérica para garantir planejamento
     plan = generate_plan(command, nlu_result, conversation_history, available_skills)
 
     # Execução: Plano ou Ação Única
@@ -167,12 +176,14 @@ def main():
         try:
             print(f"[Info] Lendo comandos de: {args.input_file}")
             with open(args.input_file, 'r', encoding='utf-8') as f:
-                for line_num, line in enumerate(f, 1):
-                    command = line.strip()
-                    if not command or command.startswith('#'):
-                        continue
+                commands = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                print(f"[Info] Encontrados {len(commands)} comandos para processar.")
+                
+                for line_num, command in enumerate(commands, 1):
                     print(f"\n--- Comando da Linha {line_num} ---")
-                    process_command(command, conversation_history)
+                    # Marca como sequência se não for o último comando
+                    is_sequence = line_num < len(commands)
+                    process_command(command, conversation_history, is_sequence)
                     time.sleep(1) # Pausa opcional
             print("\n[Info] Fim do arquivo de entrada.")
         except FileNotFoundError:
