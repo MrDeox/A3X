@@ -103,11 +103,11 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
                     # Attempt to fix common JSON errors before parsing
                     json_str = json_str.replace(r'\\"', r'"').replace(r"\'", r"'") # Handle escaped quotes if needed
                     try:
-                         action_input = json.loads(json_str)
+                        action_input = json.loads(json_str)
                     except json.JSONDecodeError as json_e:
-                         print(f"[Agent Parse ERROR] Falha ao decodificar JSON: {json_e}\nJSON String Tentada: {json_str}")
-                         # Try a more lenient parse? Or return error? For now, return None.
-                         action_input = None
+                        print(f"[Agent Parse ERROR] Falha ao decodificar JSON: {json_e}\nJSON String Tentada: {json_str}")
+                        # Try a more lenient parse? Or return error? For now, return None.
+                        action_input = None
                 else:
                      # If no JSON block found, maybe it's a simple string for final_answer?
                      if action_name == "final_answer" and input_str:
@@ -236,7 +236,7 @@ Action Input: [JSON VÁLIDO com os parâmetros EXATOS da ferramenta ou '{{"answe
             "temperature": 0.1, # Keep low for format consistency
             "max_tokens": 512,  # Limit for the agent's response (Thought/Action/Input)
             # "stop": None, # Stop sequences usually not needed for chat models
-            "stream": False
+             "stream": False
          }
         try:
              print(f"[ReactAgent DEBUG] Enviando para URL: {chat_url}") # Debug URL

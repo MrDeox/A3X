@@ -1,140 +1,125 @@
 import os
 import glob
+import traceback # Para debug, se necessário
 
-def skill_manage_files(entities: dict, user_command: str, intent: str = None, react_history: list = None, last_code: str = None, last_lang: str = None) -> dict:
-    """Gerencia arquivos (criar, listar, deletar)."""
-    print("\n[Skill: Manage Files]")
-    print(f"  Entidades recebidas: {entities}")
-    if react_history:
-        print(f"  Histórico ReAct recebido (últimos turnos): {react_history[-4:]}") # Mostra parte do histórico
-    else:
-        print("  Nenhum histórico ReAct fornecido")
+# Remover a função execute_delete_file se não for mais usada diretamente
+# def execute_delete_file(file_name: str) -> dict: ...
 
-    action = entities.get("action")
-    file_name = entities.get("file_name")
-    content = entities.get("content")
-    file_extension = entities.get("file_extension")
+def skill_manage_files(action_input: dict, agent_memory: dict, agent_history: list | None = None) -> dict:
+    """
+    Gerencia arquivos (criar, adicionar, listar).
+    Ação 'delete' está temporariamente desabilitada no fluxo ReAct.
+
+    Args:
+        action_input (dict): Dicionário contendo a ação e parâmetros.
+            Ex: {"action": "list", "file_extension": "*.py"}
+                {"action": "create", "file_name": "meu_arquivo.txt", "content": "Olá"}
+                {"action": "append", "file_name": "meu_arquivo.txt", "content": "Mundo"}
+        agent_memory (dict): Memória do agente (não usada nesta skill).
+        agent_history (list | None): Histórico da conversa (não usado nesta skill).
+
+    Returns:
+        dict: Resultado da operação.
+    """
+    print("\n[Skill: Manage Files (ReAct)]")
+    print(f"  Action Input: {action_input}")
+
+    action = action_input.get("action")
+    file_name = action_input.get("file_name")
+    content = action_input.get("content")
+    file_extension = action_input.get("file_extension") # Usado para list
 
     if not action:
-        return {"status": "error", "action": "manage_files_failed", "data": {"message": "Não entendi qual ação realizar (parâmetro 'action' faltando)."}}
+        return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetro 'action' ausente no Action Input."}}
 
     try:
+        # --- Ação: Criar Arquivo ---
         if action == "create":
-            if not file_name:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Nome do arquivo não especificado."}}
-            
-            if not content:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Conteúdo não especificado."}}
-            
+            if not file_name or content is None: # Content pode ser string vazia
+                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetros 'file_name' e 'content' são obrigatórios para 'create'."}}
+            # Medida de segurança simples: impedir escrita fora do diretório atual
+            if os.path.dirname(file_name):
+                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A criação de arquivos só é permitida no diretório atual."}}
             with open(file_name, "w", encoding="utf-8") as f:
                 f.write(content)
-            return {"status": "success", "action": "file_created", "data": {"message": f"Arquivo '{file_name}' criado com conteúdo."}}
+            return {"status": "success", "action": "file_created", "data": {"message": f"Arquivo '{file_name}' criado com sucesso."}}
 
+        # --- Ação: Adicionar Conteúdo ---
         elif action == "append":
-            if not file_name:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Nome do arquivo não especificado."}}
-            
-            if not content:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Conteúdo para adicionar não especificado."}}
-            
+            if not file_name or content is None:
+                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetros 'file_name' e 'content' são obrigatórios para 'append'."}}
+            if os.path.dirname(file_name): # Segurança
+                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A modificação de arquivos só é permitida no diretório atual."}}
             if not os.path.exists(file_name):
                 return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Arquivo '{file_name}' não encontrado para adicionar conteúdo."}}
-            
             with open(file_name, "a", encoding="utf-8") as f:
-                f.write(f"\n{content}")
+                # Adiciona newline se o arquivo não estiver vazio E não terminar com newline
+                if os.path.getsize(file_name) > 0:
+                     f.seek(0, os.SEEK_END)
+                     f.seek(f.tell() - 1, os.SEEK_SET)
+                     if f.read(1) != '\n':
+                          f.write('\n')
+                f.write(content)
             return {"status": "success", "action": "file_appended", "data": {"message": f"Conteúdo adicionado ao arquivo '{file_name}'."}}
 
+        # --- Ação: Listar Arquivos ---
         elif action == "list":
-            if not file_extension:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Extensão ou padrão de arquivo não especificado para listar."}}
-            
+            # Usa file_extension como padrão glob
+            pattern = file_extension
+            if not pattern:
+                 # Se não fornecer padrão, lista tudo no diretório atual? Ou erro?
+                 # Vamos listar tudo por padrão, mas com aviso.
+                 print("[Manage Files WARN] Nenhum padrão fornecido para 'list', listando todos os arquivos/dirs no diretório atual.")
+                 pattern = "*" # Lista tudo no diretório atual
+
+            # Medida de segurança: só permite padrões no diretório atual
+            if os.path.dirname(pattern):
+                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A listagem de arquivos só é permitida no diretório atual."}}
+
             try:
-                print(f"  Listando arquivos com padrão: '{file_extension}'")
-                # Usar glob para encontrar arquivos. Considerar diretório atual.
-                # Adicionar '*' se for apenas extensão (ex: .py -> *.py)
-                pattern = file_extension if '*' in file_extension or '?' in file_extension else f"*{file_extension}"
-                
-                # Lista arquivos no diretório atual
-                found_files = glob.glob(pattern)
-                
-                if not found_files:
-                    message = f"Nenhum arquivo encontrado com o padrão '{pattern}'."
-                else:
-                    # Limita a quantidade de arquivos listados para não poluir a resposta
-                    max_files_to_list = 15
-                    file_list_str = ", ".join(found_files[:max_files_to_list])
-                    if len(found_files) > max_files_to_list:
-                        file_list_str += f", ... (e mais {len(found_files) - max_files_to_list})"
-                    message = f"{len(found_files)} arquivo(s) encontrado(s): {file_list_str}"
-                    
-                print(f"  Resultado da listagem: {message}")
-                return {"status": "success", "action": "files_listed", "data": {"message": message, "files": found_files}}
-            except Exception as e:
-                print(f"  Erro ao listar arquivos: {e}")
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro ao listar arquivos: {e}"}}
+                 files = glob.glob(pattern)
+                 num_files = len(files)
 
+                 if not files:
+                     message = f"Nenhum arquivo ou diretório correspondente a '{pattern}' encontrado no diretório atual."
+                 else:
+                     # Limita a lista mostrada na mensagem para não poluir
+                     max_show = 10
+                     sample_files = files[:max_show]
+                     # Adiciona '/' a diretórios para clareza
+                     sample_files_display = [f + '/' if os.path.isdir(f) else f for f in sample_files]
+                     
+                     message = f"{num_files} arquivo(s)/diretório(s) encontrado(s) para '{pattern}': {', '.join(sample_files_display)}"
+                     if num_files > max_show:
+                          message += f"... (e mais {num_files - max_show})"
+
+                 # Retorna a lista completa E a mensagem formatada
+                 return {"status": "success", "action": "files_listed", "data": {"files": files, "message": message}}
+
+            except Exception as glob_e:
+                 print(f"[Erro Manage Files] Erro ao usar glob com '{pattern}': {glob_e}")
+                 return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro ao listar arquivos com padrão '{pattern}': {glob_e}"}}
+
+        # --- Ação: Deletar Arquivo (Temporariamente Desabilitada no ReAct) ---
         elif action == "delete":
-            if not file_name:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Nome do arquivo não especificado."}}
-            
-            if not os.path.exists(file_name):
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Arquivo '{file_name}' não encontrado."}}
-            
-            # Requer confirmação para deletar
-            return {
-                "status": "confirmation_required",
-                "action": "delete_file",
-                "data": {
-                    "file_name": file_name,
-                    "confirmation_prompt": f"Tem certeza que deseja deletar o arquivo '{file_name}'?"
-                }
-            }
+             if not file_name:
+                  return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetro 'file_name' obrigatório para 'delete'."}}
+             if os.path.dirname(file_name): # Segurança
+                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A deleção de arquivos só é permitida no diretório atual."}}
 
+             print(f"[Manage Files WARN] Ação 'delete' chamada, mas temporariamente desabilitada no fluxo ReAct (requer tratamento de confirmação pelo Agente).")
+             # No futuro, o Agente precisaria:
+             # 1. Chamar esta skill.
+             # 2. Receber um status como "confirmation_required".
+             # 3. Perguntar ao usuário "Tem certeza que deseja deletar X?".
+             # 4. Se sim, chamar uma sub-função ou outra skill para efetivar a deleção.
+             return {"status": "error", "action":"action_not_fully_implemented", "data": {"message": f"A deleção do arquivo '{file_name}' requer confirmação e ainda não está totalmente suportada neste modo."}}
+
+        # --- Ação Desconhecida ---
         else:
-            return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Ação '{action}' não suportada ou não reconhecida."}}
+            return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Ação '{action}' não é suportada pela skill 'manage_files'."}}
 
     except Exception as e:
         print(f"\n[Erro na Skill Manage Files] Ocorreu um erro inesperado: {e}")
-        return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro inesperado ao gerenciar arquivos: {e}"}}
-
-def execute_delete_file(file_name: str) -> dict:
-    """Executa a deleção de um arquivo após confirmação."""
-    try:
-        # Medida de segurança simples
-        if os.path.isabs(file_name) or ".." in file_name:
-            return {
-                "status": "error",
-                "action": "delete_file_failed",
-                "data": {"message": "Desculpe, por segurança, só posso deletar arquivos diretamente no diretório atual."}
-            }
-
-        if not os.path.exists(file_name):
-            return {
-                "status": "error",
-                "action": "delete_file_failed",
-                "data": {"message": f"Erro: O arquivo '{file_name}' não existe."}
-            }
-        if not os.path.isfile(file_name):
-            return {
-                "status": "error",
-                "action": "delete_file_failed",
-                "data": {"message": f"Erro: '{file_name}' não é um arquivo."}
-            }
-
-        # Executa a deleção
-        os.remove(file_name)
-        return {
-            "status": "success",
-            "action": "file_deleted",
-            "data": {
-                "file_name": file_name,
-                "message": f"Arquivo '{file_name}' deletado com sucesso."
-            }
-        }
-
-    except Exception as e:
-        return {
-            "status": "error",
-            "action": "delete_file_failed",
-            "data": {"message": f"Erro ao deletar o arquivo '{file_name}': {e}"}
-        } 
+        traceback.print_exc() # Imprime traceback para debug detalhado
+        return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro inesperado ao executar a ação '{action}': {e}"}} 
