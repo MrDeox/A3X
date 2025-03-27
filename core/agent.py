@@ -40,7 +40,10 @@ class ReactAgent:
 3.  **Use a Observação:** Use o resultado da ferramenta anterior no próximo passo.
 4.  **Código Sem Saída:** Se 'execute_code' rodou sem erro mas sem output, avalie se o objetivo foi atingido ou se precisa de um passo extra (ex: usar 'generate_code' para adicionar um 'print' ou 'modify_code').
 5.  **Seja Explícito:** Explique seu raciocínio no 'Thought'.
-6.  **Finalize Corretamente:** Use 'final_answer' com a resposta completa quando o objetivo for atingido.
+6.  **Finalize Corretamente:** Use 'final_answer' APENAS quando o objetivo original for completamente atingido.
+    *   **Se a última ação produziu um resultado direto (ex: saída de 'execute_code', código de 'generate_code'/'modify_code', resposta de 'search_web'),** formule a 'answer' para apresentar esse resultado de forma clara ao usuário (ex: "A execução produziu: 30", "Gerei o seguinte código: ...", "A busca encontrou: Paris é a capital...").
+    *   **Se a última ação foi bem-sucedida mas sem um resultado direto para mostrar (ex: 'execute_code' rodou uma definição, arquivo foi criado),** a 'answer' deve apenas confirmar a conclusão da tarefa (ex: "A função foi definida com sucesso.", "Arquivo criado.").
+    *   **Não** diga apenas "a informação está na observação anterior". Use a informação da observação para criar a resposta final.
 
 **Formato OBRIGATÓRIO de Resposta:**
 Thought: [Seu processo de raciocínio claro e passo-a-passo.]
