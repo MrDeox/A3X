@@ -35,10 +35,11 @@ def skill_execute_code(entities: dict, original_command: str, intent: str = None
 
     # Verificar tipos de nós permitidos
     for node in ast.walk(tree):
+        print(f"[AST DEBUG] Visitando nó: {type(node).__name__} -> {ast.dump(node)}") # Log de debug para cada nó
         allowed_node_found = False # Reseta para cada nó
 
         # Caso 1: Tipos Básicos Permitidos (SEM Assign, SEM BinOp aqui)
-        if isinstance(node, (ast.Module, ast.Expr, ast.Constant, ast.Name, ast.Load, ast.Store)):
+        if isinstance(node, (ast.Module, ast.Expr, ast.Constant, ast.Name, ast.Load, ast.Store, ast.Add, ast.Sub, ast.Mult, ast.Div)):
             allowed_node_found = True
             continue
 
@@ -81,7 +82,7 @@ def skill_execute_code(entities: dict, original_command: str, intent: str = None
 
         # Se o nó atual não foi coberto pelos casos acima, não é permitido
         if not allowed_node_found:
-            print(f"[DEBUG] Nó AST não permitido encontrado: {type(node).__name__}") # Log para depuração
+            print(f"[DEBUG] Nó AST não permitido encontrado: {type(node).__name__}") # Log reativado
             return {
                 "status": "error",
                 "action": "execute_code_failed", # Corrigido action
