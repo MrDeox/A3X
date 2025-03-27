@@ -3,6 +3,7 @@ import json
 import os
 from dotenv import load_dotenv
 import argparse
+import time
 
 # Carregar variáveis de ambiente (pode ser útil para futuras configs)
 load_dotenv()
@@ -11,172 +12,193 @@ load_dotenv()
 from core.nlu import interpret_command
 from core.nlg import generate_natural_response
 from core.config import MAX_HISTORY_TURNS
-from core.dispatcher import get_skill
-from skills.manage_files import execute_delete_file
+from core.dispatcher import get_skill, SKILL_DISPATCHER
+from core.planner import generate_plan
 
-# Inicializar histórico de conversa
-conversation_history = []
+def process_command(command: str, conversation_history: list) -> None:
+    """
+    Processa um comando do usuário, incluindo planejamento sequencial se necessário.
+    """
+    print(f"\n> {command}") # Ecoa o comando recebido
+    conversation_history.append({"role": "user", "content": command})
 
-def create_nlu_prompt(command: str, history: list) -> str:
-    """
-    Cria um prompt básico para o NLU, incluindo histórico recente e exemplos essenciais.
-    """
-    prompt = "Analise o **Comando Atual** do usuário considerando o histórico e responda APENAS com JSON contendo \"intent\" e \"entities\".\n\n"
-    
-    # Adiciona histórico recente se houver
-    if history:
-        prompt += "### Histórico Recente da Conversa:\n"
-        for entry in history[-3:]:  # Últimos 3 pares de interação
-            prompt += f"{entry}\n"
-        prompt += "\n"
-    
-    prompt += "### Exemplos Essenciais\n\n"
-    
-    # Exemplo de geração de código
-    prompt += 'Comando: "gere um script python chamado utils.py com uma função hello world"\n'
-    prompt += "JSON Resultante:\n```json\n"
-    prompt += '''{
-  "intent": "generate_code",
-  "entities": {
-    "language": "python",
-    "construct_type": "function",
-    "purpose": "hello world"
-  }
-}
-```\n\n'''
-    
-    # Exemplo de gerenciamento de arquivos
-    prompt += 'Comando: "crie um arquivo vazio teste.txt"\n'
-    prompt += "JSON Resultante:\n```json\n"
-    prompt += '''{
-  "intent": "manage_files",
-  "entities": {
-    "action": "create",
-    "file_name": "teste.txt",
-    "content": null
-  }
-}
-```\n\n'''
-    
-    # Exemplo de listagem de arquivos
-    prompt += 'Comando: "liste os arquivos .py"\n'
-    prompt += "JSON Resultante:\n```json\n"
-    prompt += '''{
-  "intent": "manage_files",
-  "entities": {
-    "action": "list",
-    "file_extension": ".py"
-  }
-}
-```\n\n'''
-    
-    # Exemplo de previsão do tempo
-    prompt += 'Comando: "qual a previsão do tempo para amanhã em Curitiba?"\n'
-    prompt += "JSON Resultante:\n```json\n"
-    prompt += '''{
-  "intent": "weather_forecast",
-  "entities": {
-    "topic": "previsão do tempo",
-    "timeframe": "amanhã",
-    "location": "Curitiba"
-  }
-}
-```\n\n'''
-    
-    # Adiciona o comando atual
-    prompt += "### Comando Atual\n\n"
-    prompt += f'Comando: "{command}"\n'
-    prompt += "JSON Resultante:\n```json\n"
-    
-    return prompt
+    # NLU
+    print("[DEBUG] NLU: Analisando comando...")
+    nlu_result = interpret_command(command, history=conversation_history)
+    print(f"[DEBUG] NLU: Resultado: {json.dumps(nlu_result, indent=2, ensure_ascii=False)}")
+
+    # Obter skills disponíveis
+    available_skills = [name for name in SKILL_DISPATCHER.keys() if "error" not in name and "unknown" not in name]
+
+    # Planner
+    print("[Planner] Verificando necessidade de plano...")
+    plan = generate_plan(command, nlu_result, conversation_history, available_skills)
+
+    # Execução: Plano ou Ação Única
+    if plan: # Se o planner retornou uma lista de passos
+        print(f"[Planner] Executando plano com {len(plan)} passos...")
+        plan_successful = True # Flag para rastrear sucesso do plano
+        for i, step in enumerate(plan):
+            step_intent = step.get("intent")
+            step_entities = step.get("entities", {})
+            print(f"\n--- Executando Passo {i+1}/{len(plan)}: {step_intent} ---")
+
+            if not step_intent or step_intent not in SKILL_DISPATCHER:
+                print(f"[Erro] Skill inválida no plano: {step_intent}")
+                plan_successful = False
+                break # Aborta o plano
+
+            skill_function = get_skill(step_intent) # USA get_skill
+            try:
+                skill_result = skill_function(
+                    step_entities,
+                    f"Passo {i+1} do plano: {step_intent}", # Comando original descritivo
+                    intent=step_intent,
+                    history=conversation_history # Passa o histórico atual
+                )
+                print(f"[DEBUG] Skill: Resultado: {json.dumps(skill_result, indent=2, ensure_ascii=False)}")
+
+                response_text = "[Falha na NLG]" # Default
+                if skill_result.get("status") == "success":
+                     print("[NLG] Gerando resposta do passo...")
+                     response_text = generate_natural_response(skill_result, conversation_history)
+                     print(f"[A³X - Passo {i+1}/{len(plan)}]: {response_text}")
+                     conversation_history.append({
+                        "role": "assistant",
+                        "content": response_text,
+                        "skill_result": skill_result
+                     })
+                elif skill_result.get("status") == "confirmation_required":
+                     print("[Confirmação Necessária] A skill requer confirmação.")
+                     response_text = skill_result.get("data", {}).get("confirmation_prompt", "Confirmação necessária.")
+                     print(f"[A³X - Passo {i+1}/{len(plan)}]: {response_text}")
+                     plan_successful = False
+                     break
+                else: # Erro no passo
+                    print(f"[Erro] Falha ao executar passo {i+1}: {skill_result.get('data', {}).get('message', 'Erro desconhecido')}")
+                    response_text = generate_natural_response(skill_result, conversation_history)
+                    print(f"[A³X - Passo {i+1}/{len(plan)}]: {response_text}")
+                    conversation_history.append({
+                        "role": "assistant",
+                        "content": response_text,
+                        "skill_result": skill_result
+                    })
+                    plan_successful = False
+                    break
+
+            except Exception as e_skill:
+                print(f"[Erro Fatal Skill] Erro inesperado ao executar skill '{step_intent}': {e_skill}")
+                skill_result = {"status": "error", "action": f"{step_intent}_failed", "data": {"message": f"Erro inesperado na skill: {e_skill}"}}
+                response_text = generate_natural_response(skill_result, conversation_history)
+                print(f"[A³X - Erro Plano]: {response_text}")
+                conversation_history.append({"role": "assistant", "content": response_text, "skill_result": skill_result})
+                plan_successful = False
+                break
+
+        if plan_successful:
+            print("\n--- Plano concluído com sucesso! ---")
+        else:
+            print("\n--- Plano interrompido. ---")
+
+    else: # Se o planner retornou [], executa ação única
+        print("[Planner] Executando como ação única...")
+        intent = nlu_result.get("intent", "unknown")
+        entities = nlu_result.get("entities", {})
+
+        skill_function = get_skill(intent) # USA get_skill
+        try:
+            skill_result = skill_function(entities, command, intent=intent, history=conversation_history)
+            print(f"[DEBUG] Skill: Resultado: {json.dumps(skill_result, indent=2, ensure_ascii=False)}")
+
+            response_text = "[Falha na NLG]"
+            if skill_result.get("status") == "confirmation_required":
+                 print("[Confirmação Necessária] A skill requer confirmação.")
+                 response_text = skill_result.get("data", {}).get("confirmation_prompt", "Confirmação necessária.")
+                 print(f"[A³X]: {response_text}")
+                 # Não atualiza histórico até confirmação
+            else:
+                print("[NLG] Gerando resposta...")
+                response_text = generate_natural_response(skill_result, conversation_history)
+                print(f"[A³X]: {response_text}")
+                conversation_history.append({
+                    "role": "assistant",
+                    "content": response_text,
+                    "skill_result": skill_result
+                })
+
+        except Exception as e_skill_single:
+            print(f"[Erro Fatal Skill] Erro inesperado ao executar skill '{intent}': {e_skill_single}")
+            skill_result = {"status": "error", "action": f"{intent}_failed", "data": {"message": f"Erro inesperado na skill: {e_skill_single}"}}
+            response_text = generate_natural_response(skill_result, conversation_history)
+            print(f"[A³X - Erro]: {response_text}")
+            conversation_history.append({"role": "assistant", "content": response_text, "skill_result": skill_result})
+
+    # Limitar tamanho do histórico (OPCIONAL) - Descomente se quiser
+    # if len(conversation_history) > MAX_HISTORY_TURNS * 2:
+    #     print("[DEBUG] Histórico antigo removido.")
+    #     keep_turns = MAX_HISTORY_TURNS * 2
+    #     conversation_history[:] = conversation_history[-keep_turns:]
 
 def main():
-    parser = argparse.ArgumentParser(description='Assistente CLI com habilidades de IA')
-    parser.add_argument('-c', '--command', help='Comando único para executar')
+    # Garante execução no diretório raiz do projeto
+    project_root = "/home/arthur/Projects/A3X" # AJUSTE SE NECESSÁRIO
+    try:
+        os.chdir(project_root)
+        print(f"[Info] Executando em: {os.getcwd()}")
+    except FileNotFoundError:
+        print(f"[Erro Fatal] Diretório do projeto não encontrado: {project_root}")
+        exit(1)
+
+    parser = argparse.ArgumentParser(description='Assistente CLI A³X')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-c', '--command', help='Comando único para executar')
+    group.add_argument('-i', '--input-file', help='Arquivo para ler comandos sequencialmente (um por linha)')
+
     args = parser.parse_args()
 
-    # Lista para armazenar o histórico da conversa
     conversation_history = []
 
     if args.command:
         # Modo comando único
-        print(f"> {args.command}")
-        conversation_history.append({"role": "user", "content": args.command})
-        
-        # Interpreta o comando
-        interpretation = interpret_command(args.command, history=conversation_history)
-        print(f"[DEBUG] Interpretação: {interpretation}")
-        
-        # Extrai intenção e entidades
-        intent = interpretation.get("intent", "unknown")
-        entities = interpretation.get("entities", {})
-        
-        # Obtém a função de skill apropriada
-        skill_function = get_skill(intent)
-        
-        # Executa a skill
-        skill_result = skill_function(entities, args.command, intent=intent, history=conversation_history)
-        print(f"\n[Resultado da Skill (Estruturado)]:\n{json.dumps(skill_result, indent=2, ensure_ascii=False)}")
-        
-        # Gera resposta natural
-        natural_response = generate_natural_response(skill_result, conversation_history)
-        print(f"\n[Assistente]:\n{natural_response}")
-        
-        # Adiciona a resposta ao histórico com o resultado estruturado
-        conversation_history.append({
-            "role": "assistant",
-            "content": natural_response,
-            "skill_result": skill_result
-        })
-        
+        process_command(args.command, conversation_history)
+
+    elif args.input_file:
+        # Modo arquivo de entrada
+        try:
+            print(f"[Info] Lendo comandos de: {args.input_file}")
+            with open(args.input_file, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    command = line.strip()
+                    if not command or command.startswith('#'):
+                        continue
+                    print(f"\n--- Comando da Linha {line_num} ---")
+                    process_command(command, conversation_history)
+                    time.sleep(1) # Pausa opcional
+            print("\n[Info] Fim do arquivo de entrada.")
+        except FileNotFoundError:
+            print(f"[Erro Fatal] Arquivo de entrada não encontrado: {args.input_file}")
+        except Exception as e:
+            print(f"\n[Erro Fatal] Ocorreu um erro ao processar o arquivo '{args.input_file}': {e}")
+
     else:
         # Modo interativo
-        print("Assistente CLI iniciado. Digite 'sair' para encerrar.")
+        print("Assistente CLI A³X iniciado. Digite 'sair' para encerrar.")
         while True:
             try:
-                # Lê o comando do usuário
                 command = input("\n> ").strip()
-                
-                # Verifica se deve sair
                 if command.lower() in ['sair', 'exit', 'quit']:
                     print("Encerrando o assistente...")
                     break
-                
-                # Adiciona o comando ao histórico
-                conversation_history.append({"role": "user", "content": command})
-                
-                # Interpreta o comando
-                interpretation = interpret_command(command, history=conversation_history)
-                print(f"[DEBUG] Interpretação: {interpretation}")
-                
-                # Extrai intenção e entidades
-                intent = interpretation.get("intent", "unknown")
-                entities = interpretation.get("entities", {})
-                
-                # Obtém a função de skill apropriada
-                skill_function = get_skill(intent)
-                
-                # Executa a skill
-                skill_result = skill_function(entities, command, intent=intent, history=conversation_history)
-                print(f"\n[Resultado da Skill (Estruturado)]:\n{json.dumps(skill_result, indent=2, ensure_ascii=False)}")
-                
-                # Gera resposta natural
-                natural_response = generate_natural_response(skill_result, conversation_history)
-                print(f"\n[Assistente]:\n{natural_response}")
-                
-                # Adiciona a resposta ao histórico com o resultado estruturado
-                conversation_history.append({
-                    "role": "assistant",
-                    "content": natural_response,
-                    "skill_result": skill_result
-                })
-                
+                if not command:
+                    continue
+                process_command(command, conversation_history)
             except KeyboardInterrupt:
                 print("\nEncerrando o assistente...")
                 break
             except Exception as e:
-                print(f"\n[Erro] Ocorreu um erro: {e}")
-                continue
+                print(f"\n[Erro Inesperado] {e}")
+                # Opcional: adicionar mais detalhes/traceback aqui se necessário
+                # traceback.print_exc()
 
 if __name__ == "__main__":
     main() 

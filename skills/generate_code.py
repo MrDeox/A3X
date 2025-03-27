@@ -18,46 +18,42 @@ def skill_generate_code(entities: dict, original_command: str, intent: str = Non
     if not purpose and not contains: # Se NLU não deu propósito e não há 'contains'
          purpose = original_command # Usa comando original como último recurso
 
-    # --- Construir o prompt de geração de código DINAMICAMENTE ---
-    code_prompt = f"Gere o código {language} completo para um {construct_type}"
-    if file_name:
-        code_prompt += f" que será salvo como '{file_name}'"
-    code_prompt += ".\n\n"
-
-    # Descrever o conteúdo desejado
-    if contains:
-        code_prompt += "O código deve incluir o(s) seguinte(s) elemento(s):\n"
-        for item in contains:
-            item_type = item.get('construct_type', 'elemento')
-            item_name = item.get('function_name') or item.get('class_name', '')
-            item_purpose = item.get('purpose', '')
-            code_prompt += f"- Um(a) {item_type}"
-            if item_name:
-                 code_prompt += f" chamado(a) '{item_name}'"
-            if item_purpose:
-                 code_prompt += f" que faz o seguinte: {item_purpose}\n"
-            else:
-                 code_prompt += "\n"
-    elif purpose:
-        # Usa o propósito geral se não houver 'contains' detalhado
-         code_prompt += f"O propósito principal do código é: {purpose}\n"
+    # --- Construir o prompt ---
+    if construct_type == 'print' and purpose:
+        code_prompt = f"Gere uma única linha de código python que imprime a string: '{purpose}'."
+    elif language and construct_type and purpose:
+        code_prompt = f"Gere o código {language} completo para um {construct_type} que faz o seguinte: {purpose}."
+        if file_name:
+            code_prompt += f" O código será salvo como '{file_name}'."
+        if contains:
+            code_prompt += "\nO código deve incluir o(s) seguinte(s) elemento(s):\n"
+            for item in contains:
+                item_type = item.get('construct_type', 'elemento')
+                item_name = item.get('function_name') or item.get('class_name', '')
+                item_purpose = item.get('purpose', '')
+                code_prompt += f"- Um(a) {item_type}"
+                if item_name:
+                     code_prompt += f" chamado(a) '{item_name}'"
+                if item_purpose:
+                     code_prompt += f" que faz o seguinte: {item_purpose}\n"
+                else:
+                     code_prompt += "\n"
     else:
-         # Caso muito genérico, talvez pedir mais detalhes? Por enquanto, deixar simples.
-         code_prompt += "Gere um exemplo de código simples.\n"
+        # Fallback se faltar informação
+        code_prompt = f"Gere um exemplo simples de código {language}."
 
-    # Instrução final modificada e adicionando linha inicial do bloco
+    # Instrução final
     code_prompt += f"\nIMPORTANTE: Gere APENAS o código {language} solicitado, sem explicações.\n``` {language}\n"
-    # --- Fim da construção dinâmica ---
 
     print(f"  Prompt de geração de código enviado ao LLM:\n---\n{code_prompt}\n---") # Para depuração
 
     # Enviar o prompt de código para o servidor LLM
     headers = {"Content-Type": "application/json"}
     payload = {
-        "prompt": code_prompt, # USA A VARIÁVEL CONSTRUÍDA ACIMA
-        "n_predict": 1536, # Aumentado
-        "temperature": 0.5, # Aumentado
-        "stop": ["```"], # RE-ADICIONADO
+        "prompt": code_prompt,
+        "n_predict": 1536,
+        "temperature": 0.2, # Temperatura mais baixa para geração mais focada
+        "stop": ["```"],
     }
     
     try:
@@ -69,14 +65,12 @@ def skill_generate_code(entities: dict, original_command: str, intent: str = Non
         generated_code = response_data.get("content", "").strip()
 
         # Extrair estritamente o conteúdo do primeiro bloco de código ```language ... ```
-        # (Usando re.DOTALL para '.' corresponder a newlines também)
         code_match = re.search(rf"```{language}\s*([\s\S]*?)\s*```", generated_code, re.DOTALL)
         extracted_code = ""
         if code_match:
             extracted_code = code_match.group(1).strip()
         else:
-            # Fallback: Se não encontrar bloco, usa a resposta como estava,
-            # mas limpa possíveis inícios/fins de bloco simples que o stop pode ter deixado
+            # Fallback: Se não encontrar bloco, usa a resposta como estava
             print("  [Aviso] Bloco de código ```language ... ``` não encontrado na resposta. Usando fallback.")
             extracted_code = generated_code.removeprefix(f"```{language}").removesuffix("```").strip()
 
@@ -84,20 +78,19 @@ def skill_generate_code(entities: dict, original_command: str, intent: str = Non
         result_message = f"Código {language} gerado:\n---\n{extracted_code}\n---"
         if file_name:
             try:
-                # Lógica de salvamento (agora descomentada e funcional)
                 with open(file_name, "w") as f:
                     f.write(extracted_code)
                 result_message += f"\nCódigo também salvo em '{file_name}'."
             except Exception as e:
                  result_message += f"\nErro ao tentar salvar o arquivo '{file_name}': {e}"
-        
+
         return {
             "status": "success",
             "action": "code_generated",
             "data": {
                 "language": language,
                 "code": extracted_code,
-                "file_name": file_name, # Será None se não foi salvo
+                "file_name": file_name,
                 "message": result_message
             }
         }
@@ -115,4 +108,31 @@ def skill_generate_code(entities: dict, original_command: str, intent: str = Non
             "status": "error",
             "action": "code_generation_failed",
             "data": {"message": f"Erro inesperado ao gerar código: {e}"}
-        } 
+        }
+
+def extract_code_from_response(response):
+    # Implemente a lógica para extrair o código da resposta do LLM
+    # Esta é uma implementação básica e pode ser ajustada de acordo com a estrutura da resposta do LLM
+    return response.json().get("content", "").strip()
+
+def send_to_llm(prompt):
+    # Implemente a lógica para enviar o prompt para o LLM
+    # Esta é uma implementação básica e pode ser ajustada de acordo com a forma como você se comunica com o LLM
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "prompt": prompt,
+        "n_predict": 1536,
+        "temperature": 0.5,
+        "stop": ["```"],
+    }
+    
+    try:
+        response = requests.post(LLAMA_SERVER_URL, headers=headers, json=payload)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        print(f"\n[Erro HTTP na Skill] Falha ao conectar com o servidor LLM: {e}")
+        raise
+    except Exception as e:
+        print(f"\n[Erro Inesperado na Skill] Ocorreu um erro: {e}")
+        raise 
