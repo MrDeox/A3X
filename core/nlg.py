@@ -45,11 +45,10 @@ def generate_natural_response(skill_result: dict, history: list) -> str:
     # Adicionar detalhes específicos baseados na ação
     if status == "success":
         if action == "files_listed":
-            files = data.get('files', [])
-            if files:
-                action_summary += f"\nResumo dos dados: Arquivos encontrados:\n{files}"
+            if data.get("message"):
+                action_summary += f"\nResumo dos dados: {data.get('message')}"
             else:
-                action_summary += "\nResumo dos dados: Nenhum arquivo encontrado."
+                action_summary += f"\nResumo dos dados: Arquivos listados (sem detalhes)."
 
         elif action == "web_search":
             results = data.get('results', [])

@@ -182,6 +182,19 @@ JSON Resultante:
   }
 }
 ```
+
+Comando: "adicione a linha 'nova entrada' ao arquivo log.txt"
+JSON Resultante:
+```json
+{
+  "intent": "manage_files",
+  "entities": {
+    "file_name": "log.txt",
+    "action": "append",
+    "content": "nova entrada"
+  }
+}
+```
 """
     
     # Construir o prompt completo
