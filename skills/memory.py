@@ -59,13 +59,10 @@ def skill_remember_info(entities: dict, original_command: str, intent: str = Non
     if not info:
         return {"status": "error", "action": "remember_info_failed", "data": {"message": "Não entendi qual informação armazenar."}}
 
-    try:
-        # Armazena a informação
-        store_info(info)
-        return {"status": "success", "action": "info_remembered", "data": {"message": f"Informação armazenada: {info}"}}
-    except Exception as e:
-        print(f"\n[Erro na Skill Remember Info] Ocorreu um erro: {e}")
-        return {"status": "error", "action": "remember_info_failed", "data": {"message": f"Erro ao armazenar informação: {e}"}}
+    # AVISO: Esta skill é um placeholder para compatibilidade. Use 'save_memory' no fluxo ReAct.
+    logger.warning(f"[Skill: Remember Info WARN] Chamada para skill legacy 'remember_info'. Use 'save_memory' para o fluxo ReAct. Info: {info}")
+    # REMOVIDO: store_info(info)
+    return {"status": "error", "action": "remember_info_legacy", "data": {"message": f"AVISO: A skill 'remember_info' é legacy. Use 'save_memory' no fluxo ReAct para '{info}'."}}
 
 def skill_recall_info(entities: dict, original_command: str, intent: str = None, history: list = None) -> dict:
     """Recupera informações da memória do assistente."""
@@ -80,16 +77,11 @@ def skill_recall_info(entities: dict, original_command: str, intent: str = None,
     if not info:
         return {"status": "error", "action": "recall_info_failed", "data": {"message": "Não entendi qual informação recuperar."}}
 
-    try:
-        # Recupera a informação
-        retrieved_info = recall_info(info)
-        if not retrieved_info:
-            return {"status": "error", "action": "recall_info_failed", "data": {"message": f"Não encontrei informação sobre '{info}'."}}
-        
-        return {"status": "success", "action": "info_recalled", "data": {"message": f"Informação recuperada: {retrieved_info}"}}
-    except Exception as e:
-        print(f"\n[Erro na Skill Recall Info] Ocorreu um erro: {e}")
-        return {"status": "error", "action": "recall_info_failed", "data": {"message": f"Erro ao recuperar informação: {e}"}}
+    # AVISO: Esta skill é um placeholder para compatibilidade. Use 'recall_memory' no fluxo ReAct.
+    logger.warning(f"[Skill: Recall Info WARN] Chamada para skill legacy 'recall_info'. Use 'recall_memory' para o fluxo ReAct. Info: {info}")
+    # REMOVIDO: retrieved_info = recall_info(info)
+    # Retorna erro indicando para usar a skill correta
+    return {"status": "error", "action": "recall_info_legacy", "data": {"message": f"AVISO: A skill 'recall_info' é legacy. Use 'recall_memory' no fluxo ReAct para buscar sobre '{info}'."}}
 
 # Outras funções de memória podem ser adicionadas aqui (ex: deletar, listar chaves)
 
