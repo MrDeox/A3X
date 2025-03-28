@@ -1,180 +1,293 @@
 import os
 import glob
-import traceback # Para debug, se necessário
+import traceback
 import logging
+from pathlib import Path
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
-# Allowed extensions for appending (adjust as needed)
-ALLOWED_APPEND_EXTENSIONS = ('.txt', '.log', '.md', '.csv')
+# Define o diretório raiz do projeto (ajuste se necessário)
+# Idealmente, isso seria configurado globalmente
+WORKSPACE_ROOT = Path("/home/arthur/Projects/A3X").resolve()
+
+def _is_path_within_workspace(path: str | Path) -> bool:
+    """Verifica se o caminho fornecido está dentro do WORKSPACE_ROOT."""
+    try:
+        absolute_path = Path(path).resolve()
+        return absolute_path.is_relative_to(WORKSPACE_ROOT)
+    except ValueError: # Caso o path seja inválido
+        return False
+    except Exception as e: # Outros erros inesperados (ex: permissão)
+        logger.error(f"Erro ao verificar caminho '{path}': {e}")
+        return False
+
+def _resolve_path(filepath: str) -> Path | None:
+    """Resolve o filepath para um caminho absoluto seguro dentro do workspace."""
+    path = Path(filepath)
+    if path.is_absolute():
+        # Se absoluto, já verifica se está no workspace
+        if _is_path_within_workspace(path):
+            return path.resolve()
+        else:
+            logger.warning(f"Acesso negado: Caminho absoluto fora do workspace: {path}")
+            return None
+    else:
+        # Se relativo, junta com o WORKSPACE_ROOT
+        resolved_path = (WORKSPACE_ROOT / path).resolve()
+        # Verifica novamente se o caminho resolvido ainda está no workspace
+        if _is_path_within_workspace(resolved_path):
+            return resolved_path
+        else:
+            # Isso pode acontecer com caminhos relativos como "../../../etc/passwd"
+            logger.warning(f"Acesso negado: Caminho relativo resolvido fora do workspace: {filepath} -> {resolved_path}")
+            return None
+
+def _read_file(filepath: str) -> dict:
+    """Lê o conteúdo de um arquivo."""
+    resolved_path = _resolve_path(filepath)
+    if not resolved_path:
+        return {"status": "error", "action": "read_file_failed", "data": {"message": f"Acesso negado ou caminho inválido: '{filepath}'"}}
+
+    try:
+        if not resolved_path.is_file():
+            return {"status": "error", "action": "read_file_failed", "data": {"message": f"Arquivo não encontrado ou não é um arquivo: '{filepath}'"}}
+
+        with open(resolved_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Limita o tamanho do conteúdo retornado na mensagem para não poluir logs/prompt
+        max_len_preview = 500
+        content_preview = content[:max_len_preview] + ("..." if len(content) > max_len_preview else "")
+
+        return {
+            "status": "success",
+            "action": "file_read",
+            "data": {
+                "filepath": filepath, # Retorna o path original solicitado
+                "content": content, # Retorna o conteúdo completo
+                "message": f"Conteúdo do arquivo '{filepath}' lido com sucesso (Prévia: {content_preview})"
+            }
+        }
+    except FileNotFoundError: # Deveria ser pego por is_file(), mas por segurança
+        return {"status": "error", "action": "read_file_failed", "data": {"message": f"Arquivo não encontrado: '{filepath}'"}}
+    except PermissionError:
+        logger.error(f"Erro de permissão ao ler arquivo: {filepath}", exc_info=True)
+        return {"status": "error", "action": "read_file_failed", "data": {"message": f"Permissão negada para ler o arquivo: '{filepath}'"}}
+    except IsADirectoryError:
+         return {"status": "error", "action": "read_file_failed", "data": {"message": f"O caminho fornecido é um diretório, não um arquivo: '{filepath}'"}}
+    except Exception as e:
+        logger.exception(f"Erro inesperado ao ler arquivo '{filepath}':")
+        return {"status": "error", "action": "read_file_failed", "data": {"message": f"Erro inesperado ao ler arquivo '{filepath}': {e}"}}
+
+def _create_file(filepath: str, content: str, overwrite: bool) -> dict:
+    """Cria um novo arquivo."""
+    resolved_path = _resolve_path(filepath)
+    if not resolved_path:
+        return {"status": "error", "action": "create_file_failed", "data": {"message": f"Acesso negado ou caminho inválido para criação: '{filepath}'"}}
+
+    try:
+        if resolved_path.exists():
+            if resolved_path.is_dir():
+                 return {"status": "error", "action": "create_file_failed", "data": {"message": f"Não é possível criar arquivo, já existe um diretório com este nome: '{filepath}'"}}
+            if not overwrite:
+                return {"status": "error", "action": "create_file_failed", "data": {"message": f"Arquivo '{filepath}' já existe. Use 'overwrite: True' para sobrescrever."}}
+            # Se overwrite=True e é um arquivo, continua para sobrescrever
+
+        # Garante que o diretório pai exista
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(resolved_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        action = "file_overwritten" if overwrite and resolved_path.exists() else "file_created"
+        message = f"Arquivo '{filepath}' {'sobrescrito' if overwrite and resolved_path.exists() else 'criado'} com sucesso."
+
+        return {"status": "success", "action": action, "data": {"message": message, "filepath": filepath}}
+
+    except PermissionError:
+        logger.error(f"Erro de permissão ao criar/sobrescrever arquivo: {filepath}", exc_info=True)
+        return {"status": "error", "action": "create_file_failed", "data": {"message": f"Permissão negada para criar/sobrescrever o arquivo: '{filepath}'"}}
+    except IsADirectoryError: # Caso tente criar onde já existe diretório (mkdir deve falhar antes?)
+         return {"status": "error", "action": "create_file_failed", "data": {"message": f"Não é possível criar arquivo, já existe um diretório com este nome: '{filepath}'"}}
+    except Exception as e:
+        logger.exception(f"Erro inesperado ao criar/sobrescrever arquivo '{filepath}':")
+        return {"status": "error", "action": "create_file_failed", "data": {"message": f"Erro inesperado ao criar/sobrescrever arquivo '{filepath}': {e}"}}
+
+def _append_to_file(filepath: str, content: str) -> dict:
+    """Adiciona conteúdo ao final de um arquivo."""
+    resolved_path = _resolve_path(filepath)
+    if not resolved_path:
+        return {"status": "error", "action": "append_failed", "data": {"message": f"Acesso negado ou caminho inválido para append: '{filepath}'"}}
+
+    try:
+        if not resolved_path.exists():
+             # Comportamento: criar o arquivo se não existir? Ou erro?
+             # Vamos retornar erro por enquanto para ser explícito.
+             # Poderia ser um parâmetro create_if_not_exists=True se necessário.
+             return {"status": "error", "action": "append_failed", "data": {"message": f"Arquivo '{filepath}' não encontrado para adicionar conteúdo."}}
+        if resolved_path.is_dir():
+             return {"status": "error", "action": "append_failed", "data": {"message": f"Não é possível adicionar conteúdo a um diretório: '{filepath}'"}}
+
+        # Garante que o diretório pai exista (embora se o arquivo existe, o pai deveria existir)
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(resolved_path, "a", encoding="utf-8") as f:
+            # Adiciona uma nova linha se o conteúdo não terminar com uma?
+            # Vamos adicionar sempre por consistência com o código anterior.
+            f.write(content + "\n")
+
+        return {"status": "success", "action": "file_appended", "data": {"message": f"Conteúdo adicionado a '{filepath}'.", "filepath": filepath}}
+
+    except PermissionError:
+        logger.error(f"Erro de permissão ao adicionar conteúdo ao arquivo: {filepath}", exc_info=True)
+        return {"status": "error", "action": "append_failed", "data": {"message": f"Permissão negada para adicionar conteúdo ao arquivo: '{filepath}'"}}
+    except IsADirectoryError:
+         return {"status": "error", "action": "append_failed", "data": {"message": f"Não é possível adicionar conteúdo a um diretório: '{filepath}'"}}
+    except Exception as e:
+        logger.exception(f"Erro inesperado ao adicionar conteúdo ao arquivo '{filepath}':")
+        return {"status": "error", "action": "append_failed", "data": {"message": f"Erro inesperado ao adicionar conteúdo ao arquivo '{filepath}': {e}"}}
+
+def _list_directory(directory: str) -> dict:
+    """Lista o conteúdo de um diretório."""
+    resolved_path = _resolve_path(directory)
+    if not resolved_path:
+        return {"status": "error", "action": "list_failed", "data": {"message": f"Acesso negado ou caminho inválido para listar: '{directory}'"}}
+
+    try:
+        if not resolved_path.exists():
+             return {"status": "error", "action": "list_failed", "data": {"message": f"Diretório não encontrado: '{directory}'"}}
+        if not resolved_path.is_dir():
+             return {"status": "error", "action": "list_failed", "data": {"message": f"O caminho fornecido não é um diretório: '{directory}'"}}
+
+        items = list(resolved_path.iterdir())
+        # Converte os Paths para strings relativas ao workspace para a saída
+        relative_items = []
+        for item in items:
+            try:
+                relative_path = str(item.relative_to(WORKSPACE_ROOT))
+                if item.is_dir():
+                    relative_items.append(relative_path + "/")
+                else:
+                    relative_items.append(relative_path)
+            except ValueError:
+                # Se, por alguma razão, um item listado não estiver no workspace
+                # (links simbólicos?), apenas use o nome.
+                 relative_items.append(item.name + ("/" if item.is_dir() else ""))
+
+
+        num_items = len(relative_items)
+        message = f"{num_items} item(s) encontrado(s) em '{directory}'."
+
+        # Limita a lista mostrada na mensagem para não poluir
+        max_show = 15
+        if num_items > 0:
+            sample_items_display = sorted(relative_items)[:max_show]
+            message += f" Exemplo: {', '.join(sample_items_display)}"
+            if num_items > max_show:
+                message += f"... (e mais {num_items - max_show})"
+
+
+        return {
+            "status": "success",
+            "action": "directory_listed",
+            "data": {
+                "directory": directory,
+                "items": sorted(relative_items), # Retorna a lista completa e ordenada
+                "message": message
+            }
+        }
+
+    except PermissionError:
+        logger.error(f"Erro de permissão ao listar diretório: {directory}", exc_info=True)
+        return {"status": "error", "action": "list_failed", "data": {"message": f"Permissão negada para listar o diretório: '{directory}'"}}
+    except NotADirectoryError: # Deveria ser pego por is_dir(), mas por segurança
+        return {"status": "error", "action": "list_failed", "data": {"message": f"O caminho fornecido não é um diretório: '{directory}'"}}
+    except Exception as e:
+        logger.exception(f"Erro inesperado ao listar diretório '{directory}':")
+        return {"status": "error", "action": "list_failed", "data": {"message": f"Erro inesperado ao listar diretório '{directory}': {e}"}}
+
 
 # Remover a função execute_delete_file se não for mais usada diretamente
 # def execute_delete_file(file_name: str) -> dict: ...
 
-def skill_manage_files(action_input: dict, agent_memory: dict, agent_history: list | None = None) -> dict:
+def skill_manage_files(action_input: dict, agent_memory: dict = None, agent_history: list | None = None) -> dict:
     """
-    Gerencia arquivos (criar, adicionar, listar).
-    Ação 'delete' está temporariamente desabilitada no fluxo ReAct.
+    Gerencia arquivos e diretórios dentro do workspace (ler, criar, adicionar, listar).
 
     Args:
         action_input (dict): Dicionário contendo a ação e parâmetros.
-            Ex: {"action": "list", "file_extension": "*.py"}
-                {"action": "create", "file_name": "meu_arquivo.txt", "content": "Olá"}
-                {"action": "append", "file_name": "meu_arquivo.txt", "content": "Mundo"}
-        agent_memory (dict): Memória do agente (não usada nesta skill).
-        agent_history (list | None): Histórico da conversa (não usado nesta skill).
+            Exemplos:
+                {"action": "read", "filepath": "path/to/file.txt"}
+                {"action": "create", "filepath": "path/to/new.txt", "content": "Olá", "overwrite": False}
+                {"action": "append", "filepath": "path/to/file.txt", "content": " Mundo"}
+                {"action": "list", "directory": "path/to/dir"} (relativo ao workspace)
+        agent_memory (dict, optional): Memória do agente (não usada). Defaults to None.
+        agent_history (list | None, optional): Histórico da conversa (não usado). Defaults to None.
 
     Returns:
-        dict: Resultado da operação.
+        dict: Dicionário padronizado com o resultado da operação:
+              {"status": "success/error", "action": "...", "data": {"message": "...", ...}}
     """
-    print("\n[Skill: Manage Files (ReAct)]")
-    print(f"  Action Input: {action_input}")
+    logger.debug(f"Recebido action_input para manage_files: {action_input}")
 
     action = action_input.get("action")
-    file_name = action_input.get("file_name")
-    content = action_input.get("content")
-    file_extension = action_input.get("file_extension") # Usado para list
 
     if not action:
         return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetro 'action' ausente no Action Input."}}
 
     try:
-        # --- Ação: Criar Arquivo ---
-        if action == "create":
-            if not file_name or content is None: # Content pode ser string vazia
-                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetros 'file_name' e 'content' são obrigatórios para 'create'."}}
-            # Medida de segurança simples: impedir escrita fora do diretório atual
-            if os.path.dirname(file_name):
-                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A criação de arquivos só é permitida no diretório atual."}}
-            with open(file_name, "w", encoding="utf-8") as f:
-                f.write(content)
-            return {"status": "success", "action": "file_created", "data": {"message": f"Arquivo '{file_name}' criado com sucesso."}}
+        if action == "read":
+            filepath = action_input.get("filepath")
+            if not filepath:
+                return {"status": "error", "action": "read_file_failed", "data": {"message": "Parâmetro 'filepath' obrigatório para a ação 'read'."}}
+            return _read_file(filepath)
 
-        # --- Ação: Adicionar Conteúdo ---
+        elif action == "create":
+            filepath = action_input.get("filepath")
+            content = action_input.get("content")
+            # overwrite default é False
+            overwrite = action_input.get("overwrite", False)
+            if not filepath or content is None: # content pode ser string vazia
+                return {"status": "error", "action": "create_file_failed", "data": {"message": "Parâmetros 'filepath' e 'content' são obrigatórios para a ação 'create'."}}
+            if not isinstance(overwrite, bool):
+                 return {"status": "error", "action": "create_file_failed", "data": {"message": "Parâmetro 'overwrite' deve ser um booleano (true/false)."}}
+            return _create_file(filepath, content, overwrite)
+
         elif action == "append":
-            if not file_name or content is None:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetros 'file_name' e 'content' são obrigatórios para 'append'."}}
+            filepath = action_input.get("filepath")
+            content = action_input.get("content")
+            if not filepath or content is None: # content pode ser string vazia
+                return {"status": "error", "action": "append_failed", "data": {"message": "Parâmetros 'filepath' e 'content' são obrigatórios para a ação 'append'."}}
+            return _append_to_file(filepath, content)
 
-            # Medida de segurança: permitir append apenas a arquivos .txt, .log, .md no diretório atual
-            if not file_name.endswith(tuple(ALLOWED_APPEND_EXTENSIONS)) or os.path.dirname(file_name) != '':
-                logger.warning(f"[Manage Files Append] Acesso negado: tentativa de append a '{file_name}'")
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Acesso negado: Append permitido apenas para arquivos {ALLOWED_APPEND_EXTENSIONS} no diretório atual."}}
-
-            try:
-                with open(file_name, "a", encoding="utf-8") as f:
-                    f.write(content + "\n")
-                return {"status": "success", "action": "file_appended", "data": {"message": f"Conteúdo adicionado a '{file_name}'."}}
-            except Exception as append_err:
-                logger.exception(f"[Manage Files Append] Erro ao adicionar conteúdo a '{file_name}':")
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro ao adicionar conteúdo a '{file_name}': {append_err}"}}
-
-        # --- Ação: Listar Arquivos ---
         elif action == "list":
-            # Usa file_extension como padrão glob
-            pattern = file_extension
-            if not pattern:
-                 # Se não fornecer padrão, lista tudo no diretório atual? Ou erro?
-                 # Vamos listar tudo por padrão, mas com aviso.
-                 print("[Manage Files WARN] Nenhum padrão fornecido para 'list', listando todos os arquivos/dirs no diretório atual.")
-                 pattern = "*" # Lista tudo no diretório atual
+            directory = action_input.get("directory")
+            if directory is None: # Permite listar o root se directory='' ou não fornecido? Vamos exigir.
+                # Se quiser listar o root, passe directory="." ou directory=""
+                 return {"status": "error", "action": "list_failed", "data": {"message": "Parâmetro 'directory' obrigatório para a ação 'list'."}}
+            return _list_directory(directory)
 
-            # Medida de segurança: só permite padrões no diretório atual
-            if os.path.dirname(pattern):
-                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A listagem de arquivos só é permitida no diretório atual."}}
-
-            try:
-                 files = glob.glob(pattern)
-                 num_files = len(files)
-
-                 if not files:
-                     message = f"Nenhum arquivo ou diretório correspondente a '{pattern}' encontrado no diretório atual."
-                 else:
-                     # Limita a lista mostrada na mensagem para não poluir
-                     max_show = 10
-                     sample_files = files[:max_show]
-                     # Adiciona '/' a diretórios para clareza
-                     sample_files_display = [f + '/' if os.path.isdir(f) else f for f in sample_files]
-                     
-                     message = f"{num_files} arquivo(s)/diretório(s) encontrado(s) para '{pattern}': {', '.join(sample_files_display)}"
-                     if num_files > max_show:
-                          message += f"... (e mais {num_files - max_show})"
-
-                 # Retorna a lista completa E a mensagem formatada
-                 return {"status": "success", "action": "files_listed", "data": {"files": files, "message": message}}
-
-            except Exception as glob_e:
-                 print(f"[Erro Manage Files] Erro ao usar glob com '{pattern}': {glob_e}")
-                 return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro ao listar arquivos com padrão '{pattern}': {glob_e}"}}
-
-        # --- Ação: Deletar Arquivo (Temporariamente Desabilitada no ReAct) ---
+        # --- Ação: Deletar Arquivo (Ainda Desabilitada) ---
         elif action == "delete":
-             if not file_name:
-                  return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetro 'file_name' obrigatório para 'delete'."}}
-             if os.path.dirname(file_name): # Segurança
-                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A deleção de arquivos só é permitida no diretório atual."}}
+             filepath = action_input.get("filepath")
+             if not filepath:
+                  return {"status": "error", "action": "delete_failed", "data": {"message": "Parâmetro 'filepath' obrigatório para 'delete'."}}
 
-             print(f"[Manage Files WARN] Ação 'delete' chamada, mas temporariamente desabilitada no fluxo ReAct (requer tratamento de confirmação pelo Agente).")
-             # No futuro, o Agente precisaria:
-             # 1. Chamar esta skill.
-             # 2. Receber um status como "confirmation_required".
-             # 3. Perguntar ao usuário "Tem certeza que deseja deletar X?".
-             # 4. Se sim, chamar uma sub-função ou outra skill para efetivar a deleção.
-             return {"status": "error", "action":"action_not_fully_implemented", "data": {"message": f"A deleção do arquivo '{file_name}' requer confirmação e ainda não está totalmente suportada neste modo."}}
+             logger.warning(f"Ação 'delete' chamada para '{filepath}', mas desabilitada.")
+             # No futuro, a lógica de deleção segura iria aqui, talvez chamando _delete_file(filepath)
+             # que faria as verificações de segurança (_resolve_path, etc.) e chamaria os.remove() ou shutil.rmtree()
+             return {
+                 "status": "error",
+                 "action":"action_not_implemented",
+                 "data": {
+                     "message": f"A deleção de '{filepath}' ainda não está implementada/habilitada nesta skill."
+                 }
+             }
 
-        # --- Ação: Ler Arquivo ---
-        elif action == "read":
-            if not file_name:
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetro 'file_name' é obrigatório para 'read'."}}
-            # Medida de segurança: permitir ler apenas arquivos .py, .txt, .json, .md, .log, .cfg, .ini no diretório atual ou subdiretórios comuns (core/, skills/, tests/)
-            allowed_dirs = ["", "core", "skills", "tests"]
-            allowed_exts = [".py", ".txt", ".json", ".md", ".log", ".cfg", ".ini"]
-            
-            # Normaliza o caminho e verifica se é seguro
-            normalized_path = os.path.normpath(os.path.join(os.getcwd(), file_name))
-            base_dir = os.path.basename(os.path.dirname(normalized_path)) if os.path.dirname(file_name) else "" # Pega 'core', 'skills', etc. ou '' para raiz
-            ext = os.path.splitext(normalized_path)[1].lower()
-
-            if not normalized_path.startswith(os.getcwd()): # Verifica se está dentro do projeto
-                 logger.warning(f"[Manage Files Read] Acesso negado: tentativa de ler fora do diretório do projeto: '{file_name}'")
-                 return {"status": "error", "action": "read_file_failed", "data": {"message": f"Acesso negado: Leitura permitida apenas dentro do diretório do projeto."}}
-            # Verifica diretórios e extensões permitidas
-            # NOTA: Ajuste allowed_dirs/exts conforme necessidade
-            # if base_dir not in allowed_dirs or ext not in allowed_exts:
-            #      logger.warning(f"[Manage Files Read] Acesso negado: diretório ('{base_dir}') ou extensão ('{ext}') não permitidos para leitura: '{file_name}'")
-            #      return {"status": "error", "action": "read_file_failed", "data": {"message": f"Acesso negado: Leitura não permitida para este tipo ou localização de arquivo ({file_name})."}}
-            
-            # Simplificação da segurança por agora: permitir ler qualquer coisa DENTRO do diretório atual ou subdirs (CUIDADO!)
-            # A verificação mais granular acima é melhor, mas vamos simplificar para o teste.
-            # Apenas verifica se está no diretório de trabalho ou subdir.
-
-            try:
-                with open(file_name, "r", encoding="utf-8") as f:
-                    file_content = f.read()
-                # Limita o tamanho do conteúdo retornado na mensagem para não poluir logs/prompt
-                max_len_preview = 500
-                content_preview = file_content[:max_len_preview] + ("..." if len(file_content) > max_len_preview else "")
-
-                return {
-                    "status": "success",
-                    "action": "file_read",
-                    "data": {
-                        "file_name": file_name,
-                        "content": file_content, # Retorna o conteúdo completo
-                        "message": f"Conteúdo do arquivo '{file_name}' lido com sucesso (Prévia: {content_preview})"
-                    }
-                }
-            except FileNotFoundError:
-                 return {"status": "error", "action": "read_file_failed", "data": {"message": f"Arquivo '{file_name}' não encontrado para leitura."}}
-            except Exception as read_err:
-                 logger.exception(f"[Manage Files Read] Erro ao ler arquivo '{file_name}':")
-                 return {"status": "error", "action": "read_file_failed", "data": {"message": f"Erro ao ler arquivo '{file_name}': {read_err}"}}
-
-        # --- Ação Desconhecida ---
         else:
             return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Ação '{action}' não é suportada pela skill 'manage_files'."}}
 
     except Exception as e:
-        print(f"\n[Erro na Skill Manage Files] Ocorreu um erro inesperado: {e}")
-        traceback.print_exc() # Imprime traceback para debug detalhado
+        logger.exception(f"Erro inesperado na skill manage_files ao processar ação '{action}':")
+        # traceback.print_exc() # Logger já captura a exceção
         return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro inesperado ao executar a ação '{action}': {e}"}} 
