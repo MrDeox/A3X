@@ -1,6 +1,13 @@
 import os
 import glob
 import traceback # Para debug, se necessário
+import logging
+
+# Initialize logger
+logger = logging.getLogger(__name__)
+
+# Allowed extensions for appending (adjust as needed)
+ALLOWED_APPEND_EXTENSIONS = ('.txt', '.log', '.md', '.csv')
 
 # Remover a função execute_delete_file se não for mais usada diretamente
 # def execute_delete_file(file_name: str) -> dict: ...

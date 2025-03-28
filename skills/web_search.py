@@ -1,5 +1,9 @@
 from duckduckgo_search import DDGS
 import json
+import logging
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 # Limite de resultados por busca
 MAX_SEARCH_RESULTS = 3
@@ -22,7 +26,7 @@ def skill_search_web(action_input: dict, agent_memory: dict, agent_history: list
     try:
         # --- INTRODUZIR BUG AQUI ---
         # Tenta concatenar string com inteiro para causar TypeError
-        problematic_query = query + 1
+        # problematic_query = query + 1  # <-- REMOVER ESTA LINHA
         # --- FIM DO BUG INTRODUZIDO ---
 
         # A busca DDGS usaria a query original, mas o erro ocorrerá antes

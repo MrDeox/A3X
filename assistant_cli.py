@@ -18,11 +18,24 @@ load_dotenv()
 # Removidos NLU, Planner, Dispatcher por enquanto
 # from core.nlu import interpret_command
 from core.nlg import generate_natural_response, generate_simplified_response # Mantém NLG por enquanto
-from core.config import MAX_HISTORY_TURNS # Pode ser usado para histórico geral
+from core.config import MAX_HISTORY_TURNS, LLAMA_SERVER_URL # <<< Import LLAMA_SERVER_URL >>>
 # from core.dispatcher import get_skill, SKILL_DISPATCHER
 # from core.planner import generate_plan
 from core.db_utils import initialize_database # <<< IMPORT DB INIT >>>
 from core.agent import ReactAgent # <-- NOVO IMPORT
+
+# <<< DEFINIR PROMPT PADRÃO AQUI >>>
+DEFAULT_SYSTEM_PROMPT = """You are A³X, a helpful AI assistant running locally. You use the ReAct framework to achieve objectives. Reason step-by-step (Thought) and then execute an action (Action, Action Input).
+
+**IMPORTANT**: Always format your 'Action Input' as a valid JSON object. Example for searching the web:
+Thought: I need to search the web for the capital of Brazil.
+Action: search_web
+Action Input: {"query": "capital of Brazil"}
+
+Use 'final_answer' as the action ONLY when you have the final response for the user's original objective.
+
+Available Tools:
+[TOOL_DESCRIPTIONS]""" # Placeholder for tool descriptions - will be replaced by agent
 
 # Função process_command agora recebe a instância do agente
 def process_command(agent: ReactAgent, command: str, conversation_history: list) -> None:
@@ -93,7 +106,12 @@ def main():
     # <<< INSTANCIAÇÃO DO AGENTE >>>
     logger.info("Initializing ReactAgent...")
     try:
-        agent = ReactAgent() # Agora carrega estado do DB no init
+        # <<< PASSAR ARGUMENTOS >>>
+        llm_api_url = LLAMA_SERVER_URL # Get URL from config
+        if not llm_api_url or not llm_api_url.startswith("http"):
+            raise ValueError(f"Invalid LLAMA_SERVER_URL found in config/environment: {llm_api_url}")
+
+        agent = ReactAgent(llm_url=llm_api_url, system_prompt=DEFAULT_SYSTEM_PROMPT)
         logger.info("Agent ready.")
     except Exception as agent_init_err:
          logger.exception("Fatal error initializing ReactAgent:")
