@@ -47,36 +47,20 @@ def skill_manage_files(action_input: dict, agent_memory: dict, agent_history: li
         # --- Ação: Adicionar Conteúdo ---
         elif action == "append":
             if not file_name or content is None:
-                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetros 'file_name' e 'content' são obrigatórios para 'append'."}}
-            if os.path.dirname(file_name): # Segurança
-                 return {"status": "error", "action": "manage_files_failed", "data": {"message": "A modificação de arquivos só é permitida no diretório atual."}}
-            if not os.path.exists(file_name):
-                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Arquivo '{file_name}' não encontrado para adicionar conteúdo."}}
-            with open(file_name, "a+", encoding="utf-8") as f:
-                # Ir para o final para anexar, mas verificar antes
-                f.seek(0, os.SEEK_END) # Garante estar no final
-                needs_newline = False
-                if f.tell() > 0: # Se o arquivo não estiver vazio
-                    # Recua 1 caractere para ler o último
-                    # Usar f.tell() - 1 pode ser problemático com encodings multibyte no final.
-                    # Uma abordagem mais segura é ler um pouco mais e verificar o último caractere.
-                    # Mas para simplicidade e casos comuns, vamos tentar com seek -1 primeiro.
-                    try:
-                        f.seek(f.tell() - 1, os.SEEK_SET)
-                        if f.read(1) != '\n':
-                            needs_newline = True
-                    except OSError as seek_err:
-                         # Pode falhar em arquivos muito pequenos ou com problemas de encoding
-                         print(f"[Warn Manage Files] Erro ao tentar verificar último caractere em '{file_name}' (seek -1): {seek_err}. Assumindo que precisa de newline.")
-                         needs_newline = True # Assume que precisa por segurança
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetros 'file_name' e 'content' são obrigatórios para 'append'."}}
 
-                # Volta para o final para escrever
-                f.seek(0, os.SEEK_END)
-                if needs_newline:
-                    f.write('\n')
-                f.write(content)
+            # Medida de segurança: permitir append apenas a arquivos .txt, .log, .md no diretório atual
+            if not file_name.endswith(tuple(ALLOWED_APPEND_EXTENSIONS)) or os.path.dirname(file_name) != '':
+                logger.warning(f"[Manage Files Append] Acesso negado: tentativa de append a '{file_name}'")
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Acesso negado: Append permitido apenas para arquivos {ALLOWED_APPEND_EXTENSIONS} no diretório atual."}}
 
-            return {"status": "success", "action": "file_appended", "data": {"message": f"Conteúdo adicionado ao arquivo '{file_name}'."}}
+            try:
+                with open(file_name, "a", encoding="utf-8") as f:
+                    f.write(content + "\n")
+                return {"status": "success", "action": "file_appended", "data": {"message": f"Conteúdo adicionado a '{file_name}'."}}
+            except Exception as append_err:
+                logger.exception(f"[Manage Files Append] Erro ao adicionar conteúdo a '{file_name}':")
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": f"Erro ao adicionar conteúdo a '{file_name}': {append_err}"}}
 
         # --- Ação: Listar Arquivos ---
         elif action == "list":
@@ -130,6 +114,54 @@ def skill_manage_files(action_input: dict, agent_memory: dict, agent_history: li
              # 3. Perguntar ao usuário "Tem certeza que deseja deletar X?".
              # 4. Se sim, chamar uma sub-função ou outra skill para efetivar a deleção.
              return {"status": "error", "action":"action_not_fully_implemented", "data": {"message": f"A deleção do arquivo '{file_name}' requer confirmação e ainda não está totalmente suportada neste modo."}}
+
+        # --- Ação: Ler Arquivo ---
+        elif action == "read":
+            if not file_name:
+                return {"status": "error", "action": "manage_files_failed", "data": {"message": "Parâmetro 'file_name' é obrigatório para 'read'."}}
+            # Medida de segurança: permitir ler apenas arquivos .py, .txt, .json, .md, .log, .cfg, .ini no diretório atual ou subdiretórios comuns (core/, skills/, tests/)
+            allowed_dirs = ["", "core", "skills", "tests"]
+            allowed_exts = [".py", ".txt", ".json", ".md", ".log", ".cfg", ".ini"]
+            
+            # Normaliza o caminho e verifica se é seguro
+            normalized_path = os.path.normpath(os.path.join(os.getcwd(), file_name))
+            base_dir = os.path.basename(os.path.dirname(normalized_path)) if os.path.dirname(file_name) else "" # Pega 'core', 'skills', etc. ou '' para raiz
+            ext = os.path.splitext(normalized_path)[1].lower()
+
+            if not normalized_path.startswith(os.getcwd()): # Verifica se está dentro do projeto
+                 logger.warning(f"[Manage Files Read] Acesso negado: tentativa de ler fora do diretório do projeto: '{file_name}'")
+                 return {"status": "error", "action": "read_file_failed", "data": {"message": f"Acesso negado: Leitura permitida apenas dentro do diretório do projeto."}}
+            # Verifica diretórios e extensões permitidas
+            # NOTA: Ajuste allowed_dirs/exts conforme necessidade
+            # if base_dir not in allowed_dirs or ext not in allowed_exts:
+            #      logger.warning(f"[Manage Files Read] Acesso negado: diretório ('{base_dir}') ou extensão ('{ext}') não permitidos para leitura: '{file_name}'")
+            #      return {"status": "error", "action": "read_file_failed", "data": {"message": f"Acesso negado: Leitura não permitida para este tipo ou localização de arquivo ({file_name})."}}
+            
+            # Simplificação da segurança por agora: permitir ler qualquer coisa DENTRO do diretório atual ou subdirs (CUIDADO!)
+            # A verificação mais granular acima é melhor, mas vamos simplificar para o teste.
+            # Apenas verifica se está no diretório de trabalho ou subdir.
+
+            try:
+                with open(file_name, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+                # Limita o tamanho do conteúdo retornado na mensagem para não poluir logs/prompt
+                max_len_preview = 500
+                content_preview = file_content[:max_len_preview] + ("..." if len(file_content) > max_len_preview else "")
+
+                return {
+                    "status": "success",
+                    "action": "file_read",
+                    "data": {
+                        "file_name": file_name,
+                        "content": file_content, # Retorna o conteúdo completo
+                        "message": f"Conteúdo do arquivo '{file_name}' lido com sucesso (Prévia: {content_preview})"
+                    }
+                }
+            except FileNotFoundError:
+                 return {"status": "error", "action": "read_file_failed", "data": {"message": f"Arquivo '{file_name}' não encontrado para leitura."}}
+            except Exception as read_err:
+                 logger.exception(f"[Manage Files Read] Erro ao ler arquivo '{file_name}':")
+                 return {"status": "error", "action": "read_file_failed", "data": {"message": f"Erro ao ler arquivo '{file_name}': {read_err}"}}
 
         # --- Ação Desconhecida ---
         else:

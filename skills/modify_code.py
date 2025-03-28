@@ -89,43 +89,102 @@ def skill_modify_code(action_input: dict, agent_memory: dict, agent_history: lis
 
     original_code = None
     language = "python" # Default
+    target_found_source = None # Para logar onde achou
 
-    # --- BUSCAR CÓDIGO ALVO (Usando agent_history e agent_memory) ---
-    # 1. Tenta do histórico ReAct (agent_history)
+    # --- BUSCAR CÓDIGO ALVO (VERSÃO 3 - Itera Histórico Corretamente) ---
     if agent_history:
-        # print("  Buscando código na Observation anterior...") # Optional debug
-        for entry in reversed(agent_history):
-            # Procura por Observation com bloco de código (gerado ou modificado)
-            if entry.startswith("Observation:") and ("Código Gerado:" in entry or "Código Modificado:" in entry):
-                 code_match = re.search(r"```(\w*)\s*([\s\S]*?)\s*```", entry, re.DOTALL)
-                 if code_match:
-                     lang_found = code_match.group(1).strip().lower()
-                     code_to_use = code_match.group(2).strip()
-                     if code_to_use:
-                         original_code = code_to_use
-                         language = lang_found if lang_found else language
-                         target_desc = "o código da observação anterior" # Update description
-                         print(f"  Código ({language}) encontrado na observação anterior.")
-                         break # Found the most recent relevant code
+        print("  Iniciando busca no histórico (reverso)...") # Log inicial da busca
+        # Itera o histórico de trás para frente
+        for entry_index, entry in enumerate(reversed(agent_history)):
+            # Log para cada entrada sendo verificada
+            # print(f"    Verificando histórico (idx rev {entry_index}): {entry[:70]}...") 
+            if isinstance(entry, str) and entry.startswith("Observation:"):
+                 print(f"    > Encontrada Observação (idx rev {entry_index}). Verificando conteúdo...") # Log Observação encontrada
+                 read_success_match = re.search(r"Observação:\s*Conteúdo do arquivo\s*'([^']+)'\s*lido com sucesso", entry)
+                 if read_success_match:
+                     target_filename_read = read_success_match.group(1)
+                     print(f"      >> MATCH! Observação de read_file encontrada para '{target_filename_read}'. Tentando reler...") # Log
+                     try:
+                         abs_path = os.path.abspath(target_filename_read)
+                         cwd = os.getcwd()
+                         # Segurança: Garante que estamos dentro do diretório de trabalho
+                         if not abs_path.startswith(cwd):
+                              print(f"      [Modify Code Safety WARN] Tentativa de reler arquivo fora do diretório atual: {target_filename_read}")
+                         else:
+                              with open(target_filename_read, "r", encoding="utf-8") as f_read:
+                                   original_code = f_read.read()
+                              if original_code:
+                                   language = "python" # Default
+                                   ext = os.path.splitext(target_filename_read)[1].lower()
+                                   if ext in ['.js']: language = "javascript"
+                                   # Atualiza target_desc para refletir a origem
+                                   target_desc = f"o código do arquivo '{target_filename_read}' (lido na obs. anterior)"
+                                   target_found_source = f"read_file ({target_filename_read})"
+                                   print(f"      Código ({language}) obtido com sucesso re-lendo arquivo.") # Log
+                                   break # <<< ENCONTROU VIA READ_FILE, SAI DO LOOP DO HISTÓRICO
+                              else:
+                                   print(f"      [Modify Code WARN] Arquivo '{target_filename_read}' relido, mas está vazio.")
+                     except FileNotFoundError:
+                          print(f"      [Modify Code ERROR] Arquivo '{target_filename_read}' não encontrado ao tentar reler.")
+                          original_code = None # Resetar
+                     except Exception as reread_err:
+                         print(f"      [Modify Code ERROR] Erro inesperado ao tentar reler '{target_filename_read}': {reread_err}")
+                         original_code = None # Resetar
+                     # Mesmo se a releitura falhar, encontramos a observação de read_file, paramos de procurar
+                     break # <<< SAI DO LOOP DO HISTÓRICO APÓS PROCESSAR OBS DE READ_FILE
 
-    # 2. Tenta da memória do agente (agent_memory) se não achou no histórico
+                 # Se não era observação de read_file, verifica se era de generate/modify
+                 elif "Código Gerado:" in entry or "Código Modificado:" in entry:
+                     print("      > Observação de generate/modify encontrada. Tentando extrair código...") # Log
+                     code_match = re.search(r"```(\w*)\s*([\s\S]*?)\s*```", entry, re.DOTALL)
+                     if code_match:
+                         lang_found = code_match.group(1).strip().lower()
+                         code_to_use = code_match.group(2).strip()
+                         if code_to_use:
+                             original_code = code_to_use
+                             language = lang_found if lang_found else language
+                             target_desc = "o código da observação anterior (generate/modify)"
+                             target_found_source = "Observation (gen/mod)"
+                             print(f"      Código ({language}) obtido da observação anterior (generate/modify).")
+                             break # <<< ENCONTROU VIA GEN/MOD, SAI DO LOOP DO HISTÓRICO
+                         else:
+                              print("      > Bloco de código vazio na observação gen/mod.") # Log
+                     else:
+                           print("      > Regex não encontrou bloco de código na observação gen/mod.") # Log
+                 else:
+                      print("      > Observação não continha read_file ou gen/mod code.") # Log
+
+            # else: # Se não for string ou não começar com Observation:
+            #      print(f"    > Ignorando entrada do histórico (não é string de Observação): {type(entry)}")
+
+    # Se saiu do loop sem achar código no histórico...
+    # 2. Tenta da memória do agente (agent_memory)
     if not original_code:
+        print("  Código não encontrado no histórico. Verificando memória do agente...") # Log
         last_code_from_mem = agent_memory.get('last_code')
-        last_lang_from_mem = agent_memory.get('last_lang')
         if last_code_from_mem:
-             print("  Código não encontrado na Observation, usando memória do agente...")
              original_code = last_code_from_mem
-             language = last_lang_from_mem if last_lang_from_mem else language
-             target_desc = "o último código na memória" # Update description
-             print(f"  Código ({language}) encontrado na memória.")
-    # --------------------------------------------------
+             language = agent_memory.get('last_lang') if agent_memory.get('last_lang') else language
+             target_desc = "o último código na memória"
+             target_found_source = "Agent Memory"
+             print(f"  Código ({language}) encontrado na memória do agente.")
+        else:
+             print("  Nenhum código encontrado na memória do agente.")
 
+    # --- FIM DA SEÇÃO BUSCAR CÓDIGO ALVO ---
+
+    # Agora, a verificação final se original_code foi encontrado
     if not original_code:
+        # Mensagem de erro atualizada
+        # Usando print pois logger pode não estar configurado aqui
+        print(f"  [Modify Code ERROR] Falha ao modificar: Não foi possível localizar o código alvo via Histórico (read/gen/mod) ou Memória, baseado na descrição '{target_desc}'.")
         return {
             "status": "error",
-            "action": "modify_code_failed", # Changed action name slightly
-            "data": {"message": f"Não foi possível localizar o código alvo ('{target_desc}') para modificar."}
+            "action": "modify_code_failed",
+            "data": {"message": f"Não foi possível localizar o código alvo ('{target_desc}') via histórico ou memória."}
         }
+    else:
+         print(f"  Código alvo para modificação encontrado (Fonte: {target_found_source}). Descrição usada: '{target_desc}'")
 
     # --- Construir Prompt de Modificação (Adaptado para Chat) ---
     # System prompt defines the role
@@ -250,4 +309,4 @@ Modifique este código de acordo com a seguinte instrução:
             "status": "error",
             "action": "modify_code_failed",
             "data": {"message": f"Erro inesperado durante a modificação de código: {e}"}
-        } 
+        }

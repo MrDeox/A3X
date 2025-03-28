@@ -5,6 +5,7 @@ from .remember_info import skill_remember_info
 from .recall_info import skill_recall_info
 from .modify_code import skill_modify_code
 from .execute_code import skill_execute_code
+from .memory import skill_save_memory, skill_recall_memory
 
 __all__ = [
     'skill_generate_code',
@@ -13,5 +14,7 @@ __all__ = [
     'skill_remember_info',
     'skill_recall_info',
     'skill_modify_code',
-    'skill_execute_code'
+    'skill_execute_code',
+    'skill_save_memory',
+    'skill_recall_memory'
 ]

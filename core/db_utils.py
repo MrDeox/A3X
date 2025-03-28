@@ -5,7 +5,7 @@ import logging # Usar logging é melhor que print para debug
 import time
 
 # Configurar logging básico
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s DB Utils] %(message)s')
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s DB] %(message)s')
 logger = logging.getLogger(__name__)
 
 # Caminho para o DB (pode estar em config.py ou definido aqui)
@@ -31,212 +31,158 @@ except Exception as e:
     logger.warning(f"Falling back to database path: {DATABASE_PATH}")
 
 # <<< ADICIONAR CAMINHO DA EXTENSÃO >>>
-# AJUSTE ESTE CAMINHO se você colocou o sqlite-vss.so em outro lugar!
-SQLITE_VSS_EXTENSION_PATH = os.path.join(os.path.dirname(__file__), 'sqlite-vss.so')
+# AJUSTE ESTE CAMINHO se você colocou as extensões em outro lugar!
+VECTOR_EXTENSION_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'vector0.so')
+VSS_EXTENSION_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'vss0.so')
 # <<< FIM DA ADIÇÃO >>>
 
 def get_db_connection():
-    """Retorna uma conexão com o banco de dados com a extensão VSS carregada (se disponível)."""
+    """Retorna uma conexão com o banco de dados com a extensão VSS carregada (se possível)."""
+    conn = None # Inicializa conn
     try:
-        logger.debug(f"Tentando conectar ao banco de dados em: {DATABASE_PATH}")
-        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False) # check_same_thread pode ser útil
-        conn.row_factory = sqlite3.Row
-        logger.debug("Conexão SQLite estabelecida.")
-
-        # <<< CARREGAR EXTENSÃO VSS >>>
+        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False) 
+        conn.row_factory = sqlite3.Row 
+        
+        # Tenta carregar extensões VSS
         conn.enable_load_extension(True)
-        logger.debug("Carregamento de extensão habilitado.")
         try:
-             if not os.path.exists(SQLITE_VSS_EXTENSION_PATH):
-                  # Log mais informativo
-                  logger.error(f"Arquivo da extensão sqlite-vss NÃO encontrado no caminho esperado: {SQLITE_VSS_EXTENSION_PATH}")
-                  raise FileNotFoundError(f"Extensão sqlite-vss não encontrada em {SQLITE_VSS_EXTENSION_PATH}")
-
-             logger.debug(f"Tentando carregar extensão de: {SQLITE_VSS_EXTENSION_PATH}")
-             conn.load_extension(SQLITE_VSS_EXTENSION_PATH)
-             logger.info("Extensão sqlite-vss carregada com sucesso.") # Mudado para INFO
-        except FileNotFoundError as fnf_err:
-             # Log do erro específico de não encontrar o arquivo
-             logger.warning(f"{fnf_err}. Busca vetorial estará DESABILITADA.")
+            # Verifica se os arquivos existem
+            if not os.path.exists(VECTOR_EXTENSION_PATH):
+                logger.warning(f"Arquivo da extensão vector0 NÃO encontrado no caminho esperado: {VECTOR_EXTENSION_PATH}")
+            if not os.path.exists(VSS_EXTENSION_PATH):
+                logger.warning(f"Arquivo da extensão vss0 NÃO encontrado no caminho esperado: {VSS_EXTENSION_PATH}")
+            
+            # Carrega as extensões na ordem correta
+            conn.load_extension(VECTOR_EXTENSION_PATH)
+            logger.info("Extensão vector0 carregada com sucesso!")
+            
+            conn.load_extension(VSS_EXTENSION_PATH)
+            logger.info("Extensão vss0 carregada com sucesso!")
         except sqlite3.OperationalError as e:
-             # Log de erro operacional (ex: arquitetura errada, problema na compilação)
-             logger.error(f"Falha ao carregar extensão sqlite-vss em '{SQLITE_VSS_EXTENSION_PATH}': {e}")
-             logger.warning("Busca vetorial estará DESABILITADA.")
-             # Não levanta erro aqui, permite continuar sem VSS
-        except Exception as load_err:
-            # Captura outros erros inesperados durante o carregamento
-            logger.exception(f"Erro inesperado ao carregar a extensão VSS: {load_err}")
-            logger.warning("Busca vetorial estará DESABILITADA.")
-
-        # Desabilitar por segurança após tentar carregar
-        conn.enable_load_extension(False)
-        logger.debug("Carregamento de extensão desabilitado.")
-        # <<< FIM CARREGAR EXTENSÃO >>>
+             logger.warning(f"Falha ao carregar extensão sqlite-vss: {e}. Busca vetorial estará DESABILITADA.")
+        conn.enable_load_extension(False) 
 
         return conn
     except sqlite3.Error as e:
-        logger.error(f"Erro CRÍTICO ao conectar/configurar o DB em {DATABASE_PATH}: {e}")
-        raise # Levanta o erro para indicar falha na conexão
+        logger.error(f"Erro CRÍTICO ao conectar ao DB: {e}")
+        if conn: conn.close() # Tenta fechar se falhar após conectar
+        raise # Levanta o erro para indicar falha grave
+    # Não fechar a conexão aqui, quem chama é responsável por fechar
 
 def initialize_database():
-    """Garante que todas as tabelas necessárias existam, incluindo as de memória semântica."""
+    """Garante que todas as tabelas necessárias existam."""
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         logger.info("Inicializando/Verificando estrutura do banco de dados...")
 
-        # Primeiro, verifica se a tabela agent_state existe
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_state'")
-        if not cursor.fetchone():
-            logger.info("Criando tabela 'agent_state'...")
-            cursor.execute('''
-                CREATE TABLE agent_state (
-                    agent_id TEXT PRIMARY KEY,
-                    last_code TEXT,
-                    last_lang TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            logger.info("Tabela 'agent_state' criada com sucesso.")
+        # --- Criação GARANTIDA de agent_state ---
+        logger.info("Verificando/Criando tabela 'agent_state'...")
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS agent_state (
+                agent_id TEXT PRIMARY KEY, 
+                last_code TEXT,
+                last_lang TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        logger.info("Verificando/Criando trigger 'update_agent_state_updated_at'...")
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS update_agent_state_updated_at
+            AFTER UPDATE ON agent_state FOR EACH ROW
+            BEGIN
+                UPDATE agent_state SET updated_at = CURRENT_TIMESTAMP WHERE agent_id = OLD.agent_id;
+            END;
+        ''')
+        conn.commit() # Commit IMEDIATO para agent_state
+        logger.info("Tabela 'agent_state' e trigger verificados/criados.")
+        # --- Fim Bloco agent_state ---
 
-        # Trigger para atualizar 'updated_at' automaticamente
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name='update_agent_state_updated_at'")
-        if not cursor.fetchone():
-            logger.info("Criando trigger 'update_agent_state_updated_at'...")
-            cursor.execute('''
-                CREATE TRIGGER update_agent_state_updated_at
-                AFTER UPDATE ON agent_state
-                FOR EACH ROW
-                BEGIN
-                    UPDATE agent_state SET updated_at = CURRENT_TIMESTAMP WHERE agent_id = OLD.agent_id;
-                END;
-            ''')
-            logger.info("Trigger 'update_agent_state_updated_at' criado com sucesso.")
+        # --- Criação Tabelas Semantic Memory ---
+        logger.info("Verificando/Criando tabela 'semantic_memory'...")
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS semantic_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL UNIQUE, -- Texto original
+                embedding BLOB NOT NULL,    -- Vetor embedding
+                metadata TEXT,             -- JSON para infos extras
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        logger.info("Tabela 'semantic_memory' verificada/criada.")
 
-        # Tabela para memória semântica
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='semantic_memory'")
-        if not cursor.fetchone():
-            logger.info("Criando tabela 'semantic_memory'...")
-            cursor.execute('''
-                CREATE TABLE semantic_memory (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    content TEXT NOT NULL UNIQUE,
-                    embedding BLOB NOT NULL,
-                    metadata TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            logger.info("Tabela 'semantic_memory' criada com sucesso.")
-
-        # Trigger para semantic_memory
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name='update_semantic_memory_timestamp'")
-        if not cursor.fetchone():
-            logger.info("Criando trigger 'update_semantic_memory_timestamp'...")
-            cursor.execute('''
-                CREATE TRIGGER update_semantic_memory_timestamp
-                AFTER UPDATE ON semantic_memory
-                FOR EACH ROW
-                BEGIN
-                    UPDATE semantic_memory SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
-                END;
-            ''')
-            logger.info("Trigger 'update_semantic_memory_timestamp' criado com sucesso.")
-
-        # Tabela VSS (se a extensão estiver disponível)
+        # Tenta criar tabela VSS (com try/except separado)
         try:
-            cursor.execute("SELECT vss_version()")
-            vss_version = cursor.fetchone()[0]
-            logger.info(f"Extensão VSS funcional detectada (Versão: {vss_version}).")
-
-            EMBEDDING_DIM = 768
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vss_semantic_memory'")
-            if not cursor.fetchone():
-                logger.info("Criando tabela virtual 'vss_semantic_memory'...")
-                cursor.execute(f'''
-                    CREATE VIRTUAL TABLE vss_semantic_memory USING vss0(
-                        embedding({EMBEDDING_DIM})
-                    )
-                ''')
-                logger.info("Tabela virtual 'vss_semantic_memory' criada com sucesso.")
+             cursor.execute("SELECT vss_version()")
+             logger.info(f"Extensão VSS funcional detectada.")
+             EMBEDDING_DIM = 768 # Para ibm-granite
+             logger.info("Verificando/Criando tabela virtual 'vss_semantic_memory'...")
+             cursor.execute(f'''
+                 CREATE VIRTUAL TABLE IF NOT EXISTS vss_semantic_memory USING vss0(
+                     embedding({EMBEDDING_DIM}) 
+                 )
+             ''')
+             logger.info("Tabela virtual 'vss_semantic_memory' verificada/criada.")
         except sqlite3.OperationalError as e:
-            if "no such function: vss_version" in str(e):
-                logger.warning("Extensão VSS não parece estar carregada ou funcional. Tabela VSS não criada.")
-            else:
-                logger.warning(f"Não foi possível criar/verificar tabela VSS (extensão carregada, mas erro): {e}")
+             logger.warning(f"Não foi possível criar/verificar tabela VSS (extensão pode não estar carregada ou erro): {e}")
+        # --- Fim Bloco Semantic Memory ---
 
-        conn.commit()
-        logger.info("Banco de dados inicializado/verificado com sucesso.")
+        conn.commit() # Commit final para knowledge, semantic_memory, VSS
+        logger.info("Estrutura completa do banco de dados verificada/atualizada.")
+
     except sqlite3.Error as e:
         logger.error(f"Erro CRÍTICO durante a inicialização do banco de dados: {e}")
-        raise  # Levanta o erro para indicar falha na inicialização
-    except Exception as general_e:
-        logger.exception(f"Erro inesperado durante a inicialização do banco de dados: {general_e}")
+        # Considerar se deve levantar o erro ou tentar continuar
         raise
     finally:
         if conn:
             conn.close()
-            logger.debug("Conexão SQLite fechada.")
 
 # Funções auxiliares para salvar/carregar estado (adicionar aqui)
 def save_agent_state(agent_id: str, state: dict):
-     """Salva ou atualiza o estado (last_code, last_lang) de um agente no DB."""
-     # <<< VERIFICAR SE state TEM AS CHAVES ESPERADAS >>>
-     if not all(k in state for k in ('last_code', 'last_lang')):
-          logger.warning(f"Tentativa de salvar estado incompleto para agente '{agent_id}'. Estado: {state}")
-          # Decide se retorna erro ou salva o que tem. Por enquanto, salva o que tem.
-          pass # Permite salvar mesmo que incompleto
-
-     conn = get_db_connection()
-     if conn is None:
-         logger.error(f"Falha ao obter conexão com DB para salvar estado (agente: {agent_id}).")
-         return
+     conn = None
      try:
+         conn = get_db_connection()
          cursor = conn.cursor()
-         # Usar INSERT ON CONFLICT DO UPDATE para ser mais explícito
          cursor.execute('''
-             INSERT INTO agent_state (agent_id, last_code, last_lang, updated_at)
+             INSERT OR REPLACE INTO agent_state (agent_id, last_code, last_lang, updated_at) 
              VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-             ON CONFLICT(agent_id) DO UPDATE SET
-                 last_code = excluded.last_code,
-                 last_lang = excluded.last_lang,
-                 updated_at = CURRENT_TIMESTAMP;
-         ''', (agent_id, state.get('last_code'), state.get('last_lang')))
+         ''', (agent_id, state.get('last_code'), state.get('last_lang'))) 
          conn.commit()
-         logger.info(f"Estado do agente '{agent_id}' salvo.") # Log INFO
+         logger.info(f"Estado do agente '{agent_id}' salvo.")
      except sqlite3.Error as e:
-         logger.error(f"Erro ao salvar estado para agente '{agent_id}': {e}")
+         logger.error(f"Erro ao salvar estado do agente '{agent_id}': {e}")
+         # Não levantar erro aqui, para o agente poder continuar mesmo se salvar falhar
      finally:
          if conn:
              conn.close()
 
 def load_agent_state(agent_id: str) -> dict:
-     """Carrega o estado (last_code, last_lang) de um agente do DB. Retorna defaults se não encontrado."""
-     conn = get_db_connection()
-     # <<< Inicializa com defaults >>>
-     state = {'last_code': None, 'last_lang': None}
-     if conn is None:
-        logger.error(f"Falha ao obter conexão com DB para carregar estado (agente: {agent_id}).")
-        return state # Retorna defaults
-
+     conn = None
+     state = {'last_code': None, 'last_lang': None} 
      try:
+         conn = get_db_connection()
          cursor = conn.cursor()
+         # Tenta ler a tabela, se ela não existir (devido a erro na inicialização), isso falhará
          cursor.execute('''
-             SELECT last_code, last_lang
-             FROM agent_state
+             SELECT last_code, last_lang 
+             FROM agent_state 
              WHERE agent_id = ?
-         ''', (agent_id,))
+         ''', (agent_id,)) 
          row = cursor.fetchone()
-         if row:
-              # Não precisa verificar se last_code é None, o dict já tem None como default
+         if row and row['last_code'] is not None: 
               state['last_code'] = row['last_code']
-              state['last_lang'] = row['last_lang']
-              logger.info(f"Estado do agente '{agent_id}' carregado.")
+              state['last_lang'] = row['last_lang'] 
+              logger.info(f"Estado do agente '{agent_id}' carregado do DB.")
          else:
-              logger.info(f"Nenhum estado salvo encontrado para agente '{agent_id}'. Usando defaults.")
+              logger.info(f"Nenhum estado salvo encontrado para agente '{agent_id}'.")
+     except sqlite3.OperationalError as e:
+          # Erro comum se a tabela agent_state não existir
+          logger.error(f"Erro operacional ao carregar estado do agente '{agent_id}' (tabela existe?): {e}")
      except sqlite3.Error as e:
-         logger.error(f"Erro ao carregar estado para agente '{agent_id}': {e}")
+         logger.error(f"Erro SQLite ao carregar estado do agente '{agent_id}': {e}")
      finally:
          if conn:
              conn.close()

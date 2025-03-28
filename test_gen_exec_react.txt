@@ -1,2 +1,0 @@
-    gere uma função python chamada somar que recebe x e y e retorna a soma
-    execute o código do passo anterior e mostre a soma de 90 e 9

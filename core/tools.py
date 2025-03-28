@@ -16,6 +16,7 @@ try:
     from skills.execute_code import skill_execute_code
     from skills.modify_code import skill_modify_code
     from skills.final_answer import skill_final_answer
+    from skills.memory import skill_save_memory, skill_recall_memory
     # Adicionaremos outras skills aqui depois
 except ImportError as e:
     print(f"[Tools ERROR] Falha ao importar skills: {e}. Verifique os caminhos e nomes dos arquivos.")
@@ -26,6 +27,8 @@ except ImportError as e:
     def skill_execute_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_execute_code não carregada"}}
     def skill_modify_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_modify_code não carregada"}}
     def skill_final_answer(*args, **kwargs): return {"status": "error", "data": {"message": "skill_final_answer não carregada"}}
+    def skill_save_memory(*args, **kwargs): return {"status": "error", "data": {"message": "skill_save_memory não carregada"}}
+    def skill_recall_memory(*args, **kwargs): return {"status": "error", "data": {"message": "skill_recall_memory não carregada"}}
 
 # Definição inicial das ferramentas (Formato pode evoluir)
 # Usaremos um dicionário onde a chave é o nome da ferramenta
@@ -46,7 +49,7 @@ TOOLS = {
     },
     "list_files": {
         "function": skill_manage_files,
-        "description": "Lista os arquivos e diretórios no diretório de trabalho atual ou em um subdiretório especificado.",
+        "description": "Lista arquivos e diretórios em um caminho específico. Use '.' para o diretório atual.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -120,6 +123,25 @@ TOOLS = {
         }
     },
     # --- File Management Tools (Using the single refactored skill) ---
+    "read_file": {
+        "function": skill_manage_files,
+        "description": "Lê e retorna TODO o conteúdo de um arquivo de texto especificado.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "A ação a ser realizada (DEVE ser 'read')",
+                    "enum": ["read"]
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "O nome do arquivo a ser lido (obrigatório)."
+                }
+            },
+            "required": ["action", "file_name"]
+        }
+    },
     "create_file": {
         "function": skill_manage_files,
         "description": "Cria um NOVO arquivo de texto com o nome e conteúdo EXATAMENTE como especificados. Se o arquivo já existir, seu conteúdo será COMPLETAMENTE SUBSTITUÍDO.",
@@ -186,9 +208,51 @@ TOOLS = {
         }
     },
     # --- End File Management Tools ---
+    "save_memory": {
+        "function": skill_save_memory,
+        "description": "Use esta ferramenta para armazenar informações textuais importantes na memória de longo prazo quando o usuário pedir explicitamente (ex: 'Lembre-se que...', 'Anote aí:', 'Guarde esta informação:', 'Salve isso:') ou quando você identificar um fato crucial de uma ferramenta (ex: search_web) que deve ser lembrado. NÃO use para o último código gerado (isso é automático).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "O texto da informação a ser armazenada (obrigatório)."
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Metadados opcionais em formato JSON (ex: {'source': 'user_input', 'topic': 'configuração'}).",
+                    "properties": {
+                         "source": {"type": "string"},
+                         "topic": {"type": "string"},
+                    },
+                    "additionalProperties": True
+                }
+            },
+            "required": ["content"]
+        }
+    },
+    "recall_memory": {
+        "function": skill_recall_memory,
+        "description": "Busca na memória de longo prazo por informações semanticamente similares a uma consulta fornecida. Útil para recuperar fatos, contextos ou tarefas passadas relevantes. Use consultas concisas e focadas.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A pergunta ou consulta textual para buscar informações similares na memória.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Número máximo de resultados relevantes a serem retornados.",
+                    "default": 3
+                }
+            },
+            "required": ["query"]
+        }
+    },
     "final_answer": {
         "function": skill_final_answer,
-        "description": "Fornece a resposta final ao usuário quando o objetivo foi completamente alcançado.",
+        "description": "Fornece a resposta final ao usuário após completar a tarefa ou quando não há mais passos a seguir.",
         "parameters": {
             "type": "object",
             "properties": {
