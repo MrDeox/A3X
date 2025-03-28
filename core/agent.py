@@ -3,6 +3,8 @@ import re
 import json
 import datetime
 import os
+import sys
+import traceback
 from typing import Tuple, Optional, Dict, Any
 
 import requests
@@ -34,8 +36,12 @@ class ReactAgent:
         """Inicializa o Agente ReAct."""
         self.llm_url = llm_url
         self.system_prompt = system_prompt
+        self.tools = TOOLS  # Carrega as ferramentas
         self._history = [] # Histórico de Thought, Action, Observation
         self._memory = load_agent_state(AGENT_STATE_ID) # Carrega estado/memória inicial
+        self.max_iterations = MAX_REACT_ITERATIONS
+        self._last_error_type = None
+        self._last_skill_file = None
         agent_logger.info(f"[ReactAgent INIT] Agente inicializado. Memória carregada: {list(self._memory.keys())}")
 
     def _build_react_messages(self, objective: str) -> list[dict]:
@@ -130,18 +136,18 @@ class ReactAgent:
                     # Se Action é final_answer, permite input não-JSON como fallback
                     if action == "final_answer":
                          # Usa o raw_action_input_str como a resposta se não for JSON
-                         action_input = {"answer": raw_action_input_str}
+                         action_input = {"final_answer": raw_action_input_str}
                          agent_logger.info("[Agent Parse INFO] Treated non-JSON Action Input as final answer text.")
                     else:
                          agent_logger.warning("[Agent Parse WARN] Action Input found, but not in JSON format. Treating as None for non-final_answer.")
             else:
-                 agent_logger.info("[Agent Parse INFO] Action found, but no Action Input provided.")
-                 # Se for final_answer sem input, é um erro de formato do LLM
-                 if action == "final_answer":
-                      agent_logger.warning("[Agent Parse WARN] 'final_answer' action received without Action Input.")
-                      action_input = {"answer": "Erro: Recebi instrução para finalizar, mas sem resposta."} # Define uma resposta de erro
-                 else:
-                      action_input = {} # Assume que outras actions podem não precisar de input
+                agent_logger.info("[Agent Parse INFO] Action found, but no Action Input provided.")
+                # Se for final_answer sem input, é um erro de formato do LLM
+                if action == "final_answer":
+                     agent_logger.warning("[Agent Parse WARN] 'final_answer' action received without Action Input.")
+                     action_input = {"final_answer": "Erro: Recebi instrução para finalizar, mas sem resposta."}
+                else:
+                     action_input = {} # Assume que outras actions podem não precisar de input
 
         # Verifica se o Action Input deveria ser um dict (quase sempre, exceto talvez em erros de parse)
         if action_input is not None and not isinstance(action_input, dict):
@@ -164,7 +170,7 @@ class ReactAgent:
                   final_answer = response.strip()
                   # Cria um action_input correspondente
                   action = "final_answer"
-                  action_input = {"answer": final_answer}
+                  action_input = {"final_answer": final_answer}
              else:
                   agent_logger.warning("[Agent Parse WARN] Could not extract Action or Final Answer, and response seems structured.")
 
@@ -173,163 +179,132 @@ class ReactAgent:
     # --- run (Versão Híbrida com Injeção de Meta-Objetivo) ---
     def run(self, objective: str, is_meta_objective: bool = False, meta_depth: int = 0) -> str:
         """Executa o ciclo ReAct para atingir o objetivo."""
-        log_prefix_base = f"[ReactAgent{' META' if is_meta_objective else ''}]"
 
-        # Log inicial e limpeza de histórico apenas para o objetivo principal
-        if not is_meta_objective:
-             agent_logger.info(f"\n{log_prefix_base} Iniciando ciclo ReAct para objetivo principal: '{objective}'")
-             self._history = [] # Limpa histórico ReAct
+        # --- Logging & Setup ---
+        if is_meta_objective:
+            log_prefix_base = f"[ReactAgent META-{meta_depth}]"
+            current_objective = objective # O meta-objetivo é o objetivo atual
+        else:
+            log_prefix_base = "[ReactAgent]"
+            # Limpa o histórico para um novo objetivo principal
+            self._history = []
+            self._history.append(f"Human: {objective}")
+            current_objective = objective
 
-             # --- CONSULTA PRÉVIA À MEMÓRIA (Apenas para objetivo principal) ---
-             initial_memory_observation = None
-             is_question = objective.strip().endswith("?") or objective.lower().strip().startswith(("qual", "quais", "quem", "onde", "como", "por que", "quando"))
+        agent_logger.info(f"\n{log_prefix_base} Iniciando ciclo ReAct (Objetivo: '{current_objective[:100]}...' Profundidade: {meta_depth})")
+        agent_logger.debug(f"{log_prefix_base} Histórico Inicial: {self._history}")
 
-             if is_question:
-                 agent_logger.info(f"{log_prefix_base} [PRE-FETCH] Objetivo parece pergunta. Consultando memória...")
-                 try:
-                     memory_result = skill_recall_memory(
-                         action_input={"query": objective, "max_results": 2},
-                         agent_memory=self._memory,
-                         agent_history=None
-                     )
-                     if memory_result.get("status") == "success":
-                         results = memory_result.get("data", {}).get("results", [])
-                         if results:
-                              formatted_contents = [f"  - (Dist: {item.get('distance', 'N/A'):.4f}): {item.get('content', 'N/A')}" for item in results]
-                              initial_memory_observation = "Contexto Preliminar da Memória:\n" + "\n".join(formatted_contents)
-                         else:
-                              initial_memory_observation = "Contexto Preliminar da Memória: Nenhuma informação relevante encontrada."
-                     else:
-                          initial_memory_observation = f"Contexto Preliminar da Memória: Erro ao consultar ({memory_result.get('error', '?')})."
-                 except Exception as pre_mem_err:
-                     initial_memory_observation = f"Contexto Preliminar da Memória: Exceção ({pre_mem_err})."
+        # Variáveis para override no meta-ciclo
+        meta_read_filepath: str | None = None
+        meta_read_content: str | None = None
 
-                 agent_logger.info(f"{log_prefix_base} [PRE-FETCH] {initial_memory_observation}")
-                 self._history.append(f"Observation: {initial_memory_observation}")
-             # --- FIM DA CONSULTA PRÉVIA ---
+        # --- Ciclo ReAct ---
+        for i in range(self.max_iterations):
+            cycle_num = i + 1
+            log_prefix = f"{log_prefix_base} Cycle {cycle_num}/{self.max_iterations}"
+            agent_logger.info(f"\n{log_prefix} (Objetivo: '{current_objective[:60]}...' Inicio: {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]})")
 
-        # O objetivo atual pode ser o original ou um meta-objetivo injetado
-        current_objective = objective
-
-        # --- CICLO ReAct SIMPLES ---
-        for i in range(MAX_REACT_ITERATIONS):
             start_cycle_time = datetime.datetime.now()
-            log_prefix = f"{log_prefix_base} Cycle {i+1}/{MAX_REACT_ITERATIONS}" # Adiciona número do ciclo
-            agent_logger.info(f"\n{log_prefix} (Objetivo: '{current_objective[:60]}...' Inicio: {start_cycle_time.strftime('%H:%M:%S.%f')[:-3]})")
 
-            # 1. Construir Prompt
-            messages = self._build_react_messages(current_objective)
+            # 1. Construir Prompt para LLM
+            prompt = self._build_react_messages(current_objective)
+            # agent_logger.debug(f"{log_prefix} Prompt para LLM:\\n---\\n{prompt}\\n---\") # Debug verboso
 
             # 2. Chamar LLM
-            response_text = ""
+            llm_response_raw = self._call_llm(prompt)
+            agent_logger.info(f"{log_prefix} Resposta LLM Recebida (Duração: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
+            # Limita log da resposta bruta
+            log_llm_response = llm_response_raw[:1000] + ('...' if len(llm_response_raw) > 1000 else '')
+            agent_logger.debug(f"{log_prefix} Resposta LLM (Raw Content):\n---\n{log_llm_response}\n---")
+
+            if not llm_response_raw:
+                agent_logger.error(f"{log_prefix} Erro Fatal: LLM retornou resposta vazia.")
+                self._history.append("Observation: Erro crítico - LLM retornou resposta vazia.")
+                return "Desculpe, ocorreu um erro interno (LLM retornou vazio)." # Retorna erro
+
+            self._history.append(llm_response_raw) # Adiciona resposta LLM ao histórico
+
+            # 3. Parsear Resposta LLM (Thought, Action, Action Input)
             try:
-                 start_llm_time = datetime.datetime.now()
-                 response_text = self._call_llm(messages)
-                 end_llm_time = datetime.datetime.now()
-                 agent_logger.info(f"{log_prefix} Resposta LLM Recebida (Duração: {(end_llm_time - start_llm_time).total_seconds():.3f}s)")
-                 agent_logger.info(f"{log_prefix} Resposta LLM (Raw Content):\n---\n{response_text}\n---")
-            except Exception as llm_err:
-                 agent_logger.error(f"{log_prefix} Erro na chamada LLM: {llm_err}")
-                 return f"Erro fatal na comunicação com o LLM: {llm_err}"
+                # Correção: Desempacotar todos os valores retornados
+                thought, action_name, action_input, final_answer_parsed = self._parse_llm_response(llm_response_raw)
+                # Se final_answer_parsed for encontrado (mesmo com action), ele tem prioridade?
+                # Por ora, vamos priorizar action, mas logar se ambos aparecerem.
+                if action_name and final_answer_parsed:
+                    agent_logger.warning(f"{log_prefix} LLM retornou tanto Action ({action_name}) quanto Final Answer. Priorizando Action.")
+                # Lógica para usar final_answer_parsed se action_name for None
+                if not action_name and final_answer_parsed:
+                    action_name = "final_answer"
+                    action_input = {"final_answer": final_answer_parsed}
+                    agent_logger.info(f"{log_prefix} Usando Final Answer parseado pois Action estava ausente.")
+                elif not action_name and not final_answer_parsed:
+                    raise ValueError("Não foi possível extrair Action nem Final Answer da resposta do LLM.")
 
-            # 3. Parsear Resposta
-            thought, action_name, action_input, final_answer = self._parse_llm_response(response_text)
+                # action_input já é parseado como dict por _parse_llm_response
+                # action_input = self._parse_action_input(action_input_str, action_name, log_prefix) # Linha removida
+            except ValueError as parse_error:
+                agent_logger.error(f"{log_prefix} Falha ao parsear resposta do LLM: {parse_error}")
+                self._history.append(f"Observation: Erro ao parsear sua resposta. Verifique o formato 'Action: ... Action Input: {{...}}'. Detalhe: {parse_error}")
+                continue # Pula para próximo ciclo
 
-            # Adiciona Thought/Action/Input ao histórico
-            if thought: self._history.append(f"Thought: {thought}")
-            if action_name:
-                 self._history.append(f"Action: {action_name}")
-                 try: action_input_json = json.dumps(action_input, ensure_ascii=False) if action_input is not None else "{}"
-                 except Exception: action_input_json = str(action_input)
-                 self._history.append(f"Action Input: {action_input_json}")
-            elif final_answer:
-                 self._history.append(f"Final Answer (detected directly): {final_answer}")
-                 # Se temos final_answer direto, forçamos a ação e input correspondentes
-                 action_name = "final_answer"
-                 if not isinstance(action_input, dict) or "answer" not in action_input:
-                      action_input = {"answer": final_answer}
-            else:
-                 agent_logger.error(f"{log_prefix} Falha ao parsear Ação ou Resposta Final.")
-                 self._history.append(f"LLM Raw Response (unparseable): {response_text}")
-                 self._history.append("Observation: Erro: Não consegui entender a resposta do LLM.")
-                 continue
+            agent_logger.info(f"{log_prefix} Ação Decidida: {action_name}, Input: {action_input}")
+
+            # <<< INÍCIO: Lógica de Override no Meta-Ciclo >>>
+            if is_meta_objective and action_name == "modify_code":
+                 # Condição: Já lemos um arquivo (`meta_read_filepath` está setado)
+                 # E o LLM está pedindo modify_code.
+                 if meta_read_filepath and meta_read_content:
+                     agent_logger.info(f"[ReactAgent META] Tentando injetar overrides de modify_code com base na leitura anterior de '{meta_read_filepath}'.")
+                     # Força os parâmetros corretos se o LLM não os forneceu como esperado
+                     if action_input is None: action_input = {} # Garante que é um dict
+
+                     action_input["target_filepath"] = meta_read_filepath
+                     action_input["code_to_modify"] = meta_read_content
+                     # A descrição pode vir do LLM ou usamos uma genérica
+                     if not action_input.get("target_code_description"):
+                          action_input["target_code_description"] = "Code provided via override from preceding read_file"
+                     # A modificação DEVE vir do LLM, senão a correção não funciona
+                     if "modification" not in action_input:
+                          agent_logger.warning("[ReactAgent META] Override: LLM pediu modify_code mas não forneceu 'modification' no Action Input. A skill provavelmente falhará.")
+                     agent_logger.debug(f"[ReactAgent META] Action Input para modify_code APÓS override: {json.dumps(action_input, default=lambda o: '<not serializable>')}")
+
+                 # Importante: Resetar após a tentativa de injeção (bem-sucedida ou não)
+                 # para não usar o mesmo override no próximo ciclo, a menos que leia de novo.
+                 # Esta lógica foi movida para DEPOIS de _execute_tool.
+            # <<< FIM: Lógica de Override no Meta-Ciclo >>>
 
             # 4. Executar Ação ou Finalizar
             if action_name == "final_answer":
-                 final_response = action_input.get("answer", "Erro: Resposta final vazia.")
-                 agent_logger.info(f"\n{log_prefix} Resposta Final Decidida pelo LLM: {final_response}")
-                 self._history.append("Observation: Resposta final fornecida.")
-                 # Retorna resultado (pode ser de meta-objetivo ou principal)
-                 if is_meta_objective:
-                      if "corrigido" in final_response.lower() or "sucesso" in final_response.lower():
-                           return f"Meta-Correção CONCLUÍDA: {final_response}"
-                      else:
-                           return f"Meta-Correção FALHOU: {final_response}"
-                 else:
-                      return final_response
+                final_answer = action_input.get("final_answer", "Finalizado sem resposta específica.")
+                agent_logger.info(f"{log_prefix} Ação Final: {final_answer}")
+                self._history.append(f"Final Answer: {final_answer}")
+                save_agent_state(AGENT_STATE_ID, self._memory) # Salva estado ao finalizar
+                return final_answer # Retorna a resposta final
+            elif action_name in self.tools:
+                # >> MODIFICATION START: Pass meta_depth to _execute_tool <<
+                observation = self._execute_tool(
+                    tool_name=action_name,
+                    action_input=action_input,
+                    current_objective=current_objective, # Pass current objective for context
+                    current_history=self._history,
+                    meta_depth=meta_depth # Pass current meta-depth
+                )
+                # >> MODIFICATION END <<
+            else:
+                observation = f"Erro: A ferramenta '{action_name}' não existe. Ferramentas disponíveis: {', '.join(self.tools.keys())}"
 
-            # 5. Executar Ferramenta (Se não for final_answer)
-            observation_str = self._execute_tool(
-                tool_name=action_name,
-                action_input=action_input if action_input is not None else {},
-                current_objective=current_objective,
-                current_history=self._history
-            )
+            agent_logger.info(f"{log_prefix} Observação recebida: {observation[:200]}{'...' if len(observation) > 200 else ''}")
+            self._history.append(f"Observation: {observation}")
 
-            # Adiciona Observação (será analisada no próximo ciclo ou pela injeção de meta-objetivo)
-            agent_logger.info(f"{log_prefix} Observação: {observation_str}")
-            self._history.append(f"Observation: {observation_str}")
-
-
-            # <<< INÍCIO: DETECÇÃO DE ERRO INTERNO E INJEÇÃO DE META-OBJETIVO >>>
-            # Executa APENAS se NÃO estivermos já em um meta-objetivo E se houve erro
-            if not is_meta_objective and observation_str.startswith("Erro ao executar a ferramenta"):
-                 # Heurística para detectar erro interno de skill Python
-                 match_internal_error = re.search(r"(TypeError|AttributeError|NameError|IndexError|KeyError|OperationalError|ValueError|FileNotFoundError).*?(skills/[\w_/]+\.py)", observation_str, re.IGNORECASE | re.DOTALL)
-                 if match_internal_error:
-                     error_type = match_internal_error.group(1)
-                     skill_file = match_internal_error.group(2)
-                     agent_logger.warning(f"{log_prefix} Detectado erro interno ({error_type}) em '{skill_file}'. Tentando Meta-Correção.")
-
-                     # Define o meta-objetivo
-                     meta_objective = f"CORRIGIR BUG: A ferramenta '{action_name}' falhou com erro '{error_type}' originado em '{skill_file}'. Analise a observação anterior (erro), leia '{skill_file}', identifique a causa e use 'modify_code' para corrigir."
-
-                     # Chama recursivamente run() com o meta-objetivo
-                     MAX_META_DEPTH = 1 # Limita a 1 nível de correção por erro original
-                     if meta_depth < MAX_META_DEPTH:
-                          agent_logger.info(f"{log_prefix} Iniciando sub-ciclo ReAct para: '{meta_objective}'")
-                          # Passa o histórico atual; o sub-ciclo adicionará a ele
-                          correction_result = self.run(objective=meta_objective, is_meta_objective=True, meta_depth=meta_depth + 1)
-
-                          # Adiciona o resultado da correção como uma nova observação
-                          meta_obs = f"Observation from Meta-Correction: {correction_result}"
-                          self._history.append(meta_obs)
-                          agent_logger.info(f"{log_prefix} Sub-ciclo Meta-Correção concluído. Resultado adicionado à observação.")
-
-                          # CONTINUA o loop principal. O LLM verá o resultado da correção.
-                          agent_logger.info(f"{log_prefix} Retomando objetivo original: '{current_objective[:60]}...'")
-                          continue # Pula para o próximo ciclo do objetivo original
-                     else:
-                          agent_logger.error(f"{log_prefix} Profundidade máxima de meta-correção ({MAX_META_DEPTH}) atingida. Correção abortada.")
-                          # Modifica a observação de erro para indicar falha na correção
-                          self._history[-1] = observation_str + f" (Falha na tentativa de auto-correção: profundidade máxima {MAX_META_DEPTH} atingida.)"
-                          # Continua o ciclo normal com a observação de erro modificada
-
-            # <<< FIM: DETECÇÃO DE ERRO INTERNO E INJEÇÃO DE META-OBJETIVO >>>
-
-
+            # --- Fim do Ciclo ---
+            self._trim_history() # Trim history at the end of the cycle
             end_cycle_time = datetime.datetime.now()
-            cycle_duration = end_cycle_time - start_cycle_time
-            agent_logger.info(f"--- Fim {log_prefix} (Duração Total: {cycle_duration.total_seconds():.3f}s) ---")
-            # O loop continua para o próximo ciclo do objetivo ATUAL
+            agent_logger.info(f"{log_prefix} --- Fim {log_prefix_base} Cycle {cycle_num}/{self.max_iterations} (Duração Total: {(end_cycle_time - start_cycle_time).total_seconds():.3f}s) ---")
 
-        # Se sair do loop por limite de iterações
-        agent_logger.warning(f"{log_prefix_base} Limite de iterações atingido para objetivo '{current_objective[:60]}...'.")
-        self._history.append("Observation: Limite de iterações atingido sem resposta final.")
-        if is_meta_objective:
-            return f"Meta-Objetivo '{current_objective[:60]}...' FALHOU: Limite de iterações."
-        else:
-            return "Desculpe, não consegui completar a tarefa após várias tentativas."
+
+        agent_logger.warning(f"{log_prefix} Máximo de iterações ({self.max_iterations}) atingido.")
+        save_agent_state(AGENT_STATE_ID, self._memory) # Salva estado ao atingir limite
+        return "Desculpe, não consegui concluir o objetivo dentro do limite de iterações."
 
 
     # --- _call_llm (Mantido como antes) ---
@@ -352,21 +327,22 @@ class ReactAgent:
              return content
         except requests.exceptions.Timeout:
              agent_logger.error(f"[ReactAgent LLM ERROR] Timeout ao chamar LLM em {chat_url}")
-             return "Thought: Timeout na comunicação com LLM. Action: final_answer Action Input: {\"answer\": \"Desculpe, demorei muito para pensar.\"}"
+             return "Thought: Timeout na comunicação com LLM. Action: final_answer Action Input: {\"final_answer\": \"Desculpe, demorei muito para pensar.\"}"
         except requests.exceptions.RequestException as e:
              agent_logger.error(f"[ReactAgent LLM ERROR] Erro na requisição LLM para {chat_url}: {e}")
              if e.response is not None and e.response.status_code == 404:
-                  return f"Thought: Endpoint LLM não encontrado. Action: final_answer Action Input: {{\"answer\": \"Erro: Endpoint LLM não encontrado ({chat_url}).\"}}"
-             return f"Thought: Erro de comunicação com LLM. Action: final_answer Action Input: {{\"answer\": \"Desculpe, erro ao conectar ao LLM ({e}).\"}}"
+                  return f"Thought: Endpoint LLM não encontrado. Action: final_answer Action Input: {{\"final_answer\": \"Erro: Endpoint LLM não encontrado ({chat_url}).\"}}"
+             return f"Thought: Erro de comunicação com LLM. Action: final_answer Action Input: {{\"final_answer\": \"Desculpe, erro ao conectar ao LLM ({e}).\"}}"
         except Exception as e:
              agent_logger.error(f"[ReactAgent LLM ERROR] Erro inesperado na chamada LLM: {e}", exc_info=True)
-             return "Thought: Erro inesperado na chamada LLM. Action: final_answer Action Input: {\"answer\": \"Desculpe, ocorreu um erro interno inesperado.\"}"
+             return "Thought: Erro inesperado na chamada LLM. Action: final_answer Action Input: {\"final_answer\": \"Desculpe, ocorreu um erro interno inesperado.\"}"
 
 
-    # --- _execute_tool (Mantido como antes, com formatação de Obs para recall_memory) ---
-    def _execute_tool(self, tool_name: str, action_input: dict, current_objective: str, current_history: list) -> str:
-        # (Código da função _execute_tool exatamente como na sua versão anterior,
-        # incluindo a lógica que adicionamos para formatar a observação de recall_memory)
+    # --- _execute_tool (Refatorado para Tratamento Dinâmico de Erro) ---
+    # >> MODIFICATION START: Add meta_depth parameter <<
+    def _execute_tool(self, tool_name: str, action_input: dict, current_objective: str, current_history: list, meta_depth: int) -> str:
+    # >> MODIFICATION END <<
+        # (Initial checks for tool existence, function, parameters remain the same)
         agent_logger.info(f"[ReactAgent] Executando ferramenta: {tool_name} com input: {action_input}")
         if tool_name not in TOOLS:
             return f"Erro: A ferramenta '{tool_name}' não existe. Ferramentas disponíveis: {', '.join(TOOLS.keys())}"
@@ -449,18 +425,71 @@ class ReactAgent:
                 if skill_action == "execute_code_failed":
                      stderr_content = result_data.get("stderr", "")
                      if stderr_content: observation += f"\nSaída de Erro (stderr):\n```\n{stderr_content.strip()}\n```"
-            else:
-                observation = f"Aviso/Info da ferramenta {tool_name}: {message}"
+                else:
+                    # Se o status não for explicitamente 'error', mas também não for 'success',
+                    # usamos o formato 'Aviso/Info'.
+                    pass # A linha 524 já define a base da observação de erro
 
         except Exception as e:
             agent_logger.error(f"[ReactAgent EXEC ERROR] Exceção inesperada ao executar {tool_name}: {e}", exc_info=True)
-            observation = f"Erro inesperado (exceção) ao executar a ferramenta {tool_name}: {e}"
+
+            # --- Reworked Dynamic Error Handling ---
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            tb_frames = traceback.extract_tb(exc_traceback)
+            traceback_str = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)) # Get full traceback string
+
+            skill_file = None
+            error_type = exc_type.__name__ if exc_type else "UnknownError"
+            line_no = None
+
+            # Find the last frame originating from a skill file
+            for frame in reversed(tb_frames):
+                if 'skills/' in frame.filename and frame.filename.endswith('.py'):
+                    skill_file = frame.filename
+                    line_no = frame.lineno
+                    break # Found the most recent skill frame
+
+            if skill_file:
+                agent_logger.warning(f"[ReactAgent INTERNAL ERROR DETECTED] Error '{error_type}' in skill '{skill_file}' at line {line_no}. Input: {action_input}. Triggering dynamic recovery meta-objective.")
+
+                # --- DYNAMIC META-OBJECTIVE PROMPT ---
+                meta_objective_prompt = (
+                    f"URGENTE: META-OBJETIVO DE DIAGNÓSTICO E RECUPERAÇÃO ATIVADO!\n\n"
+                    f"**Contexto do Erro:**\n"
+                    f"- **Objetivo Original:** {current_objective}\n"
+                    f"- **Ferramenta Falhou:** {tool_name}\n"
+                    f"- **Input da Ferramenta:** {action_input}\n"
+                    f"- **Arquivo da Skill:** {skill_file}\n"
+                    f"- **Linha do Erro:** {line_no}\n"
+                    f"- **Tipo do Erro:** {error_type}\n"
+                    f"- **Mensagem de Erro:** {e}\n\n"
+                    f"**Traceback Completo:**\n"
+                    f"```python\n{traceback_str}\n```\n\n"
+                    f"**Seu Novo Objetivo (Diagnóstico e Recuperação):**\n"
+                    f"1.  **Diagnostique:** Analise cuidadosamente o traceback e o contexto para entender a causa raiz do erro.\n"
+                    f"2.  **Planeje:** Formule um plano de ação passo a passo para corrigir o problema. Use as ferramentas disponíveis (`read_file`, `modify_code`, `grep_search`, `web_search`, etc.) de forma estratégica.\n"
+                    f"3.  **Execute:** Realize as ações do seu plano.\n"
+                    f"4.  **Conclua:** Se a correção for bem-sucedida, use `final_answer` para reportar o sucesso e o que foi feito. Se não for possível corrigir ou se precisar de ajuda, use `final_answer` para explicar a situação.\n\n"
+                    f"**Instruções:** Pense passo a passo (Thought). Use as ferramentas necessárias (Action, Action Input). Seja metódico e claro no seu raciocínio."
+                )
+                # --- END DYNAMIC META-OBJECTIVE PROMPT ---
+
+                agent_logger.info(f"Iniciando meta-objetivo de recuperação (Profundidade: {meta_depth + 1}) para erro em '{skill_file}'.")
+                # Call self.run recursively with the new dynamic objective
+                # Pass the INCREASED meta_depth
+                return self.run(objective=meta_objective_prompt, is_meta_objective=True, meta_depth=meta_depth + 1)
+
+            else:
+                # Generic exception handling if error didn't originate in a skill file
+                agent_logger.warning(f"Erro não originado em arquivo de skill rastreável. Retornando observação de erro genérico.")
+                observation = f"Erro inesperado (exceção fora de skill rastreável) ao executar {tool_name}: {error_type} - {e}\nTraceback:\n```python\n{traceback_str[:500]}...\n```"
+            # --- End of Reworked Dynamic Error Handling ---
 
         MAX_OBSERVATION_LEN = 1500 # Mantém limite
         if len(observation) > MAX_OBSERVATION_LEN:
             observation = observation[:MAX_OBSERVATION_LEN] + "... (Observação truncada)"
 
-        return observation
+        return observation 
 
     # --- _trim_history (Mantido como antes) ---
     def _trim_history(self):

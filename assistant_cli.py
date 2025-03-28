@@ -27,10 +27,15 @@ from core.agent import ReactAgent # <-- NOVO IMPORT
 # <<< DEFINIR PROMPT PADRÃO AQUI >>>
 DEFAULT_SYSTEM_PROMPT = """You are A³X, a helpful AI assistant running locally. You use the ReAct framework to achieve objectives. Reason step-by-step (Thought) and then execute an action (Action, Action Input).
 
-**IMPORTANT**: Always format your 'Action Input' as a valid JSON object. Example for searching the web:
+**IMPORTANT RULE 1**: Always format your 'Action Input' as a valid JSON object. Example for searching the web:
 Thought: I need to search the web for the capital of Brazil.
 Action: search_web
 Action Input: {"query": "capital of Brazil"}
+
+**IMPORTANT RULE 2 (File Tools)**: For tools like `read_file`, `list_files`, `create_file`, `append_to_file`, the 'Action Input' JSON MUST include an `"action"` parameter. The value for this `"action"` parameter MUST be the specific action word (e.g., `"read"`, `"list"`, `"create"`, `"append"`), NOT the tool name itself.
+Examples:
+- To read 'config.txt': `Action: read_file` `Action Input: {"action": "read", "file_name": "config.txt"}`
+- To list python files: `Action: list_files` `Action Input: {"action": "list", "pattern": "*.py"}`
 
 Use 'final_answer' as the action ONLY when you have the final response for the user's original objective.
 
