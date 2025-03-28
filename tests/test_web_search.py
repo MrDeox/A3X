@@ -6,94 +6,155 @@ from unittest.mock import MagicMock, patch
 # Adiciona o diretório raiz ao path para importar os módulos
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Assume que core.config pode ser importado para testar TAVILY_ENABLED
 try:
-    from skills.web_search import skill_search_web
+    from skills.web_search import skill_search_web, TAVILY_ENABLED, TAVILY_API_KEY
 except ImportError:
     pytest.skip("Não foi possível importar skills.web_search", allow_module_level=True)
 
-# Simula resultados da busca DuckDuckGo
-MOCK_SEARCH_RESULTS = [
-    {
-        "title": "Título do Resultado 1",
-        "body": "Este é o conteúdo do primeiro resultado.",
-        "link": "https://exemplo1.com"
-    },
-    {
-        "title": "Título do Resultado 2",
-        "body": "Este é o conteúdo do segundo resultado.",
-        "link": "https://exemplo2.com"
-    }
-]
+# Mock data for Tavily API response
+MOCK_TAVILY_SUCCESS_RESPONSE = {
+    "query": "teste de busca",
+    "follow_up_questions": None,
+    "answer": None,
+    "images": None,
+    "results": [
+        {
+            "title": "Resultado 1",
+            "url": "http://example.com/1",
+            "content": "Snippet do resultado 1...",
+            "score": 0.95,
+            "raw_content": None
+        },
+        {
+            "title": "Resultado 2",
+            "url": "http://example.com/2",
+            "content": "Snippet do resultado 2...",
+            "score": 0.92,
+            "raw_content": None
+        }
+    ],
+    "response_time": 0.5
+}
 
-def test_skill_search_web_success(mocker):
-    """
-    Testa se skill_search_web processa corretamente os resultados da busca
-    quando a busca é bem-sucedida.
-    """
-    # Simula a classe DDGS e seu método text
-    mock_ddgs = MagicMock()
-    mock_ddgs.__enter__.return_value.text.return_value = MOCK_SEARCH_RESULTS
-    
-    # Patch da classe DDGS
-    with patch('skills.web_search.DDGS', return_value=mock_ddgs):
-        # Entidades de exemplo
-        test_entities = {"query": "teste de busca"}
-        test_command = "busque na web sobre teste"
-        
-        # Chama a skill
-        result = skill_search_web(test_entities, test_command)
-        
-        # Verifica o formato do resultado
-        assert result["status"] == "success", "O status do resultado deve ser 'success'"
-        assert result["action"] == "web_search_completed", "A ação deve ser 'web_search_completed'"
-        assert "data" in result, "O resultado deve conter a chave 'data'"
-        assert "query" in result["data"], "O resultado deve conter a query"
-        assert "results" in result["data"], "O resultado deve conter os resultados"
-        
-        # Verifica os resultados
-        results = result["data"]["results"]
-        assert len(results) == 2, "Deve haver 2 resultados"
-        
-        # Verifica o primeiro resultado
-        first_result = results[0]
-        assert first_result["title"] == "Título do Resultado 1"
-        assert first_result["snippet"] == "Este é o conteúdo do primeiro resultado."
-        assert first_result["url"] == "https://exemplo1.com"
+@pytest.fixture
+def mock_tavily_client(mocker):
+    """Fixture para mockar o TavilyClient."""
+    mock_constructor = mocker.patch('skills.web_search.TavilyClient')
+    mock_client = MagicMock()
+    mock_constructor.return_value = mock_client
+    return mock_constructor, mock_client
 
-def test_skill_search_web_no_query():
-    """
-    Testa se skill_search_web retorna erro quando nenhuma query é fornecida.
-    """
-    # Entidades sem query
-    test_entities = {}
-    test_command = "busque na web"
-    
-    # Chama a skill
-    result = skill_search_web(test_entities, test_command)
-    
-    # Verifica o erro
-    assert result["status"] == "error", "O status deve ser 'error'"
-    assert result["action"] == "web_search_failed", "A ação deve ser 'web_search_failed'"
-    assert "Nenhuma query de busca fornecida" in result["data"]["message"]
 
-def test_skill_search_web_error(mocker):
+def test_skill_search_web_success(mocker, mock_tavily_client):
     """
-    Testa se skill_search_web trata corretamente erros durante a busca.
+    Testa o cenário de sucesso da busca na web com Tavily.
     """
-    # Simula um erro na busca
-    mock_ddgs = MagicMock()
-    mock_ddgs.__enter__.return_value.text.side_effect = Exception("Erro de conexão")
-    
-    # Patch da classe DDGS
-    with patch('skills.web_search.DDGS', return_value=mock_ddgs):
-        # Entidades de exemplo
-        test_entities = {"query": "teste de busca"}
-        test_command = "busque na web sobre teste"
-        
-        # Chama a skill
-        result = skill_search_web(test_entities, test_command)
-        
-        # Verifica o erro
-        assert result["status"] == "error", "O status deve ser 'error'"
-        assert result["action"] == "web_search_failed", "A ação deve ser 'web_search_failed'"
-        assert "Erro ao realizar a busca" in result["data"]["message"] 
+    mocker.patch('skills.web_search.TAVILY_ENABLED', True)
+    mocker.patch('skills.web_search.TAVILY_API_KEY', 'fake_key')
+
+    mock_constructor, mock_client = mock_tavily_client
+    mock_client.search.return_value = MOCK_TAVILY_SUCCESS_RESPONSE
+
+    action_input = {"query": "teste de busca", "max_results": 5}
+    result = skill_search_web(action_input=action_input)
+
+    mock_constructor.assert_called_once_with(api_key='fake_key')
+    mock_client.search.assert_called_once_with(query="teste de busca", search_depth="basic", max_results=5)
+    assert result["status"] == "success"
+    assert result["action"] == "web_search_completed"
+    assert "Busca na web (Tavily) por 'teste de busca' concluída" in result["data"]["message"]
+    assert len(result["data"]["results"]) == 2
+    assert result["data"]["results"][0]["title"] == "Resultado 1"
+
+
+def test_skill_search_web_success_max_results(mocker, mock_tavily_client):
+    """
+    Testa se skill_search_web usa o parâmetro max_results corretamente.
+    """
+    mocker.patch('skills.web_search.TAVILY_ENABLED', True)
+    mocker.patch('skills.web_search.TAVILY_API_KEY', 'fake_key')
+
+    mock_constructor, mock_client = mock_tavily_client
+    mock_client.search.return_value = MOCK_TAVILY_SUCCESS_RESPONSE # A resposta mock não precisa mudar
+
+    action_input = {"query": "test query", "max_results": 3}
+    result = skill_search_web(action_input=action_input)
+
+    mock_constructor.assert_called_once_with(api_key='fake_key')
+    mock_client.search.assert_called_once_with(query="test query", search_depth="basic", max_results=3) # Verifica max_results
+    assert result["status"] == "success"
+    assert result["action"] == "web_search_completed"
+    assert "Busca na web (Tavily) por 'test query' concluída" in result["data"]["message"]
+
+
+def test_skill_search_web_no_query(mocker):
+    """
+    Testa o erro quando o parâmetro 'query' está ausente.
+    """
+    mocker.patch('skills.web_search.TAVILY_ENABLED', True)
+    mocker.patch('skills.web_search.TAVILY_API_KEY', 'fake_key')
+
+    action_input = {}
+    result = skill_search_web(action_input=action_input)
+
+    assert result["status"] == "error"
+    assert result["action"] == "web_search_failed"
+    assert "Parâmetro 'query' ausente ou inválido." in result["data"]["message"]
+
+
+def test_skill_search_web_api_error(mocker, mock_tavily_client):
+    """
+    Testa o tratamento de erro quando a API Tavily falha.
+    """
+    mocker.patch('skills.web_search.TAVILY_ENABLED', True)
+    mocker.patch('skills.web_search.TAVILY_API_KEY', 'fake_key')
+
+    mock_constructor, mock_client = mock_tavily_client
+    mock_client.search.side_effect = Exception("Tavily Connection Error")
+
+    action_input = {"query": "error query"}
+    result = skill_search_web(action_input=action_input)
+
+    mock_constructor.assert_called_once_with(api_key='fake_key')
+    mock_client.search.assert_called_once_with(query="error query", search_depth="basic", max_results=5)
+    assert result["status"] == "error"
+    assert result["action"] == "web_search_failed"
+    assert "Erro ao executar a busca na web (Tavily): Tavily Connection Error" in result["data"]["message"]
+
+
+def test_skill_search_web_disabled(mocker):
+    """
+    Testa o comportamento quando a busca Tavily está desabilitada.
+    """
+    mocker.patch('skills.web_search.TAVILY_ENABLED', False)
+    # API Key não importa se está desabilitado
+    mocker.patch('skills.web_search.TAVILY_API_KEY', 'irrelevant_key')
+
+    mock_constructor = mocker.patch('skills.web_search.TavilyClient') # Mock para garantir que NÃO seja chamado
+
+    action_input = {"query": "any query"}
+    result = skill_search_web(action_input=action_input)
+
+    mock_constructor.assert_not_called() # Verifica se o cliente NÃO foi instanciado
+    assert result["status"] == "error" # <<< CORRIGIDO: Deve ser error quando desabilitado >>>
+    assert result["action"] == "web_search_disabled"
+    assert "Busca na web (Tavily) está desabilitada na configuração" in result["data"]["message"]
+
+
+def test_skill_search_web_no_api_key(mocker):
+    """
+    Testa o erro quando a chave da API Tavily não está configurada, mas está habilitado.
+    """
+    mocker.patch('skills.web_search.TAVILY_ENABLED', True)
+    mocker.patch('skills.web_search.TAVILY_API_KEY', None) # Chave é None
+
+    mock_constructor = mocker.patch('skills.web_search.TavilyClient') # Mock para garantir que NÃO seja chamado
+
+    action_input = {"query": "any query"}
+    result = skill_search_web(action_input=action_input)
+
+    mock_constructor.assert_not_called()
+    assert result["status"] == "error"
+    assert result["action"] == "web_search_failed" # A falha agora é por falta de chave
+    assert "Chave da API Tavily (TAVILY_API_KEY) não encontrada." in result["data"]["message"] 
