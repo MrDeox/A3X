@@ -131,7 +131,7 @@ TOOLS = {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "A ação a ser realizada (DEVE ser 'read')",
+                    "description": "A ação a ser realizada. DEVE ser EXATAMENTE a string 'read'.",
                     "enum": ["read"]
                 },
                 "file_name": {

@@ -3,7 +3,11 @@ import re
 import os
 import traceback # Keep for debugging
 import json
+import logging # <<< Add import
 from core.config import LLAMA_SERVER_URL
+
+# <<< Initialize logger >>>
+logger = logging.getLogger(__name__)
 
 def _find_code_in_history_or_file(file_name: str = None, history: list = None) -> tuple:
     """
@@ -88,123 +92,212 @@ def skill_modify_code(action_input: dict, agent_memory: dict, agent_history: lis
         return {"status": "error", "action": "modify_code_failed", "data": {"message": "Parâmetro 'modification' ausente no Action Input."}}
 
     original_code = None
+    target_filepath = None # <<< Initialize target_filepath >>>
     language = "python" # Default
-    target_found_source = None # Para logar onde achou
+    target_found_source = None
 
-    # --- BUSCAR CÓDIGO ALVO (VERSÃO 3 - Itera Histórico Corretamente) ---
-    if agent_history:
-        print("  Iniciando busca no histórico (reverso)...") # Log inicial da busca
-        # Itera o histórico de trás para frente
-        for entry_index, entry in enumerate(reversed(agent_history)):
-            # Log para cada entrada sendo verificada
-            # print(f"    Verificando histórico (idx rev {entry_index}): {entry[:70]}...") 
-            if isinstance(entry, str) and entry.startswith("Observation:"):
-                 print(f"    > Encontrada Observação (idx rev {entry_index}). Verificando conteúdo...") # Log Observação encontrada
-                 read_success_match = re.search(r"Observação:\s*Conteúdo do arquivo\s*'([^']+)'\s*lido com sucesso", entry)
-                 if read_success_match:
-                     target_filename_read = read_success_match.group(1)
-                     print(f"      >> MATCH! Observação de read_file encontrada para '{target_filename_read}'. Tentando reler...") # Log
-                     try:
-                         abs_path = os.path.abspath(target_filename_read)
-                         cwd = os.getcwd()
-                         # Segurança: Garante que estamos dentro do diretório de trabalho
-                         if not abs_path.startswith(cwd):
-                              print(f"      [Modify Code Safety WARN] Tentativa de reler arquivo fora do diretório atual: {target_filename_read}")
-                         else:
-                              with open(target_filename_read, "r", encoding="utf-8") as f_read:
-                                   original_code = f_read.read()
-                              if original_code:
-                                   language = "python" # Default
-                                   ext = os.path.splitext(target_filename_read)[1].lower()
-                                   if ext in ['.js']: language = "javascript"
-                                   # Atualiza target_desc para refletir a origem
-                                   target_desc = f"o código do arquivo '{target_filename_read}' (lido na obs. anterior)"
-                                   target_found_source = f"read_file ({target_filename_read})"
-                                   print(f"      Código ({language}) obtido com sucesso re-lendo arquivo.") # Log
-                                   break # <<< ENCONTROU VIA READ_FILE, SAI DO LOOP DO HISTÓRICO
-                              else:
-                                   print(f"      [Modify Code WARN] Arquivo '{target_filename_read}' relido, mas está vazio.")
-                     except FileNotFoundError:
-                          print(f"      [Modify Code ERROR] Arquivo '{target_filename_read}' não encontrado ao tentar reler.")
-                          original_code = None # Resetar
-                     except Exception as reread_err:
-                         print(f"      [Modify Code ERROR] Erro inesperado ao tentar reler '{target_filename_read}': {reread_err}")
-                         original_code = None # Resetar
-                     # Mesmo se a releitura falhar, encontramos a observação de read_file, paramos de procurar
-                     break # <<< SAI DO LOOP DO HISTÓRICO APÓS PROCESSAR OBS DE READ_FILE
+    # <<< INÍCIO: Verificação de Overrides >>>
+    # >>>>> INÍCIO: NOVA Verificação Prioritária (para compatibilidade com override do agent.py) <<<<<
+    code_from_agent_override = action_input.get("code_to_modify")
+    filepath_from_agent_override = action_input.get("target_filepath")
 
-                 # Se não era observação de read_file, verifica se era de generate/modify
-                 elif "Código Gerado:" in entry or "Código Modificado:" in entry:
-                     print("      > Observação de generate/modify encontrada. Tentando extrair código...") # Log
-                     code_match = re.search(r"```(\w*)\s*([\s\S]*?)\s*```", entry, re.DOTALL)
-                     if code_match:
-                         lang_found = code_match.group(1).strip().lower()
-                         code_to_use = code_match.group(2).strip()
-                         if code_to_use:
-                             original_code = code_to_use
-                             language = lang_found if lang_found else language
-                             target_desc = "o código da observação anterior (generate/modify)"
-                             target_found_source = "Observation (gen/mod)"
-                             print(f"      Código ({language}) obtido da observação anterior (generate/modify).")
-                             break # <<< ENCONTROU VIA GEN/MOD, SAI DO LOOP DO HISTÓRICO
-                         else:
-                              print("      > Bloco de código vazio na observação gen/mod.") # Log
+    use_override = False # Mover para cá
+    if code_from_agent_override is not None and filepath_from_agent_override is not None:
+        logger.info("  Código e filepath encontrados via \'code_to_modify\' e \'target_filepath\' (override do agente). Usando-os.")
+        original_code = code_from_agent_override
+        target_filepath = filepath_from_agent_override # <<< Use target_filepath >>>
+        # Infer language from override filepath
+        ext = os.path.splitext(target_filepath)[1].lower()
+        if ext in ['.js']: language = "javascript"
+        # Add more language inferences if needed
+        target_found_source = "Agent Override (code_to_modify)"
+        use_override = True
+    # >>>>> FIM: NOVA Verificação Prioritária <<<<<
+    # <<< Bloco de override original mantido como fallback (se necessário, pode ser removido) >>>
+    elif not use_override: # Só checa este se o override do agente não foi usado
+        original_code_override = action_input.get("original_code_override")
+        target_filepath_override = action_input.get("target_filepath_override")
+
+        # use_override = False # Comentado/Removido
+        if original_code_override is not None and target_filepath_override is not None:
+            logger.info("  Overrides de código original e filepath encontrados no Action Input (original_code_override). Usando-os diretamente.") # Log ajustado
+            original_code = original_code_override
+            target_filepath = target_filepath_override # <<< Use target_filepath >>>
+            # Infer language from override filepath
+            ext = os.path.splitext(target_filepath)[1].lower()
+            if ext in ['.js']: language = "javascript"
+            # Add more language inferences if needed
+            target_found_source = "Action Input Override (original_code_override)" # Log ajustado
+            use_override = True
+    # <<< FIM: Verificação de Overrides >>>
+
+    if not use_override: # Só busca se não usou override
+        logger.debug("  Overrides não encontrados. Iniciando busca por código alvo...") # <<< Updated log >>>
+        # --- BUSCAR CÓDIGO ALVO (VERSÃO 4 - Prioriza 'target_desc' para arquivo) ---
+
+        # 1. Tenta extrair e ler o arquivo diretamente do target_desc
+        logger.debug(f"  Verificando se '{target_desc}' contém um caminho de arquivo...") # <<< Use logger >>>
+        # Regex simples para encontrar algo que pareça um caminho de arquivo (pode precisar de ajuste)
+        path_match = re.search(r"[\\'\\\"]([a-zA-Z0-9_\\-\\./]+\\.(?:py|txt|js|json|md|log))[\\'\\\"]", target_desc)
+        if path_match:
+            target_filename_from_desc = path_match.group(1)
+            logger.info(f"  Caminho potencial encontrado em target_desc: '{target_filename_from_desc}'. Tentando ler...") # <<< Use logger >>>
+            try:
+                abs_path = os.path.abspath(target_filename_from_desc)
+                cwd = os.getcwd()
+                # Segurança: Garante que estamos dentro do diretório de trabalho
+                if not abs_path.startswith(cwd):
+                     logger.warning(f"      [Modify Code Safety WARN] Tentativa de ler arquivo (de target_desc) fora do diretório atual: {target_filename_from_desc}") # <<< Use logger >>>
+                else:
+                     with open(target_filename_from_desc, "r", encoding="utf-8") as f_read:
+                          original_code = f_read.read()
+                     if original_code:
+                          target_filepath = target_filename_from_desc # <<< Set target_filepath >>>
+                          language = "python" # Default
+                          ext = os.path.splitext(target_filename_from_desc)[1].lower()
+                          if ext in ['.js']: language = "javascript"
+                          # Atualiza target_desc para refletir a origem
+                          # target_desc = f"o código do arquivo '{target_filename_from_desc}' (lido diretamente via target_desc)" # Opcional: Atualizar descrição
+                          target_found_source = f"File ({target_filename_from_desc} from target_desc)"
+                          logger.info(f"      Código ({language}) obtido com sucesso lendo arquivo do target_desc.") # <<< Use logger >>>
                      else:
-                           print("      > Regex não encontrou bloco de código na observação gen/mod.") # Log
-                 else:
-                      print("      > Observação não continha read_file ou gen/mod code.") # Log
+                          logger.warning(f"      [Modify Code WARN] Arquivo '{target_filename_from_desc}' (de target_desc) lido, mas está vazio.") # <<< Use logger >>>
+            except FileNotFoundError:
+                 logger.error(f"      [Modify Code ERROR] Arquivo '{target_filename_from_desc}' (de target_desc) não encontrado.") # <<< Use logger >>>
+                 original_code = None # Resetar para cair no fallback
+            except Exception as direct_read_err:
+                logger.exception(f"      [Modify Code ERROR] Erro inesperado ao ler '{target_filename_from_desc}' (de target_desc): {direct_read_err}") # <<< Use logger >>>
+                original_code = None # Resetar para cair no fallback
 
-            # else: # Se não for string ou não começar com Observation:
-            #      print(f"    > Ignorando entrada do histórico (não é string de Observação): {type(entry)}")
+        # 2. Se não achou pelo target_desc, tenta histórico (lógica anterior)
+        if not original_code and agent_history:
+            logger.debug("  Código não encontrado diretamente via target_desc. Iniciando busca no histórico (reverso)...") # <<< Use logger >>>
+            # Itera o histórico de trás para frente
+            for entry_index, entry in enumerate(reversed(agent_history)):
+                # Log para cada entrada sendo verificada
+                # logger.debug(f"    Verificando histórico (idx rev {entry_index}): {entry[:70]}...")
+                if isinstance(entry, str) and entry.startswith("Observation:"):
+                     logger.debug(f"    > Encontrada Observação (idx rev {entry_index}). Verificando conteúdo...") # <<< Use logger >>>
+                     # Regex ajustada para buscar filename E preview do conteúdo lido (melhor correspondência)
+                     read_success_match = re.search(r"Observação:\s*Conteúdo do arquivo\s*'([^']+)'\s*lido com sucesso", entry) # Usa regex anterior por simplicidade
+                     if read_success_match:
+                         target_filename_read = read_success_match.group(1)
+                         logger.info(f"      >> MATCH! Observação de read_file encontrada para '{target_filename_read}'. Tentando reler...") # <<< Use logger >>>
+                         try:
+                             abs_path = os.path.abspath(target_filename_read)
+                             cwd = os.getcwd()
+                             # Segurança: Garante que estamos dentro do diretório de trabalho
+                             if not abs_path.startswith(cwd):
+                                  logger.warning(f"      [Modify Code Safety WARN] Tentativa de reler arquivo fora do diretório atual: {target_filename_read}") # <<< Use logger >>>
+                             else:
+                                  with open(target_filename_read, "r", encoding="utf-8") as f_read:
+                                       original_code = f_read.read()
+                                  if original_code:
+                                       target_filepath = target_filename_read # <<< Set target_filepath >>>
+                                       language = "python" # Default
+                                       ext = os.path.splitext(target_filename_read)[1].lower()
+                                       if ext in ['.js']: language = "javascript"
+                                       # Atualiza target_desc para refletir a origem
+                                       target_desc = f"o código do arquivo '{target_filename_read}' (lido na obs. anterior)"
+                                       target_found_source = f"read_file ({target_filename_read})"
+                                       logger.info(f"      Código ({language}) obtido com sucesso re-lendo arquivo.") # <<< Use logger >>>
+                                       break # <<< ENCONTROU VIA READ_FILE, SAI DO LOOP DO HISTÓRICO
+                                  else:
+                                       logger.warning(f"      [Modify Code WARN] Arquivo '{target_filename_read}' relido, mas está vazio.") # <<< Use logger >>>
+                         except FileNotFoundError:
+                              logger.error(f"      [Modify Code ERROR] Arquivo '{target_filename_read}' não encontrado ao tentar reler.") # <<< Use logger >>>
+                              original_code = None # Resetar
+                         except Exception as reread_err:
+                             logger.exception(f"      [Modify Code ERROR] Erro inesperado ao tentar reler '{target_filename_read}': {reread_err}") # <<< Use logger >>>
+                             original_code = None # Resetar
+                         # Mesmo se a releitura falhar, encontramos a observação de read_file, paramos de procurar
+                         break # <<< SAI DO LOOP DO HISTÓRICO APÓS PROCESSAR OBS DE READ_FILE
 
-    # Se saiu do loop sem achar código no histórico...
-    # 2. Tenta da memória do agente (agent_memory)
-    if not original_code:
-        print("  Código não encontrado no histórico. Verificando memória do agente...") # Log
-        last_code_from_mem = agent_memory.get('last_code')
-        if last_code_from_mem:
+                     # Se não era observação de read_file, verifica se era de generate/modify
+                     elif "Código Gerado:" in entry or "Código Modificado:" in entry:
+                         logger.debug("      > Observação de generate/modify encontrada. Tentando extrair código...") # <<< Use logger >>>
+                         code_match = re.search(r"```(\\w*)\\s*([\\s\\S]*?)\\s*```", entry, re.DOTALL)
+                         if code_match: # Indented correctly under elif
+                             lang_found = code_match.group(1).strip().lower()
+                             code_to_use = code_match.group(2).strip()
+                             if code_to_use: # Indented correctly under if code_match
+                                 original_code = code_to_use
+                                 # <<< Tenta inferir filepath da mensagem de sucesso da skill anterior >>>
+                                 prev_skill_output_match = re.search(r"salvo no arquivo: ([^\s]+)", entry, re.IGNORECASE) # Indentation fixed
+                                 if prev_skill_output_match: # Indented correctly under if code_to_use
+                                     target_filepath = prev_skill_output_match.group(1) # <<< Set target_filepath >>>
+                                     logger.info(f"      Filepath '{target_filepath}' inferido da observação de gen/mod.")
+                                 else: # Indented correctly under if prev_skill_output_match
+                                     logger.warning("      Não foi possível inferir filepath da observação de gen/mod.")
+                                     target_filepath = None # Garante que está None
+
+                                 language = lang_found if lang_found else language # Indentation fixed
+                                 target_desc = "o código da observação anterior (generate/modify)" # Indentation fixed
+                                 target_found_source = "Observation (gen/mod)" # Indentation fixed
+                                 logger.info(f"      Código ({language}) obtido da observação anterior (generate/modify).") # Indentation fixed
+                                 break # <<< ENCONTROU VIA GEN/MOD, SAI DO LOOP DO HISTÓRICO
+                             else: # Indented correctly under if code_to_use
+                                 logger.warning("      > Bloco de código vazio na observação gen/mod.") # Indentation fixed
+                         else: # Indented correctly under if code_match
+                             logger.warning("      > Regex não encontrou bloco de código na observação gen/mod.") # Indentation fixed
+                     else:
+                          logger.debug("      > Observação não continha read_file ou gen/mod code.") # <<< Use logger >>>
+
+                # else: # Se não for string ou não começar com Observation:
+                #      logger.debug(f"    > Ignorando entrada do histórico (não é string de Observação): {type(entry)}")
+
+        # Se saiu do loop sem achar código no histórico...
+        # 3. Tenta da memória do agente (agent_memory)
+    if not original_code: # Alinhado corretamente
+        logger.debug("  Código não encontrado via target_desc ou histórico. Verificando memória do agente...") # <<< Use logger >>>
+        last_code_from_mem = agent_memory.get('last_code') # Indentado sob o if
+        if last_code_from_mem: # Indentado sob o if
              original_code = last_code_from_mem
-             language = agent_memory.get('last_lang') if agent_memory.get('last_lang') else language
-             target_desc = "o último código na memória"
-             target_found_source = "Agent Memory"
-             print(f"  Código ({language}) encontrado na memória do agente.")
-        else:
-             print("  Nenhum código encontrado na memória do agente.")
+             language = agent_memory.get('last_lang') if agent_memory.get('last_lang') else language # Indentado sob o if
+             target_desc = "o último código na memória" # Indentado sob o if
+             target_found_source = "Agent Memory" # Indentado sob o if
+             target_filepath = None # Código da memória não tem filepath associado aqui # Indentado sob o if
+             logger.info(f"  Código ({language}) encontrado na memória do agente.") # <<< Use logger >>> # Indentado sob o if
+        else: # Indentado sob o if
+             logger.warning("  Nenhum código encontrado na memória do agente.") # <<< Use logger >>> # Indentado sob o if
 
-    # --- FIM DA SEÇÃO BUSCAR CÓDIGO ALVO ---
+    # <<< FIM DO BLOCO if not use_override >>> -> Este comentário será removido
 
-    # Agora, a verificação final se original_code foi encontrado
+    # Agora, a verificação final se original_code foi encontrado (independente da origem)
     if not original_code:
         # Mensagem de erro atualizada
-        # Usando print pois logger pode não estar configurado aqui
-        print(f"  [Modify Code ERROR] Falha ao modificar: Não foi possível localizar o código alvo via Histórico (read/gen/mod) ou Memória, baseado na descrição '{target_desc}'.")
+        logger.error(f"  [Modify Code ERROR] Falha ao modificar: Não foi possível localizar o código alvo via Override, Histórico (read/gen/mod) ou Memória, baseado na descrição '{target_desc}'.") # <<< Use logger >>>
         return {
             "status": "error",
             "action": "modify_code_failed",
-            "data": {"message": f"Não foi possível localizar o código alvo ('{target_desc}') via histórico ou memória."}
+            "data": {"message": f"Não foi possível localizar o código alvo ('{target_desc}') via override, histórico ou memória."} # <<< Updated error message >>>
         }
     else:
-         print(f"  Código alvo para modificação encontrado (Fonte: {target_found_source}). Descrição usada: '{target_desc}'")
+         logger.info(f"  Código alvo para modificação encontrado (Fonte: {target_found_source}). Descrição usada: '{target_desc}'") # <<< Use logger >>>
 
     # --- Construir Prompt de Modificação (Adaptado para Chat) ---
     # System prompt defines the role
-    system_prompt_modify = f"Você é um editor de código {language} preciso. Modifique o código fornecido de acordo com a instrução do usuário. Retorne APENAS o bloco de código {language} modificado, sem nenhuma explicação adicional antes ou depois."
+    system_prompt_modify = "Você é um editor de código Python extremamente preciso. Sua única tarefa é modificar o código fornecido na mensagem do usuário para aplicar a 'Instrução de Modificação Específica'. Retorne APENAS o código Python completo e modificado, sem NENHUM outro texto antes ou depois."
     # User prompt provides the context and instruction
-    user_prompt_modify = f"""Aqui está o código {language} original:
-```{language}
+    user_prompt_modify = f"""Instrução de Modificação Específica:
+{modification}
+(Aplique esta mudança diretamente ao código original. A instrução provavelmente pede para alterar ou remover uma linha específica.)
+
+Código Original ({target_filepath if target_filepath else 'desconhecido'}):
+```python
 {original_code}
 ```
 
-Modifique este código de acordo com a seguinte instrução:
-{modification}"""
+Código Modificado (APENAS O CÓDIGO):"""
 
-    print(f"  Construindo prompt de CHAT para modificação...")
-    # print(f"DEBUG User Prompt Modificação:\n{user_prompt_modify}") # Optional debug
+    logger.debug(f"  Construindo prompt de CHAT para modificação...")
+    # logger.debug(f"DEBUG System Prompt Modificação:\n{system_prompt_modify}") # Optional debug
+    # logger.debug(f"DEBUG User Prompt Modificação:\n{user_prompt_modify}") # Optional debug
 
     # --- Chamar LLM para Modificar (USA API DE CHAT AGORA!) ---
     chat_url = LLAMA_SERVER_URL # Assume config.py has the correct chat URL
     if not chat_url.endswith("/chat/completions"):
-         print(f"[Modify Code WARN] URL LLM '{chat_url}' não parece ser para chat. Verifique config.py. Tentando adicionar /v1/chat/completions...")
+         logger.warning(f"[Modify Code WARN] URL LLM '{chat_url}' não parece ser para chat. Verifique config.py. Tentando adicionar /v1/chat/completions...") # <<< Use logger >>>
          if chat_url.endswith("/v1") or chat_url.endswith("/v1/"):
               chat_url = chat_url.rstrip('/') + "/chat/completions"
          else:
@@ -231,7 +324,7 @@ Modifique este código de acordo com a seguinte instrução:
         response_data = response.json()
 
         generated_content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
-        print(f"  [DEBUG] Raw LLM Response Content (Modify Skill):\n---\n{generated_content}\n---")
+        logger.debug(f"  [DEBUG] Raw LLM Response Content (Modify Skill):\\n---\\n{generated_content}\\n---") # <<< Use logger >>>
 
         # --- Extrair Código Modificado (Mesma lógica de generate_code) ---
         modified_code = generated_content
@@ -243,50 +336,86 @@ Modifique este código de acordo com a seguinte instrução:
             if extracted_code is not None:
                  modified_code = extracted_code.strip()
                  extracted_via_markdown = True
-                 print("[Modify Code INFO] Código modificado extraído de bloco Markdown.")
+                 logger.info("[Modify Code INFO] Código modificado extraído de bloco Markdown.") # <<< Use logger >>>
 
         if not extracted_via_markdown:
-             print("[Modify Code WARN] Bloco Markdown não encontrado. Tentando limpeza de fallback.")
+             logger.warning("[Modify Code WARN] Bloco Markdown não encontrado. Tentando limpeza de fallback.") # <<< Use logger >>>
              # Basic cleaning, remove potential ```lang and ``` markers
-             cleaned_code = re.sub(rf"^\s*```{language}\s*", "", modified_code)
-             cleaned_code = re.sub(r"^\s*```\s*", "", cleaned_code)
-             cleaned_code = re.sub(r"\s*```\s*$", "", cleaned_code).strip()
-             if cleaned_code != modified_code:
-                  print("[Modify Code INFO] Marcadores ``` removidos.")
-                  modified_code = cleaned_code
-             else:
-                  print("[Modify Code WARN] Limpeza de fallback não alterou o código. Usando raw.")
-                  modified_code = modified_code.strip() # Ensure no extra whitespace
+             modified_code = re.sub(rf"^```{language}\s*", "", modified_code)
+             modified_code = re.sub(r"\s*```$", "", modified_code)
 
-
-        if not modified_code:
-            print(" [Erro Modify] LLM retornou modificação vazia após extração.")
-            # Return original as fallback to avoid breaking the flow, but use 'warning' status
-            modified_code = original_code
-            status = "warning"
-            message = f"LLM não conseguiu modificar o código de {target_desc} (resposta vazia). Código original mantido."
-        elif modified_code == original_code:
-             print(" [Info Modify] LLM retornou o código original (modificação pode não ter sido aplicável ou necessária).")
-             status = "success" # Still success, just no change
+        # --- Comparar Código ---
+        if modified_code == original_code:
              message = f"Código de {target_desc} não foi alterado pela modificação solicitada."
+             logger.info(f" [Info Modify] LLM retornou o código original (modificação pode não ter sido aplicável ou necessária).") # <<< Use logger >>>
         else:
-             print(f"  Modificação Final (Extraída):\n---\n{modified_code}\n---")
-             status = "success"
              message = f"Código de {target_desc} modificado com sucesso."
+             logger.info(f" [Info Modify] Modificação aplicada. Código alterado.") # <<< Use logger >>>
 
-        # --- Retornar Resultado ---
+             # --- SALVAR NO ARQUIVO (SE target_filepath FOI DEFINIDO) ---
+             if target_filepath:
+                  # Segurança extra: verifica se o path é relativo e dentro do CWD
+                  abs_target_path = os.path.abspath(target_filepath)
+                  cwd = os.getcwd()
+                  if not abs_target_path.startswith(cwd):
+                       logger.error(f"  [Modify Code SAVE ERROR] Tentativa de salvar fora do diretório de trabalho bloqueada: {target_filepath}")
+                       message += f" (ERRO: Falha ao salvar - acesso fora do diretório negado para '{target_filepath}')"
+                       # Retorna sucesso na modificação, mas falha no salvamento
+                       return {
+                           "status": "partial_success", # Indica que modificou, mas não salvou
+                           "action": "code_modified_not_saved",
+                           "data": {
+                               "original_code": original_code,
+                               "modified_code": modified_code,
+                               "language": language,
+                               "target_filepath": target_filepath,
+                               "message": message
+                           }
+                      }
+                  else:
+                      try:
+                           # Garante que diretórios existam
+                           os.makedirs(os.path.dirname(abs_target_path), exist_ok=True)
+                           with open(abs_target_path, "w", encoding="utf-8") as f_save:
+                                f_save.write(modified_code)
+                           logger.info(f"  Código modificado salvo em: {target_filepath}")
+                           message += f" E salvo em '{target_filepath}'."
+                      except Exception as save_err:
+                           logger.exception(f"  [Modify Code SAVE ERROR] Erro ao salvar arquivo '{target_filepath}':")
+                           message += f" (ERRO: Falha ao salvar em '{target_filepath}': {save_err})"
+                           # Retorna sucesso na modificação, mas falha no salvamento
+                           return {
+                               "status": "partial_success",
+                               "action": "code_modified_not_saved",
+                               "data": {
+                                   "original_code": original_code,
+                                   "modified_code": modified_code,
+                                   "language": language,
+                                   "target_filepath": target_filepath,
+                                   "message": message
+                               }
+                          }
+             else:
+                  logger.warning("  Nenhum target_filepath definido (código veio da memória?). Código modificado não será salvo em arquivo.")
+                  message += " (AVISO: Código não salvo em arquivo pois o alvo não era um arquivo específico)."
+
+        # --- Atualizar Memória (Sempre atualiza com o último código modificado) ---
+        agent_memory['last_code'] = modified_code
+        agent_memory['last_lang'] = language
+        logger.info("  Memória do agente atualizada com o código modificado.")
+
         return {
-            "status": status,
-            "action": "code_modified", # Specific action name
+            "status": "success", # ou partial_success se salvamento falhou antes
+            "action": "code_modified",
             "data": {
-                "original_code": original_code, # Useful for context/debug
-                "modified_code": modified_code, # The resulting code
+                "original_code": original_code,
+                "modified_code": modified_code,
                 "language": language,
+                "target_filepath": target_filepath, # <<< Inclui o filepath no resultado >>>
                 "message": message
             }
         }
 
-    # --- Exception Handling (Similar to generate_code) ---
     except requests.exceptions.Timeout:
          print(f"\n[Erro Timeout na Skill Modify] LLM demorou muito para responder (>120s).")
          return {"status": "error", "action": "modify_code_failed", "data": {"message": "Timeout: O LLM demorou muito para modificar o código."}}
@@ -309,4 +438,4 @@ Modifique este código de acordo com a seguinte instrução:
             "status": "error",
             "action": "modify_code_failed",
             "data": {"message": f"Erro inesperado durante a modificação de código: {e}"}
-        }
+        } 
