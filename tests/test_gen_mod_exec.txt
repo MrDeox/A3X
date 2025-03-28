@@ -1,0 +1,7 @@
+# Comandos para testar o fluxo gen -> mod -> exec
+
+gere uma função python chamada 'soma' que retorna a soma de a e b
+
+modifique a função 'soma' adicionando uma docstring explicando o que ela faz
+
+execute o código python: print(soma(10, 20))

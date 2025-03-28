@@ -74,4 +74,4 @@ llama.cpp/
 Thumbs.db
 
 # Arquivos .env (contêm segredos ou caminhos locais)
-.env 
+.env node_modules/
