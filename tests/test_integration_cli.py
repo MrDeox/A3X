@@ -127,6 +127,7 @@ def run_a3x_test_capture(input_file: str = None, command: str = None, timeout: i
 
 # --- Novos Testes ReAct ---
 
+@pytest.mark.skip(reason="Tools generate_code/modify_code are currently disabled")
 def test_react_gen_mod_exec():
     """
     Testa o fluxo ReAct: generate_code -> modify_code -> execute_code.
