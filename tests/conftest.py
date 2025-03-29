@@ -80,37 +80,12 @@ def CODE_TO_EXECUTE_FAILING():
 def CODE_TO_EXECUTE_SUCCESS():
     return "print('Success!')"
 
-# LLM Responses (JSON Format)
 @pytest.fixture
 def LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE(CODE_TO_EXECUTE_FAILING):
     return json.dumps({
         "Thought": "I need to execute this potentially problematic code.",
         "Action": "execute_code",
         "Action Input": {"code": CODE_TO_EXECUTE_FAILING, "language": "python"}
-    })
-
-@pytest.fixture
-def LLM_JSON_RESPONSE_MODIFY_CODE(CODE_TO_EXECUTE_FAILING):
-    return json.dumps({
-        "Thought": "The code failed. I need to modify it to handle the division by zero.",
-        "Action": "modify_code",
-        "Action Input": {"modification": "Handle the division by zero, maybe print an error message or return a specific value.", "code_to_modify": CODE_TO_EXECUTE_FAILING, "language": "python"}
-    })
-
-@pytest.fixture
-def LLM_JSON_RESPONSE_EXECUTE_SUCCESS_CODE(CODE_TO_EXECUTE_SUCCESS):
-    return json.dumps({
-        "Thought": "The code has been modified. Now I need to execute the corrected code.",
-        "Action": "execute_code",
-        "Action Input": {"code": CODE_TO_EXECUTE_SUCCESS, "language": "python"}
-    })
-
-@pytest.fixture
-def LLM_JSON_RESPONSE_FINAL_SUCCESS():
-    return json.dumps({
-        "Thought": "The corrected code executed successfully. I should report the final result.",
-        "Action": "final_answer",
-        "Action Input": {"answer": "Code executed successfully. Output: Success!"}
     })
 
 # Tool Execution Results (as dictionaries and JSON strings)
@@ -133,30 +108,6 @@ def EXECUTE_CODE_RESULT_SUCCESS():
 @pytest.fixture
 def EXECUTE_CODE_RESULT_SUCCESS_JSON(EXECUTE_CODE_RESULT_SUCCESS):
     return json.dumps(EXECUTE_CODE_RESULT_SUCCESS)
-
-@pytest.fixture
-def MODIFY_CODE_RESULT_SUCCESS(CODE_TO_EXECUTE_FAILING, CODE_TO_EXECUTE_SUCCESS):
-    return {
-        "status": "success", "action": "code_modified", "data": {"message": "Code modified successfully.", "original_code": CODE_TO_EXECUTE_FAILING, "modified_code": CODE_TO_EXECUTE_SUCCESS}
-    }
-
-@pytest.fixture
-def MODIFY_CODE_RESULT_SUCCESS_JSON(MODIFY_CODE_RESULT_SUCCESS):
-    return json.dumps(MODIFY_CODE_RESULT_SUCCESS)
-
-# Meta-run result messages (for checking observations)
-@pytest.fixture
-def META_RUN_SUCCESS_MSG():
-    return "Ocorreu um erro na execução anterior, mas um ciclo de auto-correção foi iniciado e concluído com sucesso. O código corrigido foi executado."
-
-@pytest.fixture
-def META_RUN_FAIL_MSG_FRAGMENT():
-    return "Uma tentativa de auto-correção foi feita, mas falhou em corrigir o erro." # Check fragment
-
-@pytest.fixture
-def META_RUN_MAX_DEPTH_MSG_FRAGMENT():
-    return "atingiu a profundidade máxima" # Check fragment
-
 
 # --- Fixtures Compartilhadas ---
 
@@ -197,12 +148,10 @@ def mock_list_files_tool(mocker, LIST_FILES_RESULT_SUCCESS):
 def mock_code_tools(mocker):
     """Mocks as ferramentas execute_code e modify_code and patches them into TOOLS."""
     mock_execute = MagicMock(name="mock_execute_code")
-    mock_modify = MagicMock(name="mock_modify_code")
     # Patch these mocks into the TOOLS dictionary
     mocker.patch.dict('core.agent.TOOLS', {
         'execute_code': {'function': mock_execute, 'description': 'Mock execute_code'},
-        'modify_code': {'function': mock_modify, 'description': 'Mock modify_code'},
         'final_answer': {'function': None, 'description': 'Final Answer Tool'} # Placeholder
     }, clear=False) # Set clear=False
     # Return the mocks so tests can configure return_values/side_effects
-    return mock_execute, mock_modify
+    return mock_execute # Only return execute mock
