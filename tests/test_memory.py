@@ -18,12 +18,18 @@ MOCK_EMBEDDING_BLOB = struct.pack(f'<{MOCK_EMBEDDING_DIM}f', *MOCK_EMBEDDING_ARR
 @pytest.fixture
 def mock_embedding_functions(mocker):
     """Mocks functions from core.embeddings."""
-    mock_get = mocker.patch('skills.memory.get_embedding', return_value=MOCK_EMBEDDING_ARRAY)
-    # Também mockar a constante EMBEDDING_DIM onde é importada/usada
-    mocker.patch('skills.memory.EMBEDDING_DIM', MOCK_EMBEDDING_DIM)
-    # Se o código importar EMBEDDING_DIM diretamente dentro das funções:
+    # Update paths for save.py
+    mock_get_save = mocker.patch('skills.memory.save.get_embedding', return_value=MOCK_EMBEDDING_ARRAY)
+    mocker.patch('skills.memory.save.EMBEDDING_DIM', MOCK_EMBEDDING_DIM)
+    # Update paths for recall.py
+    mock_get_recall = mocker.patch('skills.memory.recall.get_embedding', return_value=MOCK_EMBEDDING_ARRAY)
+    mocker.patch('skills.memory.recall.EMBEDDING_DIM', MOCK_EMBEDDING_DIM)
+    # Keep mocking core.embeddings directly in case it's imported there too (belt and suspenders)
     mocker.patch('core.embeddings.EMBEDDING_DIM', MOCK_EMBEDDING_DIM, create=True)
-    return mock_get
+    # Return one of the mocks, or maybe a tuple if tests need both? Let's return the recall one for now,
+    # as recall tests might depend more specifically on its mock return. Adjust if needed.
+    # Consider returning a dict {'save': mock_get_save, 'recall': mock_get_recall} if tests become complex.
+    return mock_get_recall # Or adjust based on test needs
 
 @pytest.fixture
 def mock_db_connection(mocker):
@@ -31,8 +37,9 @@ def mock_db_connection(mocker):
     mock_conn = MagicMock(spec=sqlite3.Connection)
     mock_cursor = MagicMock(spec=sqlite3.Cursor)
     mock_conn.cursor.return_value = mock_cursor
-    # Mock get_db_connection para retornar nosso mock_conn
-    mocker.patch('skills.memory.get_db_connection', return_value=mock_conn)
+    # Mock get_db_connection for both save and recall modules
+    mocker.patch('skills.memory.save.get_db_connection', return_value=mock_conn)
+    mocker.patch('skills.memory.recall.get_db_connection', return_value=mock_conn)
     return mock_conn, mock_cursor
 
 # --- Testes para skill_save_memory --- 
@@ -40,45 +47,54 @@ def mock_db_connection(mocker):
 def test_save_memory_success(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo de sucesso de save_memory, incluindo inserção VSS."""
     mock_conn, mock_cursor = mock_db_connection
-    mock_get_embedding = mock_embedding_functions
+    mock_get_embedding_recall = mock_embedding_functions # Mock returned is recall's
+    # Need to access the save mock separately if needed, e.g., by modifying the fixture return
+    # Or by patching specifically within the test. For now, assume recall mock covers it,
+    # or adjust fixture/test if call_args check fails. Let's try asserting on the specific mock:
 
-    action_input = {"content": "Test content", "metadata": {"source": "test"}}
+    # Re-patch specifically for save if needed, or modify fixture to return both mocks
+    with patch('skills.memory.save.get_embedding') as mock_get_embedding_save:
+        mock_get_embedding_save.return_value = MOCK_EMBEDDING_ARRAY
 
-    # Simular inserção bem-sucedida na tabela principal e VSS
-    mock_cursor.rowcount = 1 # Simula que a inserção principal aconteceu
-    mock_cursor.lastrowid = 123 # ID retornado
-    # Ajustado: Primeiro fetchone para check vss (assume que existe, retorna tupla)
-    # Segundo fetchone não é chamado neste fluxo, mas podemos deixar None por segurança
-    mock_cursor.fetchone.side_effect = [
-        ('vss_semantic_memory',), # Simula vss_table_exists = True
-        # Não deveria chegar aqui no fluxo de sucesso puro, mas None é seguro.
-        None
-    ]
+        action_input = {"content": "Test content", "metadata": {"source": "test"}}
 
-    result = skill_save_memory(action_input)
+        # Simular inserção bem-sucedida na tabela principal e VSS
+        mock_cursor.rowcount = 1 # Simula que a inserção principal aconteceu
+        mock_cursor.lastrowid = 123 # ID retornado
+        # Ajustado: Primeiro fetchone para check vss (assume que existe, retorna tupla)
+        # Segundo fetchone não é chamado neste fluxo, mas podemos deixar None por segurança
+        mock_cursor.fetchone.side_effect = [
+            ('vss_semantic_memory',), # Simula vss_table_exists = True
+            # Não deveria chegar aqui no fluxo de sucesso puro, mas None é seguro.
+            None
+        ]
 
-    assert result["status"] == "success"
-    assert result["action"] == "memory_saved"
-    assert result["data"]["rowid"] == 123
-    assert result["data"]["vss_updated"] is True
-    assert "Test content" in mock_get_embedding.call_args[0][0]
-    # Verificar chamadas ao cursor (INSERT principal, checar VSS, INSERT VSS)
-    assert mock_cursor.execute.call_count >= 3
-    # Verificar a primeira chamada (INSERT OR IGNORE na semantic_memory)
-    call1_args = mock_cursor.execute.call_args_list[0]
-    assert "INSERT OR IGNORE INTO semantic_memory" in call1_args[0][0]
-    assert call1_args[0][1] == ("Test content", MOCK_EMBEDDING_BLOB, '{"source": "test"}')
-    # Verificar a última chamada (INSERT OR IGNORE no vss_semantic_memory)
-    call_last_args = mock_cursor.execute.call_args_list[-1]
-    assert "INSERT OR IGNORE INTO vss_semantic_memory" in call_last_args[0][0]
-    assert call_last_args[0][1] == (123, MOCK_EMBEDDING_BLOB)
-    mock_conn.commit.assert_called_once()
-    mock_conn.close.assert_called_once()
+        result = skill_save_memory(action_input)
+
+        assert result["status"] == "success"
+        assert result["action"] == "memory_saved"
+        assert result["data"]["rowid"] == 123
+        assert result["data"]["vss_updated"] is True
+        # Assert against the specific mock used by skill_save_memory
+        mock_get_embedding_save.assert_called_once()
+        assert "Test content" in mock_get_embedding_save.call_args[0][0]
+        # Verificar chamadas ao cursor (INSERT principal, checar VSS, INSERT VSS)
+        assert mock_cursor.execute.call_count >= 3
+        # Verificar a primeira chamada (INSERT OR IGNORE na semantic_memory)
+        call1_args = mock_cursor.execute.call_args_list[0]
+        assert "INSERT OR IGNORE INTO semantic_memory" in call1_args[0][0]
+        assert call1_args[0][1] == ("Test content", MOCK_EMBEDDING_BLOB, '{"source": "test"}')
+        # Verificar a última chamada (INSERT OR IGNORE no vss_semantic_memory)
+        call_last_args = mock_cursor.execute.call_args_list[-1]
+        assert "INSERT OR IGNORE INTO vss_semantic_memory" in call_last_args[0][0]
+        assert call_last_args[0][1] == (123, MOCK_EMBEDDING_BLOB)
+        mock_conn.commit.assert_called_once()
+        mock_conn.close.assert_called_once()
 
 def test_save_memory_duplicate_content(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo quando o conteúdo já existe (IGNORE), mas VSS é atualizado."""
     mock_conn, mock_cursor = mock_db_connection
-    mock_get_embedding = mock_embedding_functions
+    mock_get_embedding_recall = mock_embedding_functions # Mock returned is recall's
 
     action_input = {"content": "Duplicate content"}
 
@@ -132,13 +148,14 @@ def test_save_memory_missing_content(mock_db_connection, mock_embedding_function
 
 def test_save_memory_embedding_error(mock_db_connection, mock_embedding_functions):
     """Testa falha se get_embedding falhar."""
-    mock_get_embedding = mock_embedding_functions
-    mock_get_embedding.side_effect = Exception("Embedding model failed")
-    action_input = {"content": "Test content"}
-    result = skill_save_memory(action_input)
-    assert result["status"] == "error"
-    assert result["action"] == "save_memory_failed"
-    assert "Erro inesperado ao gerar embedding" in result["data"]["message"]
+    # Mock the specific function that will be called
+    with patch('skills.memory.save.get_embedding') as mock_get_embedding_save:
+        mock_get_embedding_save.side_effect = Exception("Embedding model failed")
+        action_input = {"content": "Test content"}
+        result = skill_save_memory(action_input)
+        assert result["status"] == "error"
+        assert result["action"] == "save_memory_failed"
+        assert "Erro inesperado ao gerar embedding" in result["data"]["message"]
 
 def test_save_memory_db_error(mock_db_connection, mock_embedding_functions):
     """Testa falha se ocorrer erro no DB."""
@@ -157,7 +174,7 @@ def test_save_memory_db_error(mock_db_connection, mock_embedding_functions):
 def test_recall_memory_success(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo de sucesso de recall_memory."""
     mock_conn, mock_cursor = mock_db_connection
-    mock_get_embedding = mock_embedding_functions
+    mock_get_embedding_recall = mock_embedding_functions # Fixture returns recall mock
 
     action_input = {"query": "Find test", "max_results": 2}
 
@@ -181,7 +198,9 @@ def test_recall_memory_success(mock_db_connection, mock_embedding_functions):
     assert result["data"]["results"][0]["distance"] == 0.5
     assert result["data"]["results"][1]["id"] == 20
     assert result["data"]["results"][1]["distance"] == 0.8
-    assert "Find test" in mock_get_embedding.call_args[0][0]
+    # Assert against the recall mock provided by the fixture
+    mock_get_embedding_recall.assert_called_once()
+    assert "Find test" in mock_get_embedding_recall.call_args[0][0]
     # Verificar chamadas ao cursor (check VSS, check count, SELECT VSS)
     assert mock_cursor.execute.call_count == 3
     # Verificar a chamada VSS search
@@ -193,7 +212,7 @@ def test_recall_memory_success(mock_db_connection, mock_embedding_functions):
 def test_recall_memory_no_results(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo quando a busca não retorna resultados."""
     mock_conn, mock_cursor = mock_db_connection
-    mock_get_embedding = mock_embedding_functions
+    mock_get_embedding_recall = mock_embedding_functions # Fixture returns recall mock
 
     action_input = {"query": "Find nothing"}
 
@@ -254,8 +273,8 @@ def test_recall_memory_missing_query(mock_db_connection, mock_embedding_function
 
 def test_recall_memory_embedding_error(mock_db_connection, mock_embedding_functions):
     """Testa falha se get_embedding para a query falhar."""
-    mock_get_embedding = mock_embedding_functions
-    mock_get_embedding.side_effect = Exception("Query embedding failed")
+    mock_get_embedding_recall = mock_embedding_functions
+    mock_get_embedding_recall.side_effect = Exception("Query embedding failed")
     action_input = {"query": "Find test"}
     result = skill_recall_memory(action_input)
     assert result["status"] == "error"
