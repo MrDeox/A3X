@@ -9,6 +9,13 @@ from requests.exceptions import HTTPError
 
 # Fixtures são importados automaticamente de conftest.py
 
+# Constants for mocking
+LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE = '{"Thought": "I need to execute this potentially problematic code.", "Action": "execute_code", "Action Input": {"code": "print(1/0)", "language": "python"}}'
+EXECUTE_CODE_RESULT_ERROR = {'action': 'execution_failed', 'data': {'message': 'Falha na execução do código: erro de runtime. Stderr: Traceback...\\nZeroDivisionError: division by zero', 'stdout': ''}, 'status': 'error'}
+EXECUTE_CODE_RESULT_ERROR_JSON = json.dumps(EXECUTE_CODE_RESULT_ERROR)
+# Simulate a failed modify_code result as JSON string (matching definition in test_agent_autocorrect.py)
+MOCK_META_FAILURE_JSON_RESULT = '{"status": "error", "action": "code_modification_failed", "data": {"message": "Simulated LLM modification failure."}}'
+
 # ... (previous tests)
 
 def test_react_agent_run_handles_llm_call_error(
@@ -59,13 +66,14 @@ def test_react_agent_run_handles_tool_execution_error(
     agent, mock_llm_call = agent_instance
     mock_execute, _ = mock_code_tools
 
-    # *** Mock da chamada recursiva 'run' para interceptar e impedir o meta-ciclo ***
+    # *** Mock da chamada recursiva 'run' para interceptar e simular falha do meta-ciclo ***
     mock_recursive_run = mocker.patch.object(agent, 'run', wraps=agent.run)
-    meta_failure_msg = "Meta-call prevented by mock"
+
     def recursive_run_side_effect(*args, **kwargs):
         if kwargs.get('is_meta_objective') is True:
-            # Se for uma chamada meta, não executa e retorna mensagem de falha mockada
-            return meta_failure_msg
+            agent_logger.info("[TEST MOCK] Meta-ciclo interceptado, retornando falha (JSON).")
+            # Retorna o JSON de falha simulado
+            return MOCK_META_FAILURE_JSON_RESULT
         else:
             # Deixa a chamada principal (não-meta) prosseguir normalmente
             return mock.DEFAULT
@@ -94,10 +102,15 @@ def test_react_agent_run_handles_tool_execution_error(
     assert len(agent._history) == 3
     assert agent._history[0] == f"Human: {objective}"
     assert agent._history[1] == LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE
-    # A observação DEVE ser a mensagem de falha completa da meta-correção
-    expected_observation = f"Observation: Ocorreu um erro na execução anterior. Uma tentativa de auto-correção foi feita, mas falhou em corrigir o erro. Resultado da tentativa: {meta_failure_msg}"
+    # A observação DEVE ser a mensagem de falha processada do JSON de falha do meta-ciclo
+    expected_observation = 'Observation: An execution error occurred. Auto-correction attempt failed during the modification step. Reason: Simulated LLM modification failure.'
     assert agent._history[2] == expected_observation, \
         f"History item 2 mismatch. Expected: '{expected_observation}'. Got: '{agent._history[2]}'"
 
     # Verifica a resposta final (deve indicar que atingiu o limite de iterações)
-    assert final_response == "Desculpe, não consegui concluir o objetivo dentro do limite de iterações."
+    expected_final_response_start = "Erro: Máximo de iterações (1) atingido."
+    assert final_response.startswith(expected_final_response_start), \
+        f"Final response mismatch. Expected start: '{expected_final_response_start}'. Got: '{final_response}'"
+
+# --- Fixtures ---
+# ... existing code ...
