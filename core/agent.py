@@ -191,7 +191,8 @@ class ReactAgent:
                     )
 
                     if autocorrect_observation:
-                        observation_str = autocorrect_observation # Use the result from auto-correct
+                        # Prepend prefix if autocorrect handled it
+                        observation_str = f"Observation: {autocorrect_observation}"
                         self._last_executed_code = None # Reset last executed code after correction attempt
                     else:
                         # If auto-correct didn't run or apply, format the original tool result
