@@ -1,8 +1,10 @@
 # tests/test_agent_run_errors.py
 import pytest
 from unittest import mock
-from unittest.mock import MagicMock, call
-from core.agent import ReactAgent, agent_logger
+from unittest.mock import MagicMock, call, patch
+from core.agent import ReactAgent, agent_logger, AGENT_STATE_ID
+from core.db_utils import save_agent_state, load_agent_state
+from core import planner
 import json
 from openai import APIError
 from requests.exceptions import HTTPError
@@ -24,93 +26,93 @@ MOCK_META_FAILURE_JSON_RESULT = '{"status": "error", "action": "code_modificatio
 def test_react_agent_run_handles_llm_call_error(
     agent_instance, mock_code_tools, mock_db, mocker
 ):
-    """Testa se o agente lida com um erro de chamada LLM."""
+    """Testa se o agente lida com um erro de chamada LLM (agora com plano)."""
     agent, mock_llm_call = agent_instance
     # mock_execute, mock_modify = mock_code_tools
     # mock_save = mock_db
 
-    # Configura o mock da chamada LLM para levantar um erro
+    # <<< Mock the planner >>>
+    objective = "Test LLM call error handling......"
+    mock_plan = ["Step 1: This step's LLM call will fail."]
+    mock_planner = mocker.patch('core.agent.planner.generate_plan')
+    mock_planner.return_value = mock_plan
+
+    # Configura o mock da chamada LLM para levantar um erro na primeira chamada
     error_message = "LLM API call failed"
     llm_error = APIError(message=error_message, request=None, body=None)
     mock_llm_call.side_effect = llm_error
 
-    objective = "Test LLM call error handling......" # Added dots just to force a diff :)
-    # Default max_iterations é 10
+    # Execute the agent
     final_response = agent.run(objective=objective)
 
     # Assertions
-    # O agente tentará chamar o LLM repetidamente
-    assert mock_llm_call.call_count == agent.max_iterations
+    mock_planner.assert_called_once() # Planner was called
+    # O agente tentará chamar o LLM UMA VEZ para o único passo do plano
+    assert mock_llm_call.call_count == 1 
 
-    # <<< REMOVE HISTORY CHECKS (Using internal _history is unreliable) >>>
-    # expected_history_len = 1 + agent.max_iterations
-    # assert len(agent._history) == expected_history_len, \
-    #     f"Expected history length {expected_history_len}, got {len(agent._history)}. History: {agent._history}"
-    # assert agent._history[0] == f"Human: {objective}"
-    # # Check the last error observation added by the simplified handler
-    # expected_error_observation = f"Observation: Erro interno ao comunicar com o LLM: Erro: Falha na chamada LLM: {llm_error}"
-    # assert agent._history[-1] == expected_error_observation, \
-    #     f"Last history item mismatch. Expected: {expected_error_observation}, Got: {agent._history[-1]}"
+    # Verifica se o agente termina e retorna a mensagem de erro esperada
+    # The error message is now the generic one from the loop completion when no final answer is set
+    # because the cycle itself handles the LLM error and returns False (no break)
+    # The loop then finishes as there are no more steps. 
+    # Check the new expected message based on agent.py line ~110
+    assert "Plan completed. Last observation:" in final_response
+    assert "Erro interno ao comunicar com o LLM: Erro: Falha na chamada LLM: LLM API call failed" in final_response
 
-    # Verifica se o agente termina e retorna a mensagem de erro esperada (REMOVE this one)
-    # assert "Erro: O agente não conseguiu completar o objetivo após 10 iterações." in final_response # <<< REMOVE
-
-    # Verifica se a chamada LLM foi feita (deveria ser 10 vezes)
-    assert mock_llm_call.call_count == 10
-
-    # Verifica a mensagem de erro final (AGORA INCLUI OBSERVAÇÃO)
-    assert "Erro: Máximo de iterações (10) atingido." in final_response # <<< USE final_response >>>
-    assert "Última observação: Observation: Erro interno ao comunicar com o LLM" in final_response # <<< USE final_response >>>
-    assert "LLM API call failed" in final_response # <<< USE final_response >>>
-
+    # Check History (Human, Observation)
+    assert len(agent._history) == 2, f"History: {agent._history}"
+    assert agent._history[0] == f"Human: {objective}"
+    assert "Observation: Erro interno ao comunicar com o LLM: Erro: Falha na chamada LLM: LLM API call failed" in agent._history[1]
+    
+    # --- REMOVED old assertions checking for max_iterations or specific error format ---
 
 def test_react_agent_run_handles_tool_execution_error(
     agent_instance, mock_code_tools, mock_db, mocker,
     LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE, EXECUTE_CODE_RESULT_ERROR_JSON # JSON string
 ):
-    """Testa se o agente lida com um erro retornado pela execução de uma tool (SEM auto-correção)."""
+    """Testa se o agente lida com um erro retornado pela execução de uma tool (agora com plano)."""
     agent, mock_llm_call = agent_instance
     mock_execute = mock_code_tools
 
-    # Configura o mock da chamada LLM para retornar a ação de executar código falho
+    # <<< Mock the planner >>>
+    objective = "Execute este código Python: print(1/0)"
+    mock_plan = ["Step 1: Execute the failing code."]
+    mock_planner = mocker.patch('core.agent.planner.generate_plan')
+    mock_planner.return_value = mock_plan
+
+    # Configura o mock da chamada LLM para retornar a ação de executar código falho (para o único passo)
     mock_llm_call.return_value = LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE
 
     # Configura o mock da ferramenta execute_code para retornar um erro
     mock_execute.return_value = json.loads(EXECUTE_CODE_RESULT_ERROR_JSON)
 
     # Executa o agente
-    result = agent.run("Execute este código Python: print(1/0)")
+    result = agent.run(objective)
 
-    # Verifica o histórico da conversa (agora '_history')
-    # O histórico deve conter: human_objective, llm_response1_raw_json, observation1_str, llm_response2_raw_json, ...
-    # Use agent._history
-    assert len(agent._history) >= 3 # human_obj, llm_resp1, obs1
+    # Assertions
+    mock_planner.assert_called_once()
+    # Verifica se a chamada LLM foi feita UMA VEZ (para o único passo)
+    assert mock_llm_call.call_count == 1
+    # Verifica se a ferramenta foi chamada UMA VEZ
+    mock_execute.assert_called_once()
 
-    # Verifica o conteúdo das mensagens iniciais
-    # human objective, first AI response (raw json), first tool observation (string)
-    # Use agent._history and check for substrings
-    assert "Execute este código Python: print(1/0)" in agent._history[0] # Check objective string
-    assert LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE in agent._history[1] # Check raw LLM JSON string
-
-    # Compare the *parsed* JSON from the observation string with the expected JSON object
-    observation_str = agent._history[2]
-    assert observation_str.startswith("Observation: ")
-    observation_json_str = observation_str.removeprefix("Observation: ")
-    
+    # Verifica o histórico da conversa (Human, LLM1, Obs1)
+    assert len(agent._history) == 3, f"History: {agent._history}"
+    assert agent._history[0] == f"Human: {objective}"
+    assert LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE in agent._history[1] # Raw LLM JSON
+    # Check Observation
     try:
-        actual_observation_obj = json.loads(observation_json_str)
-        expected_observation_obj = json.loads(EXECUTE_CODE_RESULT_ERROR_JSON)
-        assert actual_observation_obj == expected_observation_obj
-    except json.JSONDecodeError as e:
-        pytest.fail(f"Failed to parse JSON for comparison: {e}")
+        actual_obs_json_str = agent._history[2].removeprefix("Observation: ").strip()
+        actual_obs_obj = json.loads(actual_obs_json_str)
+        expected_obs_obj = json.loads(EXECUTE_CODE_RESULT_ERROR_JSON)
+        assert actual_obs_obj == expected_obs_obj, f"Observation JSON mismatch. Expected: {expected_obs_obj}, Got: {actual_obs_obj}"
+    except (IndexError, json.JSONDecodeError) as e:
+        pytest.fail(f"Failed to validate history observation [2]: {e}. History: {agent._history}")
 
-    # Verifica se a chamada LLM foi feita múltiplas vezes (max_iterations)
-    # O agente tenta executar o código repetidamente devido ao erro
-    assert mock_llm_call.call_count == 10 # Chamado 10 vezes (uma por iteração)
-
-    # Verifica se o agente termina e retorna a mensagem de erro esperada (KEEP this one)
-    assert "Erro: Máximo de iterações (10) atingido." in result
-    # Check for key parts of the error JSON in the final result, avoiding direct string comparison
+    # Verifica se o agente termina e retorna a mensagem de erro esperada
+    # O loop termina porque o único passo foi executado (mesmo com erro na tool).
+    # O final_response é definido pela lógica pós-loop.
+    assert "Plan completed. Last observation:" in result
+    # Check for key parts of the error JSON in the final result
     assert '"status": "error"' in result
     assert '"action": "execution_failed"' in result
     assert 'ZeroDivisionError: division by zero' in result
