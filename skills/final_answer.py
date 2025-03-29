@@ -1,19 +1,35 @@
-def skill_final_answer(action_input: dict, agent_memory: dict, agent_history: list | None = None) -> dict:
-    """
-    Fornece a resposta final (assinatura padrão).
-    Esta skill é chamada pelo agente quando ele decide concluir.
-    """
-    print("\n[Skill: Final Answer]")
-    # --- Use action_input ---
-    answer = action_input.get("answer", "Não foi possível determinar a resposta final.")
-    print(f"  Final Answer (from Action Input): {answer}")
+# skills/final_answer.py
+import logging
 
-    # This skill doesn't typically fail, it just delivers the LLM's decided answer.
+logger = logging.getLogger(__name__)
+
+def skill_final_answer(action_input: dict) -> dict:
+    """
+    Processa a ação final do agente.
+
+    Args:
+        action_input (dict): Dicionário contendo a resposta final.
+            Exemplo:
+                {"action": "final_answer", "answer": "A tarefa foi concluída."}
+
+    Returns:
+        dict: Dicionário padronizado indicando sucesso e a resposta final.
+              {"status": "success", "action": "final_answer_provided",
+               "data": {"final_answer": "..."}}
+    """
+    logger.debug(f"Recebido action_input para final_answer: {action_input}")
+
+    final_answer_text = action_input.get("answer", "N/A - Resposta final não fornecida no Action Input.")
+
+    if not isinstance(final_answer_text, str):
+         logger.warning(f"Formato inesperado para 'answer' em final_answer: {type(final_answer_text)}. Convertendo para string.")
+         final_answer_text = str(final_answer_text)
+
+    logger.info(f"Final Answer processado: {final_answer_text[:100]}...")
+
     return {
-        "status": "success", # Always success from the skill's perspective
-        "action": "final_answer_provided", # Action name indicates purpose
-        "data": {
-            "answer": answer,
-            "message": "Resposta final fornecida pelo agente." # Simple message
-        }
-    } 
+        "status": "success",
+        "action": "final_answer_provided",
+        "data": {"final_answer": final_answer_text}
+    }
+

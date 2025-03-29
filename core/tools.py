@@ -90,17 +90,25 @@ TOOLS = {
     },
     "execute_code": {
         "function": skill_execute_code,
-        "description": "Executa um bloco de código Python (gerado anteriormente ou fornecido) em um ambiente seguro (sandbox). Use esta ferramenta APENAS DEPOIS que o código foi gerado por 'generate_code' ou modificado por 'modify_code' em um passo anterior.",
+        "description": "Executa um bloco de código Python fornecido diretamente no Action Input, dentro de um ambiente seguro (sandbox).",
         "parameters": {
             "type": "object",
             "properties": {
-                "target_description": {
-                     "type": "string",
-                     "description": "Descrição do código a ser executado. DEVE ser 'o código do passo anterior' ou similar para indicar que deve buscar no histórico recente do agente. Não passe código diretamente aqui."
-                 }
-                # A skill original tentava pegar 'file_name', mas com ReAct focaremos no histórico do agente primeiro.
+                "code": {
+                    "type": "string",
+                    "description": "O bloco de código Python completo a ser executado (obrigatório)."
+                },
+                "language": {
+                    "type": "string",
+                    "description": "A linguagem do código. Atualmente DEVE ser 'python' ou omitido (padrão: python).",
+                    "enum": ["python"]
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Tempo máximo em segundos para permitir a execução do código (opcional, padrão definido na configuração)."
+                }
             },
-            "required": ["target_description"] # Força o LLM a pensar sobre o alvo
+            "required": ["code"]
         }
     },
     "modify_code": {
