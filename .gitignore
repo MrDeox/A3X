@@ -75,3 +75,7 @@ Thumbs.db
 
 # Arquivos .env (contêm segredos ou caminhos locais)
 .env node_modules/
+
+# LLM Models
+models/
+!.gitkeep
