@@ -176,8 +176,13 @@ class ReactAgent:
             # agent_logger.debug(f"{log_prefix} Prompt para LLM:\\n---\\n{prompt}\\n---\") # Debug verboso
 
             # 2. Chamar LLM
-            llm_response_raw = self._call_llm(prompt)
-            agent_logger.info(f"{log_prefix} Resposta LLM Recebida (Duração: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
+            try:
+                llm_response_raw = self._call_llm(prompt)
+                agent_logger.info(f"{log_prefix} Resposta LLM Recebida (Duração: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
+            except Exception as e:
+                agent_logger.exception(f"{log_prefix} Exceção durante a chamada LLM: {e}")
+                llm_response_raw = f"Erro: Falha na chamada LLM: {e}" # Define a mensagem de erro padrão
+
             # Limita log da resposta bruta
             log_llm_response = llm_response_raw[:1000] + ('...' if len(llm_response_raw) > 1000 else '')
             agent_logger.debug(f"{log_prefix} Resposta LLM (Raw Content):\n---\n{log_llm_response}\n---")
@@ -312,17 +317,17 @@ Sua tarefa é:
 
                      # Gerar Observation para o ciclo ORIGINAL
                      if meta_result == "Correção aplicada e testada com sucesso.":
-                         observation_msg = "Observation: Ocorreu um erro na execução anterior, mas um ciclo de auto-correção foi iniciado e concluído com sucesso. O código corrigido foi executado."
+                         observation_msg = "Ocorreu um erro na execução anterior, mas um ciclo de auto-correção foi iniciado e concluído com sucesso. O código corrigido foi executado."
                          agent_logger.info(f"{log_prefix} Ciclo de auto-correção bem-sucedido.")
                      elif meta_result.startswith("Erro: Profundidade máxima"):
-                         observation_msg = f"Observation: Ocorreu um erro na execução anterior. Uma tentativa de auto-correção foi feita, mas atingiu a profundidade máxima ({MAX_META_DEPTH}). {meta_result}"
+                         observation_msg = f"Ocorreu um erro na execução anterior. Uma tentativa de auto-correção foi feita, mas atingiu a profundidade máxima ({MAX_META_DEPTH}). {meta_result}"
                          agent_logger.warning(f"{log_prefix} Ciclo de auto-correção falhou (profundidade máxima).")
                      else:
-                         observation_msg = f"Observation: Ocorreu um erro na execução anterior. Uma tentativa de auto-correção foi feita, mas falhou em corrigir o erro. Resultado da tentativa: {meta_result}"
+                         observation_msg = f"Ocorreu um erro na execução anterior. Uma tentativa de auto-correção foi feita, mas falhou em corrigir o erro. Resultado da tentativa: {meta_result}"
                          agent_logger.warning(f"{log_prefix} Ciclo de auto-correção falhou.")
 
                      # Sobrescreve a observation original do erro com a da meta-correção
-                     observation = observation_msg
+                     observation = observation_msg # Agora SEM o prefixo duplicado
                      # Limpa o código executado para não tentar corrigir de novo no mesmo ciclo
                      self._last_executed_code = None
                  # <<< END: Auto-Correction Logic >>>
