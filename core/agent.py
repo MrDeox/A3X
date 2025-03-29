@@ -17,8 +17,8 @@ import requests
 #     sys.path.insert(0, project_root)
 
 # Local imports (ajuste os caminhos se necessário)
-from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS
-from core.tools import TOOLS
+from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
+from core.tools import TOOLS, get_tool_descriptions
 # from core.llm_client import call_llm # Comentei pois _call_llm está definido na classe
 from skills.memory import skill_recall_memory
 from core.db_utils import save_agent_state, load_agent_state # AGENT_STATE_ID é carregado depois
@@ -28,6 +28,20 @@ agent_logger = logging.getLogger(__name__)
 
 # Constante para ID do estado do agente (pode vir de config ou DB utils)
 AGENT_STATE_ID = 1 # Ou carregue de outra forma
+
+# <<< CARREGAR JSON SCHEMA >>>
+SCHEMA_FILE_PATH = os.path.join(os.path.dirname(__file__), 'react_output_schema.json')
+LLM_RESPONSE_SCHEMA = None
+try:
+    with open(SCHEMA_FILE_PATH, 'r', encoding='utf-8') as f:
+        LLM_RESPONSE_SCHEMA = json.load(f)
+    agent_logger.info(f"[ReactAgent INIT] JSON Schema carregado de {SCHEMA_FILE_PATH}")
+except FileNotFoundError:
+    agent_logger.error(f"[ReactAgent INIT ERROR] Arquivo JSON Schema não encontrado em {SCHEMA_FILE_PATH}. A saída do LLM não será forçada.")
+except json.JSONDecodeError as e:
+    agent_logger.error(f"[ReactAgent INIT ERROR] Erro ao decodificar JSON Schema de {SCHEMA_FILE_PATH}: {e}. A saída do LLM não será forçada.")
+except Exception as e:
+     agent_logger.error(f"[ReactAgent INIT ERROR] Erro inesperado ao carregar JSON Schema de {SCHEMA_FILE_PATH}: {e}. A saída do LLM não será forçada.")
 
 
 # --- Classe ReactAgent ---
@@ -71,112 +85,57 @@ class ReactAgent:
 
         return messages
 
-    def _parse_llm_response(self, response: str) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+    # --- _parse_llm_response (Simplificado para usar json.loads) ---
+    def _parse_llm_response(self, response: str) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
         """
-        Parses the LLM's raw response string to extract the thought, action, action input, or final answer.
-        Returns: thought, action, action_input, final_answer
+        Parses the LLM's raw response string, expecting it to be a JSON object.
+        Raises: json.JSONDecodeError if the response is not valid JSON.
+        Returns: thought, action, action_input
         """
-        agent_logger.debug(f"[Agent Parse DEBUG] Raw LLM Response:\n{response}")
-        thought = None
-        action = None
-        action_input = None
-        final_answer = None
+        agent_logger.debug(f"[Agent Parse DEBUG] Raw LLM Response (expecting JSON):\n{response}")
+        try:
+            data = json.loads(response)
+            if not isinstance(data, dict):
+                 agent_logger.error(f"[Agent Parse ERROR] LLM Response is valid JSON but not an object (dict): {type(data)}")
+                 raise json.JSONDecodeError("Parsed JSON is not an object", response, 0) # Re-raise as decode error
 
-        # Extrai Thought
-        thought_match = re.search(r"Thought:\s*(.*?)(?:Action:|Final Answer:|$)", response, re.DOTALL | re.IGNORECASE)
-        if thought_match:
-            thought = thought_match.group(1).strip()
-        else: agent_logger.warning("[Agent Parse WARN] Could not extract Thought.")
+            thought = data.get("Thought")
+            action = data.get("Action")
+            action_input = data.get("Action Input") # This should already be a dict if schema is respected
 
-        # Extrai Action e Action Input (prioriza JSON em blocos)
-        action_match = re.search(r"Action:\s*([\w_]+)", response, re.IGNORECASE)
-        action_input_match = re.search(r"Action Input:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+            # Validação básica
+            if not action:
+                 agent_logger.error(f"[Agent Parse ERROR] Required key 'Action' missing in parsed JSON: {data}")
+                 # Considerar levantar um erro aqui também ou retornar None para acionar fallback?
+                 # Por enquanto, vamos logar e retornar None para action, o que deve ser tratado no loop run
+                 return thought, None, action_input
+            if action == "final_answer" and not action_input:
+                 agent_logger.warning(f"[Agent Parse WARN] 'final_answer' action received without 'Action Input'. Creating default. JSON: {data}")
+                 action_input = {"answer": "Erro: Ação final solicitada sem fornecer a resposta."}
+            elif action != "final_answer" and action_input is None:
+                 agent_logger.info(f"[Agent Parse INFO] Action '{action}' received without 'Action Input'. Assuming empty dict. JSON: {data}")
+                 action_input = {} # Assume dict vazio se não houver input para outras ações
 
-        if action_match:
-            action = action_match.group(1).strip()
-            agent_logger.info(f"[Agent Parse INFO] Action extracted: '{action}'")
+            # Garante que action_input é um dict se não for None
+            if action_input is not None and not isinstance(action_input, dict):
+                 agent_logger.error(f"[Agent Parse ERROR] 'Action Input' in JSON is not a dictionary: {type(action_input)}. Content: {action_input}. Treating as empty.")
+                 action_input = {} # Fallback para dict vazio se o tipo estiver errado
 
-            if action_input_match:
-                raw_action_input_str = action_input_match.group(1).strip()
-                agent_logger.debug(f"[Agent Parse DEBUG] Raw Action Input string: '{raw_action_input_str}'")
+            agent_logger.info(f"[Agent Parse INFO] JSON parsed successfully. Action: '{action}'")
+            return thought, action, action_input
 
-                json_str_to_parse = None
-                json_block_match = re.search(r"```json\s*(\{.*?\})\s*```", raw_action_input_str, re.DOTALL)
-                curly_brace_match = re.search(r"(\{.*?\})\s*$", raw_action_input_str, re.DOTALL)
+        except json.JSONDecodeError as e:
+            agent_logger.error(f"[Agent Parse ERROR] Failed to decode LLM response as JSON: {e}")
+            agent_logger.debug(f"[Agent Parse DEBUG] Failed JSON content:\n{response}")
+            raise e # Re-raise the exception to be caught by the caller (run loop)
+        except Exception as e:
+             # Captura outros erros inesperados durante o parse/validação
+             agent_logger.exception(f"[Agent Parse ERROR] Unexpected error during JSON parsing/validation:")
+             # Decide se re-levanta ou retorna None. Re-levantar como JSONDecodeError pode ser consistente.
+             raise json.JSONDecodeError(f"Unexpected parsing error: {e}", response, 0) from e
 
-                if json_block_match: json_str_to_parse = json_block_match.group(1)
-                elif curly_brace_match: json_str_to_parse = curly_brace_match.group(1)
 
-                if json_str_to_parse:
-                    agent_logger.debug(f"[Agent Parse DEBUG] JSON String found: '{json_str_to_parse}'")
-                    # Limpeza de quotes (mantida)
-                    cleaned_json_str = re.sub(r'[""‟„〝〞〟＂]', '"', json_str_to_parse)
-                    cleaned_json_str = re.sub(r"['‛‚‵′＇]", "'", cleaned_json_str) # Menos comum, mas seguro
-                    if cleaned_json_str != json_str_to_parse:
-                        agent_logger.info(f"[Agent Parse INFO] Quotes cleaned. String now: '{cleaned_json_str}'")
-                        json_str_to_parse = cleaned_json_str
-
-                    try:
-                        action_input = json.loads(json_str_to_parse)
-                        agent_logger.info("[Agent Parse INFO] JSON parsed successfully.")
-                    except json.JSONDecodeError as json_e:
-                        agent_logger.warning(f"[Agent Parse WARN] Failed JSON decode: {json_e}. Trying fix...")
-                        # Fallback: Remove trailing comma
-                        json_str_fixed = re.sub(r",\s*(\}|\])$", r"\1", json_str_to_parse.strip())
-                        if json_str_fixed != json_str_to_parse.strip():
-                            agent_logger.info("[Agent Parse INFO] Attempting parse after removing trailing comma.")
-                            try:
-                                action_input = json.loads(json_str_fixed)
-                                agent_logger.info("[Agent Parse INFO] JSON parsed successfully after fix.")
-                            except Exception as json_e_fix:
-                                agent_logger.error(f"[Agent Parse ERROR] Failed JSON decode even after fix: {json_e_fix}")
-                        else:
-                            agent_logger.warning("[Agent Parse WARN] No trailing comma or other JSON error persists.")
-                else:
-                    # Se Action é final_answer, permite input não-JSON como fallback
-                    if action == "final_answer":
-                         # Usa o raw_action_input_str como a resposta se não for JSON
-                         action_input = {"final_answer": raw_action_input_str}
-                         agent_logger.info("[Agent Parse INFO] Treated non-JSON Action Input as final answer text.")
-                    else:
-                         agent_logger.warning("[Agent Parse WARN] Action Input found, but not in JSON format. Treating as None for non-final_answer.")
-            else:
-                agent_logger.info("[Agent Parse INFO] Action found, but no Action Input provided.")
-                # Se for final_answer sem input, é um erro de formato do LLM
-                if action == "final_answer":
-                     agent_logger.warning("[Agent Parse WARN] 'final_answer' action received without Action Input.")
-                     action_input = {"final_answer": "Erro: Recebi instrução para finalizar, mas sem resposta."}
-                else:
-                     action_input = {} # Assume que outras actions podem não precisar de input
-
-        # Verifica se o Action Input deveria ser um dict (quase sempre, exceto talvez em erros de parse)
-        if action_input is not None and not isinstance(action_input, dict):
-             agent_logger.error(f"[Agent Parse ERROR] Parsed action_input is not None but not a dict: {type(action_input)}. Resetting to None.")
-             action_input = None # Reseta para None se não for dict, para evitar erros
-
-        # Detecção de Final Answer (se Action não foi 'final_answer') - Pode ser redundante agora
-        # final_answer_match = re.search(r"Final Answer:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
-        # if final_answer_match and action != "final_answer":
-        #    final_answer = final_answer_match.group(1).strip()
-        #    agent_logger.info(f"[Agent Parse INFO] Standalone Final Answer detected: '{final_answer}'")
-        #    # Anula action/input se final_answer for encontrado separadamente? Ou deixa o parser tratar?
-        #    # Por ora, vamos assumir que se action for parseado, ele tem prioridade.
-
-        # Se nenhuma ação foi parseada, verifica se a resposta inteira pode ser a resposta final
-        if not action and not final_answer:
-             # Verifica se a resposta NÃO se parece com o formato Thought/Action
-             if not response.strip().startswith("Thought:") and not "Action:" in response:
-                  agent_logger.info("[Agent Parse INFO] Assuming entire response is Final Answer (no Thought/Action found).")
-                  final_answer = response.strip()
-                  # Cria um action_input correspondente
-                  action = "final_answer"
-                  action_input = {"final_answer": final_answer}
-             else:
-                  agent_logger.warning("[Agent Parse WARN] Could not extract Action or Final Answer, and response seems structured.")
-
-        return thought, action, action_input, final_answer
-
-    # --- run (Versão Híbrida com Injeção de Meta-Objetivo) ---
+    # --- run (Ajustado para tratar JSONDecodeError) ---
     def run(self, objective: str, is_meta_objective: bool = False, meta_depth: int = 0) -> str:
         """Executa o ciclo ReAct para atingir o objetivo."""
 
@@ -217,35 +176,46 @@ class ReactAgent:
             log_llm_response = llm_response_raw[:1000] + ('...' if len(llm_response_raw) > 1000 else '')
             agent_logger.debug(f"{log_prefix} Resposta LLM (Raw Content):\n---\n{log_llm_response}\n---")
 
-            if not llm_response_raw:
-                agent_logger.error(f"{log_prefix} Erro Fatal: LLM retornou resposta vazia.")
-                self._history.append("Observation: Erro crítico - LLM retornou resposta vazia.")
-                return "Desculpe, ocorreu um erro interno (LLM retornou vazio)." # Retorna erro
+            if not llm_response_raw or llm_response_raw.startswith("Erro:"): # Verifica se _call_llm retornou um erro interno
+                agent_logger.error(f"{log_prefix} Erro Fatal: _call_llm retornou erro ou resposta vazia: '{llm_response_raw}'")
+                # Adiciona a observação do erro para o LLM tentar corrigir
+                self._history.append(f"Observation: Erro crítico na comunicação com o LLM: {llm_response_raw}")
+                # Podemos tentar continuar ou retornar erro. Continuar dá chance de recuperação.
+                if i == self.max_iterations - 1: # Se for a última iteração, retorna erro
+                    return f"Desculpe, ocorreu um erro na comunicação com o LLM: {llm_response_raw}"
+                else:
+                    continue # Tenta o próximo ciclo
 
-            self._history.append(llm_response_raw) # Adiciona resposta LLM ao histórico
+            # Adiciona a resposta *bruta* ao histórico ANTES de tentar parsear
+            # Isso garante que o LLM veja o que ele enviou, mesmo que falhe o parse
+            self._history.append(llm_response_raw)
 
-            # 3. Parsear Resposta LLM (Thought, Action, Action Input)
+            # 3. Parsear Resposta LLM (esperando JSON)
             try:
-                # Correção: Desempacotar todos os valores retornados
-                thought, action_name, action_input, final_answer_parsed = self._parse_llm_response(llm_response_raw)
-                # Se final_answer_parsed for encontrado (mesmo com action), ele tem prioridade?
-                # Por ora, vamos priorizar action, mas logar se ambos aparecerem.
-                if action_name and final_answer_parsed:
-                    agent_logger.warning(f"{log_prefix} LLM retornou tanto Action ({action_name}) quanto Final Answer. Priorizando Action.")
-                # Lógica para usar final_answer_parsed se action_name for None
-                if not action_name and final_answer_parsed:
-                    action_name = "final_answer"
-                    action_input = {"final_answer": final_answer_parsed}
-                    agent_logger.info(f"{log_prefix} Usando Final Answer parseado pois Action estava ausente.")
-                elif not action_name and not final_answer_parsed:
-                    raise ValueError("Não foi possível extrair Action nem Final Answer da resposta do LLM.")
+                thought, action_name, action_input = self._parse_llm_response(llm_response_raw)
 
-                # action_input já é parseado como dict por _parse_llm_response
-                # action_input = self._parse_action_input(action_input_str, action_name, log_prefix) # Linha removida
-            except ValueError as parse_error:
-                agent_logger.error(f"{log_prefix} Falha ao parsear resposta do LLM: {parse_error}")
-                self._history.append(f"Observation: Erro ao parsear sua resposta. Verifique o formato 'Action: ... Action Input: {{...}}'. Detalhe: {parse_error}")
-                continue # Pula para próximo ciclo
+                # Verifica se o parse retornou action_name (essencial)
+                if not action_name:
+                     # Isso pode acontecer se o JSON for válido mas faltar a chave 'Action'
+                     agent_logger.error(f"{log_prefix} Parsing ok, mas 'Action' não encontrada no JSON.")
+                     raise ValueError("JSON válido, mas chave 'Action' obrigatória está ausente.") # Tratar como erro de formato
+
+            except (json.JSONDecodeError, ValueError) as parse_error:
+                # --- PONTO DE TRIGGER PARA META-REFLEXÃO (Futuro) ---
+                agent_logger.error(f"{log_prefix} Falha ao parsear resposta JSON do LLM: {parse_error}")
+                # Adiciona observação sobre o erro de formato para o LLM
+                observation_msg = f"Observation: Erro crítico - sua resposta anterior não estava no formato JSON esperado ou faltava a chave 'Action'. Verifique o formato. Detalhe: {parse_error}"
+                self._history.append(observation_msg)
+                agent_logger.debug(f"{log_prefix} Added parse error observation: {observation_msg}")
+
+                # TODO: No futuro, chamar meta-reflexão aqui em vez de só continuar
+                if i == self.max_iterations - 1: # Se for a última iteração, retorna erro
+                    agent_logger.warning(f"{log_prefix} Última iteração falhou no parsing. Finalizando com erro.")
+                    save_agent_state(AGENT_STATE_ID, self._memory) # Salva estado ANTES de retornar erro
+                    return f"Desculpe, falha ao processar a resposta do LLM após {self.max_iterations} tentativas."
+                else:
+                    agent_logger.info(f"{log_prefix} Tentando continuar após erro de parsing.")
+                    continue # Pula para próximo ciclo para o LLM tentar corrigir
 
             agent_logger.info(f"{log_prefix} Ação Decidida: {action_name}, Input: {action_input}")
 
@@ -275,25 +245,29 @@ class ReactAgent:
 
             # 4. Executar Ação ou Finalizar
             if action_name == "final_answer":
-                # Correção: Usar a chave "answer" conforme definido na tool spec.
+                # Usa a chave "answer" que DEVE estar em action_input segundo o schema
                 final_answer_text = action_input.get("answer", "Finalizado sem resposta específica.")
                 agent_logger.info(f"{log_prefix} Ação Final: {final_answer_text}")
-                self._history.append(f"Final Answer: {final_answer_text}")
+                self._history.append(f"Final Answer: {final_answer_text}") # Adiciona APENAS a resposta final textual ao histórico
                 save_agent_state(AGENT_STATE_ID, self._memory) # Salva estado ao finalizar
                 return final_answer_text # Retorna a resposta final
             elif action_name in self.tools:
-                # >> MODIFICATION START: Pass meta_depth to _execute_tool <<
-                observation = self._execute_tool(
-                    tool_name=action_name,
-                    action_input=action_input,
-                    current_history=self._history,
-                    meta_depth=meta_depth # Pass current meta-depth
-                )
-                # >> MODIFICATION END <<
-            else:
-                observation = f"Erro: A ferramenta '{action_name}' não existe. Ferramentas disponíveis: {', '.join(self.tools.keys())}"
+                 tool_result = self._execute_tool(
+                     tool_name=action_name,
+                     action_input=action_input,
+                     current_history=self._history, # Mantido, embora _execute_tool não use mais
+                     meta_depth=meta_depth
+                 )
+                 # Converte o dicionário de resultado em uma string de Observação
+                 # Mantém a estrutura status/action/data para clareza
+                 observation = json.dumps(tool_result, ensure_ascii=False, default=lambda o: '<not serializable>')
 
-            agent_logger.info(f"{log_prefix} Observação recebida: {observation[:200]}{'...' if len(observation) > 200 else ''}")
+            else:
+                 observation_dict = {"status": "error", "action": "tool_not_found", "data": {"message": f"A ferramenta '{action_name}' não existe. Ferramentas disponíveis: {', '.join(self.tools.keys())}"}}
+                 observation = json.dumps(observation_dict)
+
+            agent_logger.info(f"{log_prefix} Observação recebida (JSON): {observation[:200]}{'...' if len(observation) > 200 else ''}")
+            # Adiciona a observação formatada como string JSON ao histórico
             self._history.append(f"Observation: {observation}")
 
             # --- Fim do Ciclo ---
@@ -307,35 +281,63 @@ class ReactAgent:
         return "Desculpe, não consegui concluir o objetivo dentro do limite de iterações."
 
 
-    # --- _call_llm (Mantido como antes) ---
+    # --- _call_llm (Modificado para usar JSON Schema) ---
     def _call_llm(self, messages: list[dict]) -> str:
-        # (Código da função _call_llm exatamente como na sua versão anterior)
-        agent_logger.info(f"[ReactAgent] Chamando LLM ({len(messages)} mensagens)...")
-        headers = {"Content-Type": "application/json"}
-        chat_url = self.llm_url
-        if not chat_url.endswith("/chat/completions"):
-             if chat_url.endswith("/v1") or chat_url.endswith("/v1/"): chat_url = chat_url.rstrip('/') + "/chat/completions"
-             else: agent_logger.warning(f"[ReactAgent WARN] URL LLM '{self.llm_url}' pode não ser para /v1/chat/completions...")
-        payload = {"messages": messages, "temperature": 0.1, "max_tokens": 512, "stream": False}
+        """Chama o LLM local com a lista de mensagens e força a saída JSON usando o schema."""
+        # Substituir o placeholder de descrição de ferramentas
+        tool_desc = get_tool_descriptions()
+        processed_messages = []
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                content = content.replace("[TOOL_DESCRIPTIONS]", tool_desc)
+            processed_messages.append({"role": msg["role"], "content": content})
+
+        payload = {
+            "messages": processed_messages,
+            "temperature": 0.5, # Ajuste conforme necessário
+            "max_tokens": 1500, # Ajuste conforme necessário
+            # "stop": ["Observation:"] # Parar antes da observação pode ajudar?
+            "stream": False
+        }
+
+        # Adicionar JSON Schema ao payload se ele foi carregado com sucesso
+        if LLM_RESPONSE_SCHEMA:
+            payload["response_format"] = {
+                "type": "json_object",
+                "schema": LLM_RESPONSE_SCHEMA
+            }
+            agent_logger.info("[ReactAgent LLM Call] Usando JSON Schema para forçar output.")
+        else:
+            agent_logger.warning("[ReactAgent LLM Call] JSON Schema não carregado. A saída do LLM não será forçada.")
+
+        headers = LLAMA_DEFAULT_HEADERS
+        # agent_logger.debug(f"[ReactAgent LLM Call DEBUG] Enviando payload: {json.dumps(payload, indent=2)}") # Debug verboso
+
         try:
-             agent_logger.debug(f"[ReactAgent DEBUG] Enviando para URL: {chat_url}")
-             response = requests.post(chat_url, headers=headers, json=payload, timeout=120)
-             response.raise_for_status()
-             response_data = response.json()
-             content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
-             if not content: agent_logger.warning("[ReactAgent WARN] LLM retornou conteúdo vazio.")
-             return content
-        except requests.exceptions.Timeout:
-             agent_logger.error(f"[ReactAgent LLM ERROR] Timeout ao chamar LLM em {chat_url}")
-             return "Thought: Timeout na comunicação com LLM. Action: final_answer Action Input: {\"final_answer\": \"Desculpe, demorei muito para pensar.\"}"
+            response = requests.post(self.llm_url, headers=headers, json=payload, timeout=180) # Aumentado timeout
+            response.raise_for_status()
+            response_data = response.json()
+
+            # Extrair conteúdo da resposta - o formato pode variar ligeiramente
+            if 'choices' in response_data and response_data['choices']:
+                 message = response_data['choices'][0].get('message', {})
+                 content = message.get('content', '').strip()
+                 if content:
+                     return content
+                 else:
+                     agent_logger.error(f"[ReactAgent LLM Call ERROR] Resposta LLM OK, mas 'content' está vazio. Resposta: {response_data}")
+                     return "Erro: LLM retornou resposta sem conteúdo." # Retorna erro específico
+            else:
+                 agent_logger.error(f"[ReactAgent LLM Call ERROR] Resposta LLM OK, mas formato inesperado (sem 'choices' ou 'choices' vazio). Resposta: {response_data}")
+                 return "Erro: LLM retornou resposta em formato inesperado." # Retorna erro específico
+
         except requests.exceptions.RequestException as e:
-             agent_logger.error(f"[ReactAgent LLM ERROR] Erro na requisição LLM para {chat_url}: {e}")
-             if e.response is not None and e.response.status_code == 404:
-                  return f"Thought: Endpoint LLM não encontrado. Action: final_answer Action Input: {{\"final_answer\": \"Erro: Endpoint LLM não encontrado ({chat_url}).\"}}"
-             return f"Thought: Erro de comunicação com LLM. Action: final_answer Action Input: {{\"final_answer\": \"Desculpe, erro ao conectar ao LLM ({e}).\"}}"
+            agent_logger.error(f"[ReactAgent LLM Call ERROR] Falha ao conectar/comunicar com LLM em {self.llm_url}: {e}")
+            return f"Erro: Falha ao conectar com o servidor LLM ({e})." # Retorna erro específico
         except Exception as e:
-             agent_logger.error(f"[ReactAgent LLM ERROR] Erro inesperado na chamada LLM: {e}", exc_info=True)
-             return "Thought: Erro inesperado na chamada LLM. Action: final_answer Action Input: {\"final_answer\": \"Desculpe, ocorreu um erro interno inesperado.\"}"
+            agent_logger.exception(f"[ReactAgent LLM Call ERROR] Erro inesperado ao chamar LLM:")
+            return f"Erro: Erro inesperado durante a chamada do LLM ({e})." # Retorna erro específico
 
 
     # --- _execute_tool (Refatorado para Tratamento Dinâmico de Erro) ---
