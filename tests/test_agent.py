@@ -2,7 +2,9 @@
 import pytest
 import json
 from unittest.mock import MagicMock, call, patch
+from unittest import mock
 from core.agent import ReactAgent
+from core.config import MAX_META_DEPTH
 
 # Configure logging for tests if the agent uses it extensively
 # setup_logging()
@@ -258,5 +260,134 @@ def test_react_agent_run_hits_max_iterations_on_persistent_json_error(agent_inst
 
     mock_save.assert_called_once() # Should still save state on failure
 
-# You can add more tests, e.g., for _trim_history if needed
+# Test Auto-Correction Success
+def test_react_agent_run_autocorrects_execution_error(agent_instance, mocker, mock_db):
+    agent, mock_llm_call = agent_instance
+    mock_save = mock_db
 
+    # 1. Mock Tools (execute_code, modify_code)
+    mock_execute_code_func = MagicMock()
+    # Corrected string escaping for stderr
+    execute_error_result = {
+        "status": "error",
+        "action": "execution_failed",
+        "data": {
+            "message": "NameError: name 'prnt' is not defined",
+            "stderr": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nNameError: name 'prnt' is not defined"
+        }
+    }
+    # Note: The successful execution happens *inside* the mocked meta-run call.
+    # The main agent cycle only sees the initial failure.
+    mock_execute_code_func.return_value = execute_error_result # Only the initial error is returned to the main loop
+
+    mock_modify_code_func = MagicMock(return_value={
+        "status": "success",
+        "action": "code_modified",
+        "data": {"message": "Code modified successfully", "modified_code": "print('Corrected Hello')"}
+    })
+
+    # Patch the TOOLS dict *within this test's scope*
+    original_tools = agent.tools # Backup original tools if needed elsewhere
+    # Define the dictionary for patching separately to avoid linter issues
+    tools_to_patch = {
+        'execute_code': {'function': mock_execute_code_func, 'description': 'Executes Python code'},
+        'modify_code': {'function': mock_modify_code_func, 'description': 'Modifies code based on instructions'},
+        'final_answer': {'function': None, 'description': 'Provides the final answer'} # Ensure final_answer exists
+    }
+    mocker.patch.dict(agent.tools, tools_to_patch, clear=True) # Apply the patch
+
+    # 2. Mock LLM Responses
+    initial_bad_code = "prnt('Bad Hello')"
+    llm_response_exec_bad_code = json.dumps({
+        "Thought": "I need to execute this Python code.",
+        "Action": "execute_code",
+        "Action Input": {"code": initial_bad_code}
+    })
+    llm_response_final_after_correction = json.dumps({
+        "Thought": "The auto-correction was successful, I can now give the final answer.",
+        "Action": "final_answer",
+        "Action Input": {"answer": "Task completed after auto-correction."}
+    })
+    mock_llm_call.side_effect = [
+        llm_response_exec_bad_code,
+        llm_response_final_after_correction
+    ]
+
+    # 3. Mock the Recursive Agent Run Call
+    # Use wraps=agent.run initially to ensure the first call goes through the original logic.
+    mock_recursive_run = mocker.patch.object(agent, 'run', wraps=agent.run)
+
+    expected_meta_result = "Correção aplicada e testada com sucesso."
+
+    def meta_run_side_effect(*args, **kwargs):
+        # This side effect intercepts *all* calls to agent.run
+        is_meta_objective_arg = kwargs.get('is_meta_objective', False)
+        meta_depth_arg = kwargs.get('meta_depth', 0)
+        objective_arg = args[0] if args else kwargs.get('objective', '')
+
+        if is_meta_objective_arg and meta_depth_arg == 1:
+            print(f"\nIntercepted meta run call (depth {meta_depth_arg}) with objective:\n{objective_arg}\n") # Debug print
+            # --- Assertions on the meta-objective ---
+            assert "A tentativa anterior de executar código falhou." in objective_arg
+            assert "NameError: name 'prnt' is not defined" in objective_arg # Check specific error message
+            assert f"```python\n{initial_bad_code}\n```" in objective_arg
+            assert "Usar a ferramenta 'modify_code'" in objective_arg
+            # Modify assertion to be less sensitive to exact formatting/escaping
+            assert any("use a ferramenta 'execute_code' para testar a versão corrigida" in line for line in objective_arg.split('\n'))
+            # --- End Assertions ---
+            # Simulate the meta-cycle succeeding by returning the specific string
+            return expected_meta_result
+        else:
+            # For non-meta calls, return mock.DEFAULT to let the original `wraps` execute.
+            return mock.DEFAULT
+
+    # Apply the side effect logic to the mock
+    mock_recursive_run.side_effect = meta_run_side_effect
+
+    # 4. Run the Agent
+    initial_objective = "Execute some code that will initially fail."
+    final_result = agent.run(objective=initial_objective)
+
+    # 5. Assertions
+    # Check LLM calls (initial exec, final answer)
+    assert mock_llm_call.call_count == 2
+
+    # Check that execute_code was called *once* in the main loop (with the bad code)
+    mock_execute_code_func.assert_called_once_with(action_input={'code': initial_bad_code})
+
+    # Check that the recursive run method was called correctly
+    assert mock_recursive_run.call_count >= 2 # At least initial call + meta call
+    # Check the *first* call was the original objective
+    first_call_args, first_call_kwargs = mock_recursive_run.call_args_list[0]
+    assert not first_call_args # Should have been called with keyword args
+    assert first_call_kwargs.get('objective') == initial_objective
+    assert not first_call_kwargs.get('is_meta_objective', False)
+    assert first_call_kwargs.get('meta_depth', 0) == 0
+    # The side_effect performs assertions on the meta-call's arguments
+
+    # Check History
+    # Expected: Human, LLM1(exec bad), Obs(Meta Success), LLM2(final), FinalAnswer
+    assert len(agent._history) == 5
+    assert agent._history[0] == f"Human: {initial_objective}"
+    assert agent._history[1] == llm_response_exec_bad_code # LLM asks to execute bad code
+    assert "Observation: Ocorreu um erro na execução anterior, mas um ciclo de auto-correção foi iniciado e concluído com sucesso." in agent._history[2] # Observation from meta-result
+    assert agent._history[3] == llm_response_final_after_correction # LLM gives final answer
+    assert agent._history[4] == "Final Answer: Task completed after auto-correction." # Final answer string
+
+    # Check Final Result
+    assert final_result == "Task completed after auto-correction."
+
+    # Check DB save
+    mock_save.assert_called_once()
+
+    # Restore original tools if necessary (optional, as mocker scope should handle it)
+    agent.tools = original_tools
+
+# Optional: Add tests for failure and max depth later
+# def test_react_agent_run_autocorrect_fails(...):
+#     pass
+#
+# def test_react_agent_run_autocorrect_max_depth(...):
+#     pass
+
+# Placeholder to ensure the file ends correctly if it was truncated before
