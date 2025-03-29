@@ -230,6 +230,28 @@ TOOLS = {
             },
             "required": ["answer"]
         }
+    },
+    "modify_code": {
+        "function": skill_modify_code,
+        "description": "Modifica um bloco de código existente com base em uma instrução de modificação. Retorna o bloco de código completo e modificado.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "modification": {
+                    "type": "string",
+                    "description": "A instrução detalhada descrevendo como o código deve ser modificado (obrigatório)."
+                },
+                "code_to_modify": {
+                    "type": "string",
+                    "description": "O bloco de código original completo a ser modificado (obrigatório)."
+                },
+                "language": {
+                    "type": "string",
+                    "description": "A linguagem do código. Padrão: python."
+                }
+            },
+            "required": ["modification", "code_to_modify"]
+        }
     }
 }
 

@@ -17,7 +17,7 @@ load_dotenv()
 # Imports dos módulos core
 # Removidos NLU, Planner, Dispatcher por enquanto
 # from core.nlu import interpret_command
-from core.nlg import generate_natural_response, generate_simplified_response # Mantém NLG por enquanto
+# from core.nlg import generate_natural_response, generate_simplified_response # Mantém NLG por enquanto
 from core.config import MAX_HISTORY_TURNS, LLAMA_SERVER_URL # <<< Import LLAMA_SERVER_URL >>>
 # from core.dispatcher import get_skill, SKILL_DISPATCHER
 # from core.planner import generate_plan
