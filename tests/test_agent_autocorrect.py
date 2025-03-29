@@ -79,8 +79,8 @@ def test_react_agent_run_autocorrects_execution_error(
 
     assert initial_call_objective == objective
     assert recursive_call_detected, "Chamada recursiva para auto-correção não foi detectada"
-    assert meta_call_objective.startswith("A tentativa anterior"), \
-        f"Meta objective should start with 'A tentativa anterior'. Got: {meta_call_objective}"
+    assert meta_call_objective.startswith("AUTO-CORRECTION CYCLE:"), \
+        f"Meta objective should start with 'AUTO-CORRECTION CYCLE:'. Got: {meta_call_objective[:100]}..."
 
     # Verifica a observação que indica o sucesso do meta-ciclo
     assert len(agent._history) == 5 # Human, LLM1(Exec), Obs1(Meta Success), LLM2(Final), FinalAnswer

@@ -270,6 +270,16 @@ class ReactAgent:
                      meta_depth=meta_depth
                  )
 
+                 # <<< ADDED: Store generated/modified code in memory >>>
+                 if tool_result.get('status') == 'success' and action_name in ["generate_code", "modify_code"]:
+                     code = tool_result.get('data', {}).get('code') or tool_result.get('data', {}).get('modified_code')
+                     if code:
+                         self._memory['last_code'] = code
+                         agent_logger.info(f"{log_prefix} Saved code from '{action_name}' to memory['last_code'].")
+                     else:
+                         agent_logger.warning(f"{log_prefix} Action '{action_name}' succeeded but no 'code' or 'modified_code' found in data.")
+                 # <<< END: Store generated/modified code >>>
+
                  # <<< ADDED: Store last executed code >>>
                  if action_name == "execute_code":
                      self._last_executed_code = action_input.get("code")
@@ -288,25 +298,34 @@ class ReactAgent:
                      agent_logger.warning(f"{log_prefix} Erro detectado na execução do código. Iniciando ciclo de auto-correção (Profundidade: {meta_depth + 1}).")
                      error_message = tool_result.get("data", {}).get("message", "Erro desconhecido")
                      stderr_output = tool_result.get("data", {}).get("stderr", "")
-                     full_error_details = f"Error Message: {error_message}\nStderr:\n{stderr_output}".strip()
+                     full_error_details = f"Error Message: {error_message}\\nStderr:\\n{stderr_output}".strip()
 
-                     meta_objective = f"""A tentativa anterior de executar código falhou.
-Erro reportado:
+                     # --- Refined Meta-Objective --- #
+                     meta_objective = f"""AUTO-CORRECTION CYCLE:
+
+An error occurred while executing the previous code block.
+
+**Error Details:**
 ---
 {full_error_details}
 ---
 
-Código que falhou:
+**Code that Failed:**
 ```python
 {self._last_executed_code}
 ```
 
-Sua tarefa é:
-1. Analisar o erro e o código.
-2. Usar a ferramenta 'modify_code' para propor uma correção para o código. Passe o código original completo em 'code_to_modify' e a instrução de correção em 'modification'.
-3. Após obter o código modificado da ferramenta 'modify_code', use a ferramenta 'execute_code' para testar a versão corrigida.
-4. Se a execução do código corrigido for bem-sucedida (sem erros), use 'final_answer' para reportar 'Correção aplicada e testada com sucesso.'.
-5. Se a execução do código corrigido ainda falhar, use 'final_answer' para reportar 'Falha ao corrigir o erro após tentativa.'"""
+**Your Task is to fix this:**
+
+1.  **Analyze:** Understand the error and the code that caused it.
+2.  **Modify:** Use the `modify_code` tool. Provide the *entire* original code in the `code_to_modify` parameter and describe the *specific change* needed in the `modification` parameter.
+3.  **Test:** Use the `execute_code` tool with the *corrected* code returned by `modify_code`.
+4.  **Report:**
+    *   If the corrected code executes successfully (no errors from `execute_code`), use the `final_answer` tool with the exact input: `{{ \"answer\": \"Correção aplicada e testada com sucesso.\" }}`.
+    *   If the corrected code *still* fails, use the `final_answer` tool with the exact input: `{{ \"answer\": \"Falha ao corrigir o erro após tentativa.\" }}`.
+
+**IMPORTANT:** Only use `final_answer` after attempting the modification and test (steps 2 and 3). Do not use other tools unless absolutely necessary for analysis.
+"""
 
                      # Chamada Recursiva
                      meta_result = self.run(
