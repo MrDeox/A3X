@@ -120,16 +120,21 @@ def mock_db(mocker):
     yield mock_save # yield permite setup/teardown se necessário, aqui apenas retorna
 
 @pytest.fixture
-def agent_instance(mocker):
+def agent_instance(mocker, LLM_JSON_RESPONSE_HELLO_FINAL):
     """Fixture para criar uma instância de ReactAgent com _call_llm mockado."""
     # Garante que o estado inicial seja vazio
     mocker.patch('core.agent.load_agent_state', return_value={})
-    # Mock o carregamento do schema caso o arquivo não exista no ambiente de teste
-    mocker.patch('core.agent.LLM_RESPONSE_SCHEMA', {"type": "object"}) # Fornece um schema dummy
-    agent = ReactAgent(llm_url="http://mock-llm-url/v1", system_prompt="Mock system prompt")
-    # Mock o método interno _call_llm após a instanciação
-    mock_llm_call = mocker.patch.object(agent, '_call_llm')
-    # Retorna o agente e o mock da chamada LLM
+    # Mock o schema onde ele agora reside
+    mocker.patch('core.llm_interface.REACT_SCHEMA', {"type": "object"}) # Patch no novo local
+
+    # Mock a chamada LLM real dentro do agente
+    # Mock _call_llm directly on the class for instance creation
+    mock_llm_call = mocker.patch('core.agent.ReactAgent._call_llm', return_value=LLM_JSON_RESPONSE_HELLO_FINAL)
+
+    # Instancia o agente (agora usa o _call_llm mockado)
+    agent = ReactAgent(llm_url="mock_url", system_prompt="mock_prompt")
+
+    # Retorna o agente e o mock da chamada LLM para o teste poder configurar/verificar
     return agent, mock_llm_call
 
 @pytest.fixture
