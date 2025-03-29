@@ -52,14 +52,16 @@ def test_react_agent_run_handles_llm_call_error(
     # assert agent._history[-1] == expected_error_observation, \
     #     f"Last history item mismatch. Expected: {expected_error_observation}, Got: {agent._history[-1]}"
 
-    # Verifica a resposta final - agora definida pelo loop principal atingindo o limite
-    # REMOVE conflicting assertion:
-    # expected_final_response = f"Erro: Máximo de iterações ({agent.max_iterations}) atingido. Última observação: {expected_error_observation}"
-    # assert final_response == expected_final_response, \
-    #     f"Final response mismatch. Expected: '{expected_final_response}', Got: '{final_response}'"
+    # Verifica se o agente termina e retorna a mensagem de erro esperada (REMOVE this one)
+    # assert "Erro: O agente não conseguiu completar o objetivo após 10 iterações." in final_response # <<< REMOVE
 
-    # Verifica se o agente termina e retorna a mensagem de erro esperada (KEEP this one)
-    assert "Erro: O agente não conseguiu completar o objetivo após 10 iterações." in final_response
+    # Verifica se a chamada LLM foi feita (deveria ser 10 vezes)
+    assert mock_llm_call.call_count == 10
+
+    # Verifica a mensagem de erro final (AGORA INCLUI OBSERVAÇÃO)
+    assert "Erro: Máximo de iterações (10) atingido." in final_response # <<< USE final_response >>>
+    assert "Última observação: Observation: Erro interno ao comunicar com o LLM" in final_response # <<< USE final_response >>>
+    assert "LLM API call failed" in final_response # <<< USE final_response >>>
 
 
 def test_react_agent_run_handles_tool_execution_error(
