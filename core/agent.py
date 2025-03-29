@@ -275,11 +275,12 @@ class ReactAgent:
 
             # 4. Executar Ação ou Finalizar
             if action_name == "final_answer":
-                final_answer = action_input.get("final_answer", "Finalizado sem resposta específica.")
-                agent_logger.info(f"{log_prefix} Ação Final: {final_answer}")
-                self._history.append(f"Final Answer: {final_answer}")
+                # Correção: Usar a chave "answer" conforme definido na tool spec.
+                final_answer_text = action_input.get("answer", "Finalizado sem resposta específica.")
+                agent_logger.info(f"{log_prefix} Ação Final: {final_answer_text}")
+                self._history.append(f"Final Answer: {final_answer_text}")
                 save_agent_state(AGENT_STATE_ID, self._memory) # Salva estado ao finalizar
-                return final_answer # Retorna a resposta final
+                return final_answer_text # Retorna a resposta final
             elif action_name in self.tools:
                 # >> MODIFICATION START: Pass meta_depth to _execute_tool <<
                 observation = self._execute_tool(
@@ -357,13 +358,36 @@ class ReactAgent:
 
         observation = ""
         try:
-            result = tool_function(
-                action_input=action_input,
-                agent_memory=self._memory,
-                agent_history=current_history
-            )
+            # <<< START REFACTOR: Conditional Skill Call >>>
+            # Define the set of tools using the new action_input-only signature
+            refactored_tools = {
+                "search_web", "list_files", "read_file", "create_file",
+                "append_to_file", "delete_file", "execute_code", "final_answer"
+            }
+
+            # Ensure action_input is always a dict before passing
+            if not isinstance(action_input, dict):
+                 action_input = {} # Default to empty dict if parsing failed upstream but didn't raise error
+                 agent_logger.warning(f"Action input for {tool_name} was not a dict, using {{}}. Original: {action_input}")
+
+
+            if tool_name in refactored_tools:
+                agent_logger.debug(f"Calling refactored skill '{tool_name}' with action_input only.")
+                result = tool_function(action_input=action_input)
+            else:
+                # Call old skills with memory and history for now
+                # Ensure memory and history are passed correctly if needed
+                agent_logger.debug(f"Calling legacy skill '{tool_name}' with action_input, memory, and history.")
+                result = tool_function(
+                    action_input=action_input,
+                    agent_memory=self._memory,
+                    agent_history=current_history
+                )
+            # <<< END REFACTOR: Conditional Skill Call >>>
+
             agent_logger.info(f"[ReactAgent] Resultado da Ferramenta ({tool_name}): {result}")
 
+            # --- Remaining processing logic ---
             status = result.get("status", "error")
             result_data = result.get("data", {})
             message = result_data.get("message", f"Ferramenta {tool_name} executada.")
