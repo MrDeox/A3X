@@ -66,28 +66,6 @@ TOOLS = {
             "required": ["action"] # Only action is required for list
         }
     },
-    "generate_code": {
-        "function": skill_generate_code,
-        "description": "Gera código em uma linguagem de programação específica (padrão: python) com base em uma descrição do que o código deve fazer. Pode opcionalmente receber um nome de arquivo sugerido.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "language": {
-                    "type": "string",
-                    "description": "A linguagem de programação para gerar o código (ex: python, javascript). Default: python."
-                },
-                "purpose": {
-                    "type": "string",
-                    "description": "Uma descrição clara e detalhada do que o código deve fazer (obrigatório)."
-                },
-                "filename": {
-                    "type": "string",
-                    "description": "Um nome de arquivo sugerido onde o código poderia ser salvo (opcional)."
-                }
-            },
-            "required": ["purpose"]
-        }
-    },
     "execute_code": {
         "function": skill_execute_code,
         "description": "Executa um bloco de código Python fornecido diretamente no Action Input, dentro de um ambiente seguro (sandbox).",
@@ -109,25 +87,6 @@ TOOLS = {
                 }
             },
             "required": ["code"]
-        }
-    },
-    "modify_code": {
-        "function": skill_modify_code,
-        "description": "Modifica um bloco de código existente (normalmente o último gerado ou o da observação anterior) com base em uma instrução específica. Use para adicionar linhas, remover linhas, refatorar, corrigir erros, etc.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "modification": {
-                    "type": "string",
-                    "description": "Instrução CLARA e específica sobre como o código deve ser modificado (obrigatório)."
-                },
-                "target_code_description": {
-                    "type": "string",
-                    "description": "Descrição de qual código modificar. Use 'o código da observação anterior' ou 'o último código gerado' para usar o código da memória do agente."
-                }
-                # Poderíamos adicionar 'language' se quiséssemos suportar outras linguagens
-            },
-            "required": ["modification", "target_code_description"]
         }
     },
     # --- File Management Tools (Using the single refactored skill) ---

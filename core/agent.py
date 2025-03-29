@@ -286,7 +286,6 @@ class ReactAgent:
                 observation = self._execute_tool(
                     tool_name=action_name,
                     action_input=action_input,
-                    current_objective=current_objective, # Pass current objective for context
                     current_history=self._history,
                     meta_depth=meta_depth # Pass current meta-depth
                 )
@@ -341,179 +340,44 @@ class ReactAgent:
 
     # --- _execute_tool (Refatorado para Tratamento Dinâmico de Erro) ---
     # >> MODIFICATION START: Add meta_depth parameter <<
-    def _execute_tool(self, tool_name: str, action_input: dict, current_objective: str, current_history: list, meta_depth: int) -> str:
+    def _execute_tool(self, tool_name: str, action_input: Dict[str, Any], current_history: list, meta_depth: int) -> Dict[str, Any]:
     # >> MODIFICATION END <<
-        # (Initial checks for tool existence, function, parameters remain the same)
-        agent_logger.info(f"[ReactAgent] Executando ferramenta: {tool_name} com input: {action_input}")
-        if tool_name not in TOOLS:
-            return f"Erro: A ferramenta '{tool_name}' não existe. Ferramentas disponíveis: {', '.join(TOOLS.keys())}"
+        """Executa a ferramenta/skill selecionada."""
+        log_prefix = f"[ReactAgent Tool Execution]"
+        agent_logger.info(f"{log_prefix} Executando ferramenta: '{tool_name}', Input: {action_input}")
 
-        tool_info = TOOLS[tool_name]
-        tool_function = tool_info.get("function")
-        if not tool_function: return f"Erro: Ferramenta '{tool_name}' configurada incorretamente (sem função)."
+        if tool_name not in self.tools:
+            agent_logger.error(f"{log_prefix} Ferramenta desconhecida: '{tool_name}'")
+            return {"status": "error", "action": "tool_not_found", "data": {"message": f"Ferramenta '{tool_name}' não encontrada."}}
 
-        required_params = tool_info.get("parameters", {}).get("required", [])
-        missing_params = [p for p in required_params if p not in action_input]
-        if missing_params: return f"Erro: Parâmetros obrigatórios ausentes para {tool_name}: {', '.join(missing_params)}. Input: {action_input}"
+        tool = self.tools[tool_name]
+        tool_function = tool["function"]
 
-        observation = ""
         try:
-            # <<< START REFACTOR: Conditional Skill Call >>>
-            # Define the set of tools using the new action_input-only signature
-            refactored_tools = {
-                "search_web", "list_files", "read_file", "create_file",
-                "append_to_file", "delete_file", "execute_code", "final_answer"
-            }
+            # Simplificado: Todas as ferramentas agora só recebem action_input
+            agent_logger.debug(f"{log_prefix} Calling skill '{tool_name}' with action_input only.")
+            result = tool_function(action_input=action_input)
 
-            # Ensure action_input is always a dict before passing
-            if not isinstance(action_input, dict):
-                 action_input = {} # Default to empty dict if parsing failed upstream but didn't raise error
-                 agent_logger.warning(f"Action input for {tool_name} was not a dict, using {{}}. Original: {action_input}")
+            if not isinstance(result, dict):
+                agent_logger.error(f"{log_prefix} Skill '{tool_name}' retornou um tipo inesperado: {type(result)}. Esperado: dict.")
+                return {"status": "error", "action": "invalid_skill_return", "data": {"message": f"Skill '{tool_name}' retornou um tipo inválido."}}
 
+            agent_logger.info(f"{log_prefix} Skill '{tool_name}' executada. Status: {result.get('status', 'N/A')}")
+            agent_logger.debug(f"{log_prefix} Resultado da Skill '{tool_name}': {result}")
 
-            if tool_name in refactored_tools:
-                agent_logger.debug(f"Calling refactored skill '{tool_name}' with action_input only.")
-                result = tool_function(action_input=action_input)
-            else:
-                # Call old skills with memory and history for now
-                # Ensure memory and history are passed correctly if needed
-                agent_logger.debug(f"Calling legacy skill '{tool_name}' with action_input, memory, and history.")
-                result = tool_function(
-                    action_input=action_input,
-                    agent_memory=self._memory,
-                    agent_history=current_history
-                )
-            # <<< END REFACTOR: Conditional Skill Call >>>
+            # Atualiza a memória se a skill teve sucesso e é relevante (ex: código gerado)
+            # --- LÓGICA DE ATUALIZAÇÃO DE MEMÓRIA FOI MOVIDA PARA O LOOP run() PRINCIPAL ---
 
-            agent_logger.info(f"[ReactAgent] Resultado da Ferramenta ({tool_name}): {result}")
-
-            # --- Remaining processing logic ---
-            status = result.get("status", "error")
-            result_data = result.get("data", {})
-            message = result_data.get("message", f"Ferramenta {tool_name} executada.")
-            skill_action = result.get("action") # Ação específica realizada pela skill
-
-            if status == "success":
-                # Atualiza memória se for ação de código
-                updated_memory = False
-                if skill_action in ["code_generated", "code_modified"]:
-                    new_code = result_data.get("modified_code") or result_data.get("code")
-                    new_lang = result_data.get("language")
-                    if new_code is not None and self._memory.get('last_code') != new_code:
-                        self._memory['last_code'] = new_code
-                        self._memory['last_lang'] = new_lang if new_lang else self._memory.get('last_lang')
-                        agent_logger.info("[ReactAgent MEM] Memória do agente atualizada (código).")
-                        updated_memory = True
-                    elif new_lang is not None and self._memory.get('last_lang') != new_lang:
-                         self._memory['last_lang'] = new_lang
-                         agent_logger.info(f"[ReactAgent MEM] Memória do agente atualizada (linguagem: {new_lang}).")
-                         updated_memory = True
-                if updated_memory:
-                    try: save_agent_state(AGENT_STATE_ID, self._memory)
-                    except Exception as db_save_err: agent_logger.error(f"[ReactAgent ERROR] Falha ao salvar estado no DB: {db_save_err}")
-
-                # Formata Observação
-                observation_parts = [message]
-                if skill_action == "code_executed":
-                    out = result_data.get("output", "").strip()
-                    err = result_data.get("stderr", "").strip()
-                    if out: observation_parts.append(f"Saída (stdout):\n```\n{out}\n```")
-                    if err: observation_parts.append(f"Erro/Aviso (stderr):\n```\n{err}\n```")
-                    if not out and not err: observation_parts.append("(Execução sem saída)")
-                elif skill_action in ["code_generated", "code_modified"]:
-                    code = result_data.get("modified_code") or result_data.get("code")
-                    lang = result_data.get("language", self._memory.get('last_lang') or "text")
-                    if code: observation_parts.append(f"Código {'Modificado' if skill_action=='code_modified' else 'Gerado'}:\n```{lang}\n{code}\n```")
-                elif skill_action == "web_search_completed" and isinstance(result_data.get("results"), list):
-                     snippets = [f"- {r.get('title', 'N/T')}: {r.get('snippet', 'N/A')[:100]}..." for r in result_data["results"]]
-                     if snippets: observation_parts.append("Resultados (snippets):\n" + "\n".join(snippets))
-                elif skill_action == "memory_recalled": # <<< FORMATAÇÃO PARA RECALL >>>
-                    recalled_results = result_data.get("results", [])
-                    if recalled_results:
-                        formatted = [f"  - Memória {i+1} (ID: {item.get('rowid', 'N/A')}, Dist: {item.get('distance', -1):.4f}): {item.get('content', '?')}" for i, item in enumerate(recalled_results)]
-                        observation_parts = [f"A ferramenta 'recall_memory' recuperou {len(recalled_results)} item(ns) relevante(s) da memória:"] + formatted
-                    # else: a 'message' já diz que não achou nada
-                elif skill_action == "file_read": # <<< FORMATAÇÃO PARA READ_FILE >>>
-                     filename = result_data.get("file_name", "?")
-                     content_preview = result_data.get("content", "")[:500] # Pega prévia do conteúdo lido
-                     if len(result_data.get("content", "")) > 500: content_preview += "..."
-                     observation_parts = [f"Conteúdo do arquivo '{filename}' lido com sucesso. Prévia:\n```\n{content_preview}\n```"]
-                # Adicione outros elif para skill_action se precisar de formatação específica
-
-                observation = "\n".join(observation_parts)
-
-            elif status == "error":
-                error_message = result_data.get("message", f"Erro desconhecido ({tool_name}).")
-                observation = f"Erro ao executar a ferramenta {tool_name}: {error_message}"
-                # Adiciona stderr se for erro de execução de código
-                if skill_action == "execute_code_failed":
-                     stderr_content = result_data.get("stderr", "")
-                     if stderr_content: observation += f"\nSaída de Erro (stderr):\n```\n{stderr_content.strip()}\n```"
-                else:
-                    # Se o status não for explicitamente 'error', mas também não for 'success',
-                    # usamos o formato 'Aviso/Info'.
-                    pass # A linha 524 já define a base da observação de erro
+            return result # Retorna o dicionário completo da skill
 
         except Exception as e:
-            agent_logger.error(f"[ReactAgent EXEC ERROR] Exceção inesperada ao executar {tool_name}: {e}", exc_info=True)
-
-            # --- Reworked Dynamic Error Handling ---
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            tb_frames = traceback.extract_tb(exc_traceback)
-            traceback_str = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)) # Get full traceback string
-
-            skill_file = None
-            error_type = exc_type.__name__ if exc_type else "UnknownError"
-            line_no = None
-
-            # Find the last frame originating from a skill file
-            for frame in reversed(tb_frames):
-                if 'skills/' in frame.filename and frame.filename.endswith('.py'):
-                    skill_file = frame.filename
-                    line_no = frame.lineno
-                    break # Found the most recent skill frame
-
-            if skill_file:
-                agent_logger.warning(f"[ReactAgent INTERNAL ERROR DETECTED] Error '{error_type}' in skill '{skill_file}' at line {line_no}. Input: {action_input}. Triggering dynamic recovery meta-objective.")
-
-                # --- DYNAMIC META-OBJECTIVE PROMPT ---
-                meta_objective_prompt = (
-                    f"URGENTE: META-OBJETIVO DE DIAGNÓSTICO E RECUPERAÇÃO ATIVADO!\n\n"
-                    f"**Contexto do Erro:**\n"
-                    f"- **Objetivo Original:** {current_objective}\n"
-                    f"- **Ferramenta Falhou:** {tool_name}\n"
-                    f"- **Input da Ferramenta:** {action_input}\n"
-                    f"- **Arquivo da Skill:** {skill_file}\n"
-                    f"- **Linha do Erro:** {line_no}\n"
-                    f"- **Tipo do Erro:** {error_type}\n"
-                    f"- **Mensagem de Erro:** {e}\n\n"
-                    f"**Traceback Completo:**\n"
-                    f"```python\n{traceback_str}\n```\n\n"
-                    f"**Seu Novo Objetivo (Diagnóstico e Recuperação):**\n"
-                    f"1.  **Diagnostique:** Analise cuidadosamente o traceback e o contexto para entender a causa raiz do erro.\n"
-                    f"2.  **Planeje:** Formule um plano de ação passo a passo para corrigir o problema. Use as ferramentas disponíveis (`read_file`, `modify_code`, `grep_search`, `web_search`, etc.) de forma estratégica.\n"
-                    f"3.  **Execute:** Realize as ações do seu plano.\n"
-                    f"4.  **Conclua:** Se a correção for bem-sucedida, use `final_answer` para reportar o sucesso e o que foi feito. Se não for possível corrigir ou se precisar de ajuda, use `final_answer` para explicar a situação.\n\n"
-                    f"**Instruções:** Pense passo a passo (Thought). Use as ferramentas necessárias (Action, Action Input). Seja metódico e claro no seu raciocínio."
-                )
-                # --- END DYNAMIC META-OBJECTIVE PROMPT ---
-
-                agent_logger.info(f"Iniciando meta-objetivo de recuperação (Profundidade: {meta_depth + 1}) para erro em '{skill_file}'.")
-                # Call self.run recursively with the new dynamic objective
-                # Pass the INCREASED meta_depth
-                return self.run(objective=meta_objective_prompt, is_meta_objective=True, meta_depth=meta_depth + 1)
-
-            else:
-                # Generic exception handling if error didn't originate in a skill file
-                agent_logger.warning(f"Erro não originado em arquivo de skill rastreável. Retornando observação de erro genérico.")
-                observation = f"Erro inesperado (exceção fora de skill rastreável) ao executar {tool_name}: {error_type} - {e}\nTraceback:\n```python\n{traceback_str[:500]}...\n```"
-            # --- End of Reworked Dynamic Error Handling ---
-
-        MAX_OBSERVATION_LEN = 1500 # Mantém limite
-        if len(observation) > MAX_OBSERVATION_LEN:
-            observation = observation[:MAX_OBSERVATION_LEN] + "... (Observação truncada)"
-
-        return observation 
+            agent_logger.exception(f"{log_prefix} Erro ao executar a skill '{tool_name}':")
+            # Retornar uma estrutura de erro padronizada
+            return {
+                "status": "error",
+                "action": f"{tool_name}_failed",
+                "data": {"message": f"Erro interno ao executar a skill '{tool_name}': {str(e)}"}
+            }
 
     # --- _trim_history (Mantido como antes) ---
     def _trim_history(self):
