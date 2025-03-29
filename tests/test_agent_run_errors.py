@@ -51,17 +51,17 @@ def test_react_agent_run_handles_llm_call_error(
     assert mock_llm_call.call_count == 1 
 
     # Verifica se o agente termina e retorna a mensagem de erro esperada
-    # The error message is now the generic one from the loop completion when no final answer is set
-    # because the cycle itself handles the LLM error and returns False (no break)
-    # The loop then finishes as there are no more steps. 
-    # Check the new expected message based on agent.py line ~110
-    assert "Plan completed. Last observation:" in final_response
-    assert "Erro interno ao comunicar com o LLM: Erro: Falha na chamada LLM: LLM API call failed" in final_response
+    # The cycle now returns the specific LLM error when the reflector decides to stop
+    assert "Erro: Falha ao comunicar com LLM" in final_response
+    assert "LLM API call failed" in final_response # Check specific error message
 
     # Check History (Human, Observation)
     assert len(agent._history) == 2, f"History: {agent._history}"
     assert agent._history[0] == f"Human: {objective}"
-    assert "Observation: Erro interno ao comunicar com o LLM: Erro: Falha na chamada LLM: LLM API call failed" in agent._history[1]
+    assert agent._history[1].startswith("Observation: {")
+    assert '"status": "error"' in agent._history[1]
+    assert '"action": "llm_call_failed"' in agent._history[1]
+    assert "Erro: Falha na chamada LLM: LLM API call failed" in agent._history[1] # Check specific msg within data
     
     # --- REMOVED old assertions checking for max_iterations or specific error format ---
 
@@ -109,13 +109,11 @@ def test_react_agent_run_handles_tool_execution_error(
         pytest.fail(f"Failed to validate history observation [2]: {e}. History: {agent._history}")
 
     # Verifica se o agente termina e retorna a mensagem de erro esperada
-    # O loop termina porque o único passo foi executado (mesmo com erro na tool).
-    # O final_response é definido pela lógica pós-loop.
-    assert "Plan completed. Last observation:" in result
-    # Check for key parts of the error JSON in the final result
-    assert '"status": "error"' in result
-    assert '"action": "execution_failed"' in result
-    assert 'ZeroDivisionError: division by zero' in result
+    # The reflector currently returns 'stop_plan' for execution_failed
+    assert "Erro: Plano interrompido pelo Reflector" in result
+    # Check for key parts of the original error detail propagated by the reflector
+    assert "Falha na execução do código" in result
+    assert "ZeroDivisionError: division by zero" in result
 
 # --- Fixtures ---
 # ... existing code ...
