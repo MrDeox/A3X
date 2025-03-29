@@ -16,7 +16,7 @@ from core.tools import TOOLS, get_tool_descriptions
 from core.db_utils import save_agent_state, load_agent_state
 
 # <<< NEW IMPORTS for modular functions >>>
-from core import agent_parser, prompt_builder, history_manager, tool_executor
+from core import agent_parser, prompt_builder, history_manager, tool_executor, planner
 # <<< REMOVE unused imports >>>
 # from core import agent_error_handler, agent_autocorrect
 
@@ -39,6 +39,7 @@ class ReactAgent:
         self._history = [] # Histórico de Thought, Action, Observation
         self._memory = load_agent_state(AGENT_STATE_ID) # Carrega estado/memória inicial
         self.max_iterations = MAX_REACT_ITERATIONS
+        self._current_plan = None # <<< Initialize plan >>>
         # Removed _last_error_type, not needed with new handlers
         agent_logger.info(f"[ReactAgent INIT] Agente inicializado. Memória carregada: {list(self._memory.keys())}")
 
@@ -46,23 +47,42 @@ class ReactAgent:
     def run(self, objective: str) -> str:
         """Executa o ciclo ReAct para atingir o objetivo."""
         final_response = f"Erro: O agente não conseguiu completar o objetivo após {self.max_iterations} iterações." # Default error
-        log_prefix_base = "[ReactAgent]" # Base prefix for logging
+        log_prefix_base = "[ReactAgent]"
+        self._current_plan = None # Ensure plan is reset for each run
 
         try: # Wrap main loop in try...finally to ensure state saving
-            # --- Setup --- (Simplified)
-            self._history = [] # Always reset history for a new run
+            # --- Setup History --- (Simplified)
+            self._history = []
             self._history.append(f"Human: {objective}")
-            current_objective = objective
+            current_objective = objective # Keep original objective for now
 
-            agent_logger.info(f"\n{log_prefix_base} Iniciando ciclo ReAct (Objetivo: '{current_objective[:100]}...')")
-            agent_logger.debug(f"{log_prefix_base} Histórico Inicial: {self._history}")
+            agent_logger.info(f"{log_prefix_base} Objetivo Inicial: '{current_objective[:100]}...'" )
+
+            # <<< START Planning Phase >>>
+            agent_logger.info("--- Generating Plan ---")
+            tool_desc = get_tool_descriptions()
+            # Pass llm_url to generate_plan
+            self._current_plan = planner.generate_plan(objective, tool_desc, agent_logger, self.llm_url)
+            if self._current_plan:
+                # Use json.dumps for pretty printing the plan list - FIX f-string syntax
+                plan_str = json.dumps(self._current_plan, indent=2, ensure_ascii=False)
+                agent_logger.info(f"Plan Generated:\n{plan_str}") # Single line f-string
+                # TODO: Implementar iteração sobre self._current_plan no loop principal (usando current_objective por enquanto)
+            else:
+                agent_logger.error("Failed to generate a plan. Proceeding with the original objective.")
+                # O agente continuará com o objetivo original se o plano falhar
+            agent_logger.info("--- Starting ReAct Cycles (Using Original Objective) ---")
+            # <<< END Planning Phase >>>
+
+            agent_logger.debug(f"{log_prefix_base} Histórico Inicial (após plano): {self._history}")
 
             # --- Ciclo ReAct Loop (delegado para _execute_react_cycle) ---
             for i in range(self.max_iterations):
                 should_break, final_response_from_cycle = self._execute_react_cycle(
                     cycle_num=i + 1,
                     log_prefix_base=log_prefix_base,
-                    current_objective=current_objective
+                    # Pass the original objective for now, plan iteration comes later
+                    current_objective=objective
                 )
                 if should_break:
                     final_response = final_response_from_cycle # Atualiza a resposta final (pode ser None se break for por erro)
