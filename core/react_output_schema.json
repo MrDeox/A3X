@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReAct Agent LLM Output Schema",
+  "description": "Defines the expected JSON structure for the LLM response in the ReAct loop.",
+  "type": "object",
+  "properties": {
+    "Thought": {
+      "type": "string",
+      "description": "The reasoning process, analysis, and plan that leads to the chosen action."
+    },
+    "Action": {
+      "type": "string",
+      "description": "The name of the tool/skill to be executed next.",
+      "enum": [
+        "search_web",
+        "list_files",
+        "execute_code",
+        "read_file",
+        "create_file",
+        "append_to_file",
+        "delete_file",
+        "save_memory",
+        "recall_memory",
+        "final_answer"
+      ]
+    },
+    "Action Input": {
+      "type": "object",
+      "description": "A JSON object containing the required parameters for the selected Action. For 'final_answer', this should be {'answer': '...'}.",
+      "default": {},
+      "minProperties": 0
+    }
+  },
+  "required": [
+    "Action",
+    "Action Input"
+  ],
+  "additionalProperties": false
+}
