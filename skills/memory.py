@@ -86,10 +86,18 @@ def skill_recall_info(entities: dict, original_command: str, intent: str = None,
 # Outras funções de memória podem ser adicionadas aqui (ex: deletar, listar chaves)
 
 # <<< NOVA FUNÇÃO skill_save_memory >>>
-def skill_save_memory(action_input: dict, agent_memory: dict, agent_history: list | None = None) -> dict:
+def skill_save_memory(action_input: dict) -> dict:
     """
     Salva um conteúdo textual e seu embedding na tabela semantic_memory.
     Também insere no índice VSS se disponível.
+
+    Args:
+        action_input (dict): Dicionário contendo os dados a salvar.
+            Exemplo:
+                {"content": "Lembrete importante.", "metadata": {"source": "user"}}
+
+    Returns:
+        dict: Dicionário padronizado com status.
     """
     logger.info("\n[Skill: Save Memory (ReAct)]")
     logger.debug(f"  Action Input: {action_input}")
@@ -156,26 +164,29 @@ def skill_save_memory(action_input: dict, agent_memory: dict, agent_history: lis
         # Inserir na tabela principal (semantic_memory)
         # Usar INSERT OR IGNORE para não dar erro se o 'content' já existir (devido ao UNIQUE)
         logger.info(f"  Inserindo/Ignorando conteúdo na tabela 'semantic_memory'...")
-        cursor.execute('''
+        cursor.execute("""
             INSERT OR IGNORE INTO semantic_memory (content, embedding, metadata)
             VALUES (?, ?, ?)
-        ''', (content_to_save, embedding_blob, metadata_json))
+        """, (content_to_save, embedding_blob, metadata_json))
 
-        if cursor.rowcount > 0:
-             semantic_rowid = cursor.lastrowid # Pega o ID da linha que FOI inserida
-             logger.info(f"  Conteúdo inserido com ID: {semantic_rowid}")
-        else:
-             # Se rowcount é 0, significa que o IGNORE aconteceu (conteúdo duplicado)
-             # Precisamos buscar o ID da linha existente para inserir no VSS
-             logger.info("  Conteúdo duplicado (UNIQUE constraint). Buscando ID existente...")
-             cursor.execute("SELECT id FROM semantic_memory WHERE content = ?", (content_to_save,))
-             existing_row = cursor.fetchone()
-             if existing_row:
-                  semantic_rowid = existing_row['id']
-                  logger.info(f"  ID existente encontrado: {semantic_rowid}")
-             else:
-                  logger.error("  Conteúdo duplicado, mas não foi possível encontrar o ID existente!")
-                  raise sqlite3.Error("Falha ao obter rowid para conteúdo duplicado.")
+        # <<< CORREÇÃO: Inverter a lógica do if/else >>>
+        if cursor.rowcount > 0: # INSERT aconteceu (rowcount > 0)
+            semantic_rowid = cursor.lastrowid
+            logger.info(f"[Skill: Save Memory (ReAct)] Conteúdo salvo com ID {semantic_rowid}.")
+        else: # IGNORE aconteceu (rowcount == 0)
+            # Se IGNORE foi ativado, o rowcount é 0, mas precisamos do ID existente
+            cursor.execute("SELECT id FROM semantic_memory WHERE content = ?", (content_to_save,))
+            existing_row = cursor.fetchone()
+            if existing_row:
+                # Acessar o ID pelo índice 0 da tupla retornada por fetchone()
+                semantic_rowid = existing_row[0]
+                logger.info(f"[Skill: Save Memory (ReAct)] Conteúdo já existe com ID {semantic_rowid}. Verificando/Atualizando VSS.")
+            else:
+                # Isso não deveria acontecer se o IGNORE foi por causa deste conteúdo
+                logger.error("[Skill: Save Memory (ReAct)] Inconsistência: INSERT OR IGNORE retornou 0, mas SELECT não encontrou o conteúdo.")
+                # Não fechar conn aqui, deixar o finally cuidar disso
+                return {"status": "error", "action": "save_memory_failed", "data": {"message": "Erro de inconsistência no banco de dados ao verificar conteúdo duplicado."}}
+        # <<< FIM DA CORREÇÃO >>>
 
         # Inserir no índice VSS (APENAS se VSS estiver ativo e tivermos rowid)
         if semantic_rowid is not None:
@@ -224,10 +235,18 @@ def skill_save_memory(action_input: dict, agent_memory: dict, agent_history: lis
 # <<< FIM skill_save_memory >>>
 
 # <<< NOVA FUNÇÃO skill_recall_memory >>>
-def skill_recall_memory(action_input: dict, agent_memory: dict, agent_history: list | None = None) -> dict:
+def skill_recall_memory(action_input: dict) -> dict:
     """
     Busca na memória semântica (tabela semantic_memory via índice VSS)
     por conteúdos similares à query fornecida.
+
+    Args:
+        action_input (dict): Dicionário contendo a query e opções.
+            Exemplo:
+                {"query": "Qual o lembrete?", "max_results": 5}
+
+    Returns:
+        dict: Dicionário padronizado com status e resultados.
     """
     logger.info("\n[Skill: Recall Memory (ReAct)]")
     logger.debug(f"  Action Input: {action_input}")
@@ -285,8 +304,9 @@ def skill_recall_memory(action_input: dict, agent_memory: dict, agent_history: l
 
 
     # 2. Buscar no Banco de Dados usando VSS
-    conn = None
+    conn = None # Inicializa conn como None
     try:
+        # Mover get_db_connection para ANTES das checagens que podem retornar cedo
         conn = get_db_connection()
         cursor = conn.cursor()
 
@@ -296,16 +316,20 @@ def skill_recall_memory(action_input: dict, agent_memory: dict, agent_history: l
 
         if not vss_table_exists:
              logger.warning("  Índice VSS 'vss_semantic_memory' não encontrado. A busca semântica não pode ser realizada.")
-             return {"status": "error", "action": "recall_memory_failed", "data": {"message": "Índice de busca semântica não está disponível."}}
+             # Não precisa mais fechar conn aqui, o finally cuidará disso.
+             return { # Retorna erro, mas finally será executado
+                  "status": "error", 
+                  "action": "recall_memory_failed", 
+                  "data": {"message": "Índice de busca semântica não está disponível."}
+             }
 
         # <<< ADICIONAR VERIFICAÇÃO DE TABELA VAZIA AQUI >>>
         cursor.execute("SELECT COUNT(*) FROM semantic_memory")
         memory_count = cursor.fetchone()[0]
         if memory_count == 0:
              logger.info("  Tabela 'semantic_memory' está vazia. Pulando busca VSS.")
-             # Retorna sucesso, mas sem resultados, como se a busca não tivesse encontrado nada
-             conn.close() # Fecha a conexão antes de retornar
-             return {
+             # Não precisa mais fechar conn aqui.
+             return { # Retorna sucesso, mas finally será executado
                 "status": "success",
                 "action": "memory_recalled",
                 "data": {
@@ -334,7 +358,6 @@ def skill_recall_memory(action_input: dict, agent_memory: dict, agent_history: l
         )
 
         results = cursor.fetchall() # Fetchall retorna uma lista de tuplas (ou Rows)
-        conn.close()
 
         # 3. Formatar e retornar os resultados
         if results:
@@ -413,5 +436,14 @@ def skill_recall_memory(action_input: dict, agent_memory: dict, agent_history: l
              return {"status": "error", "error": "Erro de banco de dados: Tabela de busca vetorial não encontrada."}
         return {"status": "error", "error": f"Erro operacional de banco de dados: {e}"}
     except Exception as e:
-        logger.error(f"[Skill: Recall Memory (ReAct)] Erro inesperado ao buscar memória: {e}", exc_info=True)
-        return {"status": "error", "error": f"Erro inesperado: {e}"} 
+        logger.error(f"[Skill: Recall Memory (ReAct)] Erro inesperado ao buscar memória: {e}")
+        # Log completo do traceback para depuração
+        logger.exception(e)
+        # Retornar um erro genérico
+        return {"status": "error", "action": "recall_memory_failed", "data": {"message": f"Erro inesperado ao buscar memória: {e}"}}
+    finally:
+        # Garantir que a conexão seja fechada se foi aberta
+        if conn:
+            conn.close()
+            logger.debug("[Skill: Recall Memory (ReAct)] Conexão com o banco de dados fechada no finally.")
+# <<< FIM skill_recall_memory >>> 
