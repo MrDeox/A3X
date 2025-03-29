@@ -5,7 +5,7 @@ import datetime
 import os
 import sys
 import traceback
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 
 import requests
 
@@ -43,55 +43,78 @@ class ReactAgent:
         # Removed _last_error_type, not needed with new handlers
         agent_logger.info(f"[ReactAgent INIT] Agente inicializado. Memória carregada: {list(self._memory.keys())}")
 
-    # --- run (Refatorado para usar _execute_react_cycle) ---
+    # --- run (Refatorado para iterar sobre o plano) ---
     def run(self, objective: str) -> str:
-        """Executa o ciclo ReAct para atingir o objetivo."""
-        final_response = f"Erro: O agente não conseguiu completar o objetivo após {self.max_iterations} iterações." # Default error
+        """Executa o ciclo ReAct (agora orientado por plano) para atingir o objetivo."""
+        # Initialize potential final response
+        final_response: Optional[str] = None
         log_prefix_base = "[ReactAgent]"
-        self._current_plan = None # Ensure plan is reset for each run
+        self._current_plan = None # Ensure plan is reset
+        plan_to_execute: List[str] = [] # Plan steps to iterate over
 
-        try: # Wrap main loop in try...finally to ensure state saving
-            # --- Setup History --- (Simplified)
+        try:
+            # --- Setup History --- 
             self._history = []
             self._history.append(f"Human: {objective}")
-            current_objective = objective # Keep original objective for now
+            agent_logger.info(f"{log_prefix_base} Objetivo Inicial: '{objective[:100]}...'" )
 
-            agent_logger.info(f"{log_prefix_base} Objetivo Inicial: '{current_objective[:100]}...'" )
-
-            # <<< START Planning Phase >>>
+            # --- Planning Phase --- 
             agent_logger.info("--- Generating Plan ---")
             tool_desc = get_tool_descriptions()
-            # Pass llm_url to generate_plan
-            self._current_plan = planner.generate_plan(objective, tool_desc, agent_logger, self.llm_url)
-            if self._current_plan:
-                # Use json.dumps for pretty printing the plan list - FIX f-string syntax
-                plan_str = json.dumps(self._current_plan, indent=2, ensure_ascii=False)
-                agent_logger.info(f"Plan Generated:\n{plan_str}") # Single line f-string
-                # TODO: Implementar iteração sobre self._current_plan no loop principal (usando current_objective por enquanto)
+            generated_plan = planner.generate_plan(objective, tool_desc, agent_logger, self.llm_url)
+            
+            if generated_plan:
+                plan_to_execute = generated_plan
+                plan_str = json.dumps(plan_to_execute, indent=2, ensure_ascii=False)
+                agent_logger.info(f"Plan Generated:\n{plan_str}")
             else:
-                agent_logger.error("Failed to generate a plan. Proceeding with the original objective.")
-                # O agente continuará com o objetivo original se o plano falhar
-            agent_logger.info("--- Starting ReAct Cycles (Using Original Objective) ---")
-            # <<< END Planning Phase >>>
+                agent_logger.warning("Failed to generate a plan. Proceeding with the original objective as a single-step plan.")
+                plan_to_execute = [objective] # Fallback: Treat original objective as a 1-step plan
+            
+            agent_logger.info("--- Starting Plan Execution ---")
 
-            agent_logger.debug(f"{log_prefix_base} Histórico Inicial (após plano): {self._history}")
+            # --- Plan Execution Loop --- 
+            current_step_index = 0
+            total_iterations = 0
+            max_total_iterations = self.max_iterations # Use configured max iterations
 
-            # --- Ciclo ReAct Loop (delegado para _execute_react_cycle) ---
-            for i in range(self.max_iterations):
+            while current_step_index < len(plan_to_execute) and total_iterations < max_total_iterations:
+                current_step = plan_to_execute[current_step_index]
+                agent_logger.info(f"--- Executing Plan Step {current_step_index + 1}/{len(plan_to_execute)} --- Total Iterations: {total_iterations + 1}/{max_total_iterations}")
+
                 should_break, final_response_from_cycle = self._execute_react_cycle(
-                    cycle_num=i + 1,
+                    cycle_num=total_iterations + 1, # Use total iterations for cycle number
                     log_prefix_base=log_prefix_base,
-                    # Pass the original objective for now, plan iteration comes later
-                    current_objective=objective
+                    current_objective=current_step # Pass the current step as the objective
                 )
+                
+                total_iterations += 1 # Increment total iterations counter
+
                 if should_break:
-                    final_response = final_response_from_cycle # Atualiza a resposta final (pode ser None se break for por erro)
-                    break # Sai do loop for
-            else: # Executado se o loop for concluído sem break (max iterations)
-                agent_logger.warning(f"{log_prefix_base} Máximo de iterações ({self.max_iterations}) atingido.")
-                # Define a mensagem de erro final padrão (pode incluir a última observação)
-                last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "Nenhuma observação disponível."
-                final_response = f"Erro: Máximo de iterações ({self.max_iterations}) atingido. Última observação: {last_observation}"
+                    final_response = final_response_from_cycle # Update final response (could be success or error)
+                    agent_logger.info(f"{log_prefix_base} Execution loop breaking due to cycle result (Final Answer or Error). Step Index: {current_step_index}")
+                    break # Exit the while loop
+                else:
+                    # If the cycle completed normally (no break), move to the next step
+                    agent_logger.info(f"{log_prefix_base} Step {current_step_index + 1} completed. Moving to next step.")
+                    current_step_index += 1
+
+            # --- After Loop --- 
+            if final_response is None: # Check if loop finished without a final answer or break
+                if current_step_index >= len(plan_to_execute):
+                    # Completed all plan steps, but no 'final_answer' action was triggered
+                    agent_logger.warning(f"{log_prefix_base} Plan execution completed, but no final answer action was explicitly returned.")
+                    last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "No observation."
+                    final_response = f"Plan completed. Last observation: {last_observation}" 
+                elif total_iterations >= max_total_iterations:
+                    # Reached max iteration limit during plan execution
+                    agent_logger.warning(f"{log_prefix_base} Maximum total iterations ({max_total_iterations}) reached during plan execution.")
+                    last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "No observation."
+                    final_response = f"Erro: Maximum total iterations ({max_total_iterations}) reached. Last observation: {last_observation}"
+                else:
+                    # Should not happen if loop logic is correct
+                    agent_logger.error(f"{log_prefix_base} Loop exited unexpectedly without setting final_response.")
+                    final_response = "Erro: Loop concluído inesperadamente."
 
             # --- End of ReAct Cycle Loop ---
 
@@ -112,7 +135,7 @@ class ReactAgent:
         """Executa um único ciclo do loop ReAct.
         Retorna (should_break_loop, final_response_if_break)
         """
-        log_prefix = f"{log_prefix_base} Cycle {cycle_num}/{self.max_iterations}"
+        log_prefix = f"{log_prefix_base} Cycle {cycle_num}/{len(self._current_plan) if self._current_plan else '?'}"
         agent_logger.info(f"\n{log_prefix} (Objetivo: '{current_objective[:60]}...' Inicio: {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]})" )
 
         # --- START ADDED DEBUG LOGGING (Keep for now) ---
