@@ -17,7 +17,7 @@ import requests
 #     sys.path.insert(0, project_root)
 
 # Local imports (ajuste os caminhos se necessário)
-from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
+from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS, MAX_META_DEPTH
 from core.tools import TOOLS, get_tool_descriptions
 # from core.llm_client import call_llm # Comentei pois _call_llm está definido na classe
 from skills.memory import skill_recall_memory
@@ -56,6 +56,7 @@ class ReactAgent:
         self.max_iterations = MAX_REACT_ITERATIONS
         self._last_error_type = None
         self._last_skill_file = None
+        self._last_executed_code = None
         agent_logger.info(f"[ReactAgent INIT] Agente inicializado. Memória carregada: {list(self._memory.keys())}")
 
     def _build_react_messages(self, objective: str) -> list[dict]:
@@ -138,6 +139,11 @@ class ReactAgent:
     # --- run (Ajustado para tratar JSONDecodeError) ---
     def run(self, objective: str, is_meta_objective: bool = False, meta_depth: int = 0) -> str:
         """Executa o ciclo ReAct para atingir o objetivo."""
+
+        # --- Limite de Profundidade Meta ---
+        if meta_depth > MAX_META_DEPTH:
+            agent_logger.warning(f"[ReactAgent META-{meta_depth}] Max meta depth ({MAX_META_DEPTH}) reached. Aborting meta-cycle for objective: '{objective[:100]}...'")
+            return f"Erro: Profundidade máxima de auto-correção ({MAX_META_DEPTH}) atingida."
 
         # --- Logging & Setup ---
         if is_meta_objective:
@@ -258,9 +264,68 @@ class ReactAgent:
                      current_history=self._history, # Mantido, embora _execute_tool não use mais
                      meta_depth=meta_depth
                  )
+
+                 # <<< ADDED: Store last executed code >>>
+                 if action_name == "execute_code":
+                     self._last_executed_code = action_input.get("code")
+
                  # Converte o dicionário de resultado em uma string de Observação
                  # Mantém a estrutura status/action/data para clareza
                  observation = json.dumps(tool_result, ensure_ascii=False, default=lambda o: '<not serializable>')
+
+                 # <<< ADDED: Auto-Correction Logic >>>
+                 is_execution_error = (
+                     action_name == "execute_code" and
+                     tool_result.get("status") == "error" and
+                     tool_result.get("action") == "execution_failed"
+                 )
+                 if is_execution_error and self._last_executed_code and meta_depth < MAX_META_DEPTH:
+                     agent_logger.warning(f"{log_prefix} Erro detectado na execução do código. Iniciando ciclo de auto-correção (Profundidade: {meta_depth + 1}).")
+                     error_message = tool_result.get("data", {}).get("message", "Erro desconhecido")
+                     stderr_output = tool_result.get("data", {}).get("stderr", "")
+                     full_error_details = f"Error Message: {error_message}\nStderr:\n{stderr_output}".strip()
+
+                     meta_objective = f"""A tentativa anterior de executar código falhou.
+Erro reportado:
+---
+{full_error_details}
+---
+
+Código que falhou:
+```python
+{self._last_executed_code}
+```
+
+Sua tarefa é:
+1. Analisar o erro e o código.
+2. Usar a ferramenta 'modify_code' para propor uma correção para o código. Passe o código original completo em 'code_to_modify' e a instrução de correção em 'modification'.
+3. Após obter o código modificado da ferramenta 'modify_code', use a ferramenta 'execute_code' para testar a versão corrigida.
+4. Se a execução do código corrigido for bem-sucedida (sem erros), use 'final_answer' para reportar 'Correção aplicada e testada com sucesso.'.
+5. Se a execução do código corrigido ainda falhar, use 'final_answer' para reportar 'Falha ao corrigir o erro após tentativa.'"""
+
+                     # Chamada Recursiva
+                     meta_result = self.run(
+                         objective=meta_objective,
+                         is_meta_objective=True,
+                         meta_depth=meta_depth + 1
+                     )
+
+                     # Gerar Observation para o ciclo ORIGINAL
+                     if meta_result == "Correção aplicada e testada com sucesso.":
+                         observation_msg = "Observation: Ocorreu um erro na execução anterior, mas um ciclo de auto-correção foi iniciado e concluído com sucesso. O código corrigido foi executado."
+                         agent_logger.info(f"{log_prefix} Ciclo de auto-correção bem-sucedido.")
+                     elif meta_result.startswith("Erro: Profundidade máxima"):
+                         observation_msg = f"Observation: Ocorreu um erro na execução anterior. Uma tentativa de auto-correção foi feita, mas atingiu a profundidade máxima ({MAX_META_DEPTH}). {meta_result}"
+                         agent_logger.warning(f"{log_prefix} Ciclo de auto-correção falhou (profundidade máxima).")
+                     else:
+                         observation_msg = f"Observation: Ocorreu um erro na execução anterior. Uma tentativa de auto-correção foi feita, mas falhou em corrigir o erro. Resultado da tentativa: {meta_result}"
+                         agent_logger.warning(f"{log_prefix} Ciclo de auto-correção falhou.")
+
+                     # Sobrescreve a observation original do erro com a da meta-correção
+                     observation = observation_msg
+                     # Limpa o código executado para não tentar corrigir de novo no mesmo ciclo
+                     self._last_executed_code = None
+                 # <<< END: Auto-Correction Logic >>>
 
             else:
                  observation_dict = {"status": "error", "action": "tool_not_found", "data": {"message": f"A ferramenta '{action_name}' não existe. Ferramentas disponíveis: {', '.join(self.tools.keys())}"}}

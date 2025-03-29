@@ -1,8 +1,12 @@
 import os
 from dotenv import load_dotenv
 
+# <<< ADDED: Define project_root >>>
+# Assume config.py is in the 'core' directory, so go up one level
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # Carregar variáveis de ambiente do arquivo .env
-load_dotenv()
+load_dotenv(os.path.join(project_root, '.env')) # Load from project root
 
 # URL do servidor LLAMA (Ollama, LM Studio, etc.)
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions") # Default if not set
@@ -17,6 +21,7 @@ PYTHON_EXEC_TIMEOUT = 10 # Segundos máximos para execução de código
 # Configurações do Agente ReAct
 MAX_REACT_ITERATIONS = int(os.getenv("MAX_REACT_ITERATIONS", "10"))
 MAX_HISTORY_TURNS = int(os.getenv("MAX_HISTORY_TURNS", "5"))
+MAX_META_DEPTH = 3 # Profundidade máxima para chamadas recursivas de auto-correção/reflexão
 
 # Configurações de Histórico (se aplicável fora do agente)
 MAX_HISTORY_TURNS = 5 # Keep one definition
@@ -35,7 +40,8 @@ if LLAMA_API_KEY and LLAMA_API_KEY.lower() not in ['none', 'nokey', '']:
     LLAMA_DEFAULT_HEADERS["Authorization"] = f"Bearer {LLAMA_API_KEY}"
 
 # Configurações do Banco de Dados (SQLite)
-DATABASE_PATH = os.getenv("DATABASE_PATH", "a3x_memory.db")
+# DATABASE_PATH = os.getenv("DATABASE_PATH", "a3x_memory.db") # Deprecated or unused?
+MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", os.path.join(project_root, "memory.db")) # <<< Usa project_root >>>
 
 # Configurações de Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
