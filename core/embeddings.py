@@ -2,69 +2,129 @@ import logging
 import time
 from sentence_transformers import SentenceTransformer
 import numpy as np
-import os # Adicionado para configurar variável de ambiente
+import os
+import datetime
 
 logger = logging.getLogger(__name__)
 
-# --- Configuração do Modelo ---
-MODEL_NAME = "neuralmind/bert-base-portuguese-cased"
-NORMALIZE_EMBEDDINGS = True
-EMBEDDING_DIM = None # Será definido dinamicamente ou por fallback
+# Local imports
+from core.config import PROJECT_ROOT
 
-# --- Variável Global para o Modelo Carregado ---
+# --- Model Configuration ---
+# Model name from Hugging Face model hub
+# MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2") # Default Original
+MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-base") # <<< NEW MODEL
+# Cache directory for models (optional, defaults to ~/.cache/huggingface/hub)
+# CACHE_DIR = os.environ.get("HF_HOME")
+
+# Global variable to hold the model instance (lazy loading)
 _model_instance = None
 _model_loading_error = None
 
+# Global variable for embedding dimension (determined after model load)
+EMBEDDING_DIM = None
+
+# --- Helper Functions ---
+def _get_device() -> str:
+    """Determina o dispositivo disponível (CPU ou CUDA/ROCm via PyTorch)."""
+    try:
+        import torch
+        # Check for CUDA (NVIDIA)
+        if torch.cuda.is_available():
+            logger.info("CUDA (NVIDIA GPU) detectado. Usando GPU para embeddings.")
+            return "cuda"
+        # Check for ROCm (AMD) - requires PyTorch built with ROCm support
+        # hasattr check is important as direct access might error if not compiled in
+        if hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
+             # torch.cuda.is_available() returns true for ROCm too if installed correctly
+             logger.info("ROCm (AMD GPU) detectado. Usando GPU para embeddings.")
+             return "cuda" # PyTorch uses 'cuda' device name even for ROCm
+    except ImportError:
+        logger.warning("PyTorch não encontrado. Embeddings serão executados na CPU.")
+    except Exception as e:
+        logger.error(f"Erro ao verificar disponibilidade de GPU com PyTorch: {e}. Usando CPU.")
+    
+    logger.info("Nenhuma GPU compatível (CUDA/ROCm) detectada ou PyTorch ausente. Usando CPU para embeddings.")
+    return "cpu"
+
 def _load_model_internal():
     """Função interna para carregar o modelo SentenceTransformer na memória (chamada apenas uma vez)."""
-    global _model_instance, EMBEDDING_DIM, _model_loading_error
-    if _model_instance is not None or _model_loading_error is not None: # Já carregado ou falhou antes
-        logger.debug("[Embeddings] Modelo já carregado ou falha anterior detectada. Pulando carregamento.")
-        return
+    global _model_instance, _model_loading_error, EMBEDDING_DIM
+    if _model_instance is not None or _model_loading_error is not None:
+        return # Already loaded or failed
 
     try:
-        logger.info(f"[Embeddings] Carregando modelo '{MODEL_NAME}' pela primeira vez...")
-        start_time = time.time()
-        _model_instance = SentenceTransformer(MODEL_NAME)
-        end_time = time.time()
-        logger.info(f"[Embeddings] Modelo '{MODEL_NAME}' carregado com sucesso em {end_time - start_time:.2f} segundos.")
+        from sentence_transformers import SentenceTransformer
+        logger.info(f"[Embeddings] Carregando modelo '{MODEL_NAME}'...")
+        start_time = datetime.datetime.now()
+        device = _get_device()
+        _model_instance = SentenceTransformer(MODEL_NAME, device=device)
+        end_time = datetime.datetime.now()
+        load_duration = (end_time - start_time).total_seconds()
+        logger.info(f"[Embeddings] Modelo '{MODEL_NAME}' carregado em {load_duration:.2f} segundos no dispositivo '{device}'.")
 
-        # Determina e loga a dimensão do embedding
+        # Determinar a dimensão do embedding dinamicamente
         try:
-            dummy_embedding = _model_instance.encode(["dim_test"])
-            EMBEDDING_DIM = dummy_embedding.shape[1]
-            logger.info(f"[Embeddings] Dimensão dos embeddings do modelo '{MODEL_NAME}': {EMBEDDING_DIM}")
-            # Validação crucial para VSS
-            if EMBEDDING_DIM is None:
-                 raise ValueError("A dimensão do embedding não pôde ser determinada.")
+            # Tenta obter a dimensão do primeiro módulo de embedding
+            if hasattr(_model_instance, 'get_sentence_embedding_dimension') and callable(_model_instance.get_sentence_embedding_dimension):
+                 EMBEDDING_DIM = _model_instance.get_sentence_embedding_dimension()
+            # Fallback: verifica o atributo 'embedding_length' ou similar (pode variar)
+            elif hasattr(_model_instance, 'embedding_length'):
+                 EMBEDDING_DIM = _model_instance.embedding_length
+            # Outro fallback comum é verificar a dimensão do word_embedding_model
+            elif hasattr(_model_instance, '0') and hasattr(_model_instance[0], 'auto_model') and hasattr(_model_instance[0].auto_model, 'config'):
+                 EMBEDDING_DIM = _model_instance[0].auto_model.config.hidden_size
+            else:
+                # Se nada funcionar, tenta gerar um embedding e ver o tamanho
+                logger.warning("[Embeddings] Não foi possível determinar a dimensão via atributos. Tentando via inferência...")
+                test_embedding = _model_instance.encode(["teste"])
+                EMBEDDING_DIM = test_embedding.shape[1]
+
+            if EMBEDDING_DIM:
+                 logger.info(f"[Embeddings] Dimensão do embedding determinada: {EMBEDDING_DIM}")
+            else:
+                 raise ValueError("Não foi possível determinar a dimensão do embedding.")
+
         except Exception as dim_err:
             logger.warning(f"[Embeddings] Não foi possível determinar dinamicamente a dimensão do embedding: {dim_err}.")
             # Tenta um valor padrão conhecido
             # Ajuste este bloco se mudar o modelo padrão!
-            if 'bert-base' in MODEL_NAME.lower(): # Verifica se é um BERT base
-                 EMBEDDING_DIM = 768 # <<< DIMENSÃO PADRÃO PARA BERT-BASE
+            # <<< UPDATED DEFAULTS >>>
+            if 'e5-base' in MODEL_NAME.lower():
+                EMBEDDING_DIM = 768
+                logger.info(f"[Embeddings] Usando dimensão padrão {EMBEDDING_DIM} para {MODEL_NAME}.")
+            elif 'minilm' in MODEL_NAME.lower(): # Covers all-MiniLM-L6-v2, paraphrase-multilingual-MiniLM-L12-v2
+                 EMBEDDING_DIM = 384
                  logger.info(f"[Embeddings] Usando dimensão padrão {EMBEDDING_DIM} para {MODEL_NAME}.")
-            elif 'bert-large' in MODEL_NAME.lower():
-                 EMBEDDING_DIM = 1024 # Padrão para BERT-large
+            elif 'bert-base' in MODEL_NAME.lower(): # Mantém para outros BERTs base
+                 EMBEDDING_DIM = 768
                  logger.info(f"[Embeddings] Usando dimensão padrão {EMBEDDING_DIM} para {MODEL_NAME}.")
-            elif 'multilingual-e5-large' in MODEL_NAME.lower():
-                 EMBEDDING_DIM = 1024 # Padrão para E5-large
+            elif 'e5-large' in MODEL_NAME.lower(): # Adiciona E5-large
+                 EMBEDDING_DIM = 1024
                  logger.info(f"[Embeddings] Usando dimensão padrão {EMBEDDING_DIM} para {MODEL_NAME}.")
             # Mantenha outros padrões se necessário
-            # elif MODEL_NAME == 'ibm-granite/granite-embedding-125m-english':
-            #      EMBEDDING_DIM = 768
-            #      logger.info(f"[Embeddings] Usando dimensão padrão {EMBEDDING_DIM} para {MODEL_NAME}.")
+            # ...
             else:
                  logger.error(f"[Embeddings] Falha ao determinar dimensão e nenhum padrão conhecido para {MODEL_NAME}. VSS pode falhar!")
                  _model_loading_error = RuntimeError(f"Falha ao determinar dimensão do embedding para {MODEL_NAME}.")
-                 # Limpa a instância se a dimensão não puder ser definida, forçando erro em get_embedding
                  _model_instance = None
-                 return # Sai da função _load_model_internal
+                 return
 
+    except ImportError:
+        logger.error("[Embeddings] Biblioteca 'sentence-transformers' não encontrada. Instale com 'pip install sentence-transformers'.")
+        _model_loading_error = ImportError("sentence-transformers not found")
     except Exception as e:
-        logger.error(f"[Embeddings] FALHA CRÍTICA ao carregar o modelo de embedding '{MODEL_NAME}': {e}", exc_info=True)
+        logger.exception("[Embeddings] Erro inesperado ao carregar o modelo de embedding:")
         _model_loading_error = e
-        _model_instance = None # Garante que a instância é None se o carregamento falhar
+
+def get_embedding_dim() -> Optional[int]:
+    """Retorna a dimensão do embedding do modelo carregado."""
+    if EMBEDDING_DIM is None and _model_instance is None and _model_loading_error is None:
+        # Tenta carregar o modelo se ainda não foi tentado
+        logger.info("[Embeddings] get_embedding_dim chamado antes do modelo ser carregado. Tentando carregar agora...")
+        _load_model_internal()
+    # Retorna a dimensão se carregada com sucesso, senão None
+    return EMBEDDING_DIM
 
 def get_embedding(text: str) -> list[float] | None:
     """

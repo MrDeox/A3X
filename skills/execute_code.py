@@ -1,22 +1,12 @@
 # --- INÍCIO DO CÓDIGO PARA COPIAR ---
-import os
-import re
 import ast
 import subprocess
-import traceback
 import logging
 from pathlib import Path
 from core.config import PYTHON_EXEC_TIMEOUT # Default timeout
 
 # Initialize logger
 logger = logging.getLogger(__name__)
-
-# Define o diretório raiz do projeto (ajuste se necessário)
-WORKSPACE_ROOT = Path("/home/arthur/Projects/A3X").resolve()
-
-# Importar a função de validação AST (assumindo que está no mesmo arquivo)
-# Se _is_safe_ast estiver em outro lugar, ajuste o import
-# from .ast_validator import _is_safe_ast # Exemplo se estivesse em ast_validator.py
 
 # Função _is_safe_ast (COLE AQUI SE NÃO ESTIVER JÁ NO ARQUIVO)
 # Certifique-se que a função _is_safe_ast está definida neste arquivo

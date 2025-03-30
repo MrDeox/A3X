@@ -2,313 +2,188 @@
 import json
 import os
 import sys
+import traceback
+import logging
 
 # Ajuste para importar skills do diretório pai
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 sys.path.insert(0, project_root)
 
-# Tenta importar as skills - pode precisar de ajustes dependendo da estrutura final
-try:
-    from skills.web_search import skill_search_web
-    from skills.manage_files import skill_manage_files
-    from skills.generate_code import skill_generate_code
-    from skills.execute_code import skill_execute_code
-    from skills.modify_code import skill_modify_code
-    from skills.final_answer import skill_final_answer
-    # from skills.memory import skill_save_memory, skill_recall_memory # <<< RE-ENABLED import <<< COMMENTING OUT AGAIN
-    # from skills.capture_screen import skill_capture_screen # <<< Temporarily disabled
-    # Adicionaremos outras skills aqui depois
-except ImportError as e:
-    print(f"[Tools ERROR] Falha ao importar skills: {e}. Verifique os caminhos e nomes dos arquivos.")
-    # Define placeholders se a importação falhar para evitar erros na inicialização
-    def skill_search_web(*args, **kwargs): return {"status": "error", "data": {"message": "skill_search_web não carregada"}}
-    def skill_manage_files(*args, **kwargs): return {"status": "error", "data": {"message": "skill_manage_files não carregada"}}
-    def skill_generate_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_generate_code não carregada"}}
-    def skill_execute_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_execute_code não carregada"}}
-    def skill_modify_code(*args, **kwargs): return {"status": "error", "data": {"message": "skill_modify_code não carregada"}}
-    def skill_final_answer(*args, **kwargs): return {"status": "error", "data": {"message": "skill_final_answer não carregada"}}
-    # def skill_save_memory(*args, **kwargs): return {"status": "error", "data": {"message": "skill_save_memory não carregada"}}
-    # def skill_recall_memory(*args, **kwargs): return {"status": "error", "data": {"message": "skill_recall_memory não carregada"}}
-    # def skill_capture_screen(*args, **kwargs): return {"status": "error", "data": {"message": "skill_capture_screen não carregada"}}
+# --- Explicit Skill Imports --- 
+# Initialize TOOLS dictionary first
+TOOLS = {}
 
-# Definição inicial das ferramentas (Formato pode evoluir)
-# Usaremos um dicionário onde a chave é o nome da ferramenta
-TOOLS = {
-    "search_web": {
-        "function": skill_search_web,
-        "description": "Realiza uma busca na web usando DuckDuckGo para encontrar informações sobre um tópico ou responder a uma pergunta factual.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "A string de busca detalhada ou a pergunta a ser feita na web (obrigatório)."
-                }
-            },
-            "required": ["query"]
-        }
-    },
-    "list_files": {
+logger = logging.getLogger(__name__)
+
+try:
+    from skills.manage_files import skill_manage_files
+    TOOLS['manage_files'] = {
         "function": skill_manage_files,
-        "description": "Lista arquivos e diretórios em um caminho específico. Use '.' para o diretório atual.",
+        "description": "Creates, overwrites, or appends to files. Args: action ('create' or 'append'), file_name (path relative to workspace), content (string).",
         "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "A ação a ser realizada (DEVE ser 'list')",
-                    "enum": ["list"]
-                },
-                "directory": {
-                    "type": "string",
-                    "description": "O subdiretório opcional para listar (relativo ao diretório de trabalho). Deixe vazio ou omita para listar o diretório atual."
-                }
-            },
-            "required": ["action"] # Only action is required for list
+            "action": "'create' or 'append'",
+            "file_name": "Relative path to the file within the workspace",
+            "content": "The text content to write or append"
         }
-    },
-    "execute_code": {
+    }
+except ImportError:
+    logger.error("Failed to import skill: manage_files", exc_info=True)
+
+try:
+    from skills.read_file import skill_read_file
+    TOOLS['read_file'] = {
+        "function": skill_read_file,
+        "description": "Reads the entire content of a specified text file. Args: file_path (relative or absolute)",
+        "parameters": {"file_path": "Path to the file"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: read_file", exc_info=True)
+
+try:
+    from skills.list_files import skill_list_files
+    TOOLS['list_files'] = {
+        "function": skill_list_files,
+        "description": "Lists files and directories in a specified path relative to the workspace root (default: root). Args: directory (optional, relative path)",
+        "parameters": {"directory": "(Optional) Relative path from workspace root"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: list_files", exc_info=True)
+
+try:
+    from skills.delete_file import skill_delete_file
+    TOOLS['delete_file'] = {
+        "function": skill_delete_file,
+        "description": "Deletes a specified file. Requires confirmation. Args: file_path (relative or absolute), confirm (boolean, must be true)",
+        "parameters": {"file_path": "Path to the file", "confirm": "Must be true to delete"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: delete_file", exc_info=True)
+
+try:
+    from skills.generate_code import skill_generate_code
+    TOOLS['generate_code'] = {
+        "function": skill_generate_code,
+        "description": "Generates code based on a description. Args: purpose (description), language (optional, default python), context (optional)",
+        "parameters": {"purpose": "Description of the code's function", "language": "(Optional) Programming language", "context": "(Optional) Existing code context"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: generate_code", exc_info=True)
+
+try:
+    from skills.execute_code import skill_execute_code
+    TOOLS['execute_code'] = {
         "function": skill_execute_code,
-        "description": "Use esta ferramenta para EXECUTAR um bloco de código Python fornecido diretamente no parâmetro 'code'. O código é executado em um ambiente seguro (sandbox). Esta é a ferramenta correta quando o objetivo é rodar um código específico.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "O bloco de código Python completo a ser executado (obrigatório)."
-                },
-                "language": {
-                    "type": "string",
-                    "description": "A linguagem do código. Atualmente DEVE ser 'python' ou omitido (padrão: python).",
-                    "enum": ["python"]
-                },
-                "timeout": {
-                    "type": "number",
-                    "description": "Tempo máximo em segundos para permitir a execução do código (opcional, padrão definido na configuração)."
-                }
-            },
-            "required": ["code"]
-        }
-    },
-    # --- File Management Tools (Using the single refactored skill) ---
-    "read_file": {
-        "function": skill_manage_files,
-        "description": "Lê e retorna TODO o conteúdo de um arquivo de texto especificado.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "A ação a ser realizada. DEVE ser EXATAMENTE a string 'read'.",
-                    "enum": ["read"]
-                },
-                "file_name": {
-                    "type": "string",
-                    "description": "O nome do arquivo a ser lido (obrigatório)."
-                }
-            },
-            "required": ["action", "file_name"]
-        }
-    },
-    "create_file": {
-        "function": skill_manage_files,
-        "description": "Cria um NOVO arquivo de texto com o nome e conteúdo EXATAMENTE como especificados. Se o arquivo já existir, seu conteúdo será COMPLETAMENTE SUBSTITUÍDO.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "A ação a ser realizada (DEVE ser 'create')",
-                    "enum": ["create"]
-                },
-                "file_name": {
-                    "type": "string",
-                    "description": "O nome completo (incluindo extensão, ex: 'notas.txt', 'config.json') do arquivo a ser criado/sobrescrito (obrigatório)."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "O conteúdo de texto EXATO a ser escrito no arquivo (obrigatório)."
-                }
-            },
-            "required": ["action", "file_name", "content"]
-        }
-    },
-    "append_to_file": {
-        "function": skill_manage_files,
-        "description": "Adiciona (anexa) conteúdo de texto AO FINAL de um arquivo JÁ EXISTENTE. Se o arquivo não existir, esta ferramenta falhará.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "A ação a ser realizada (DEVE ser 'append')",
-                    "enum": ["append"]
-                },
-                "file_name": {
-                    "type": "string",
-                    "description": "O nome do arquivo EXISTENTE ao qual adicionar conteúdo (obrigatório)."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "O conteúdo de texto EXATO a ser adicionado ao final do arquivo (obrigatório)."
-                }
-            },
-            "required": ["action", "file_name", "content"]
-        }
-    },
-    "delete_file": {
-        "function": skill_manage_files,
-        "description": "Exclui um arquivo especificado do diretório de trabalho. Use com cuidado!",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "A ação a ser realizada (DEVE ser 'delete')",
-                    "enum": ["delete"]
-                },
-                "file_name": {
-                    "type": "string",
-                    "description": "O nome do arquivo a ser excluído (obrigatório)."
-                }
-            },
-            "required": ["action", "file_name"]
-        }
-    },
-    # --- End File Management Tools ---
-    # "save_memory": { # <<< RE-ENABLED <<< COMMENTING OUT AGAIN
-    #     "function": skill_save_memory,
-    #     "description": "Use esta ferramenta para armazenar informações textuais importantes na memória de longo prazo quando o usuário pedir explicitamente (ex: 'Lembre-se que...', 'Anote aí:', 'Guarde esta informação:', 'Salve isso:') ou quando você identificar um fato crucial de uma ferramenta (ex: search_web) que deve ser lembrado. NÃO use para o último código gerado (isso é automático).",
-    #     "parameters": {
-    #         "type": "object",
-    #         "properties": {
-    #             "content": {
-    #                 "type": "string",
-    #                 "description": "O texto da informação a ser armazenada (obrigatório)."
-    #             },
-    #             "metadata": {
-    #                 "type": "object",
-    #                 "description": "Metadados opcionais em formato JSON (ex: {'source': 'user_input', 'topic': 'configuração'}).",
-    #                 "properties": {
-    #                      "source": {"type": "string"},
-    #                      "topic": {"type": "string"},
-    #                 },
-    #                 "additionalProperties": True
-    #             }
-    #         },
-    #         "required": ["content"]
-    #     }
-    # },
-    # "recall_memory": { # <<< RE-ENABLED <<< COMMENTING OUT AGAIN
-    #     "function": skill_recall_memory,
-    #     "description": "Busca na memória de longo prazo por informações semanticamente similares a uma consulta fornecida. Útil para recuperar fatos, contextos ou tarefas passadas relevantes. Use consultas concisas e focadas.",
-    #     "parameters": {
-    #         "type": "object",
-    #         "properties": {
-    #             "query": {
-    #                 "type": "string",
-    #                 "description": "A pergunta ou consulta textual para buscar informações similares na memória.",
-    #             },
-    #             "max_results": {
-    #                 "type": "integer",
-    #                 "description": "Número máximo de resultados relevantes a serem retornados.",
-    #                 "default": 3
-    #             }
-    #         },
-    #         "required": ["query"]
-    #     }
-    # },
-    "final_answer": {
-        "function": skill_final_answer,
-        "description": "Fornece a resposta final ao usuário após completar a tarefa ou quando não há mais passos a seguir.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "answer": {
-                    "type": "string",
-                    "description": "A resposta final e completa para a solicitação original do usuário."
-                }
-            },
-            "required": ["answer"]
-        }
-    },
-    "modify_code": {
+        "description": "Executes Python code. Args: code (string)",
+        "parameters": {"code": "The Python code to execute"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: execute_code", exc_info=True)
+
+try:
+    from skills.modify_code import skill_modify_code
+    TOOLS['modify_code'] = {
         "function": skill_modify_code,
-        "description": "Modifica um bloco de código existente com base em uma instrução de modificação. Retorna o bloco de código completo e modificado.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "modification": {
-                    "type": "string",
-                    "description": "A instrução detalhada descrevendo como o código deve ser modificado (obrigatório)."
-                },
-                "code_to_modify": {
-                    "type": "string",
-                    "description": "O bloco de código original completo a ser modificado (obrigatório)."
-                },
-                "language": {
-                    "type": "string",
-                    "description": "A linguagem do código. Padrão: python."
-                }
-            },
-            "required": ["modification", "code_to_modify"]
-        }
-    },
-    # "capture_screen": { # <<< Temporarily disabled
-    #     "function": skill_capture_screen,
-    #     "description": "Captura a tela inteira ou uma região específica e opcionalmente salva como arquivo ou descreve o conteúdo usando um modelo multimodal.",
-    #     "parameters": {
-    #         "type": "object",
-    #         "properties": {
-    #             "save_path": {
-    #                 "type": "string",
-    #                 "description": "Caminho opcional para salvar a imagem capturada (ex: 'screenshot.png'). Se omitido e describe=false, a imagem não é salva."
-    #             },
-    #             "region": {
-    #                 "type": "array",
-    #                 "items": {"type": "integer"},
-    #                 "minItems": 4,
-    #                 "maxItems": 4,
-    #                 "description": "Região opcional para capturar [left, top, width, height]. Se omitido, captura a tela inteira."
-    #             },
-    #             "describe": {
-    #                 "type": "boolean",
-    #                 "description": "Se true, tenta descrever o conteúdo da imagem usando um modelo multimodal (requer configuração apropriada). Se false ou omitido, retorna apenas o status do salvamento.",
-    #                 "default": False
-    #             }
-    #         },
-    #         "required": []
-    #     }
-    # }
-}
+        "description": "Modifies existing code based on instructions. Args: modification (instructions), code_to_modify (original code)",
+        "parameters": {"modification": "Instructions for change", "code_to_modify": "The original code string"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: modify_code", exc_info=True)
+
+try:
+    from skills.text_to_speech import skill_text_to_speech
+    TOOLS['text_to_speech'] = {
+        "function": skill_text_to_speech,
+        "description": "Converts text to speech using Piper TTS. Args: text, voice_model_path, output_dir (optional), filename (optional)",
+        "parameters": {"text": "Text to convert", "voice_model_path": "Path to .onnx model", "output_dir": "(Optional) Output directory", "filename": "(Optional) Output filename (no extension)"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: text_to_speech", exc_info=True)
+
+try:
+    from skills.translate_text import skill_translate_text
+    TOOLS['translate_text'] = {
+        "function": skill_translate_text,
+        "description": "Translates text between languages. Args: text, source_lang, target_lang",
+        "parameters": {"text": "Text to translate", "source_lang": "Source language code (e.g., en)", "target_lang": "Target language code (e.g., pt)"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: translate_text", exc_info=True)
+
+try:
+    from skills.ocr_image import skill_ocr_image
+    TOOLS['ocr_image'] = {
+        "function": skill_ocr_image,
+        "description": "Extracts text from an image using Tesseract OCR. Args: image_path, lang (optional, default 'eng')",
+        "parameters": {"image_path": "Path to the image file", "lang": "(Optional) Language code(s) for Tesseract (e.g., eng, por, eng+por)"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: ocr_image", exc_info=True)
+
+try:
+    from skills.detect_objects import skill_detect_objects
+    TOOLS['detect_objects'] = {
+        "function": skill_detect_objects,
+        "description": "Detects objects in an image using YOLOv8. Args: image_path, confidence_threshold (optional, default 0.25)",
+        "parameters": {"image_path": "Path to the image file", "confidence_threshold": "(Optional) Minimum confidence score (0.0-1.0)"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: detect_objects", exc_info=True)
+
+try:
+    from skills.classify_sentiment import skill_classify_sentiment
+    TOOLS['classify_sentiment'] = {
+        "function": skill_classify_sentiment,
+        "description": "Classifies the sentiment of a text (1-5 stars). Args: text",
+        "parameters": {"text": "The text to classify"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: classify_sentiment", exc_info=True)
+
+try:
+    from skills.final_answer import skill_final_answer
+    TOOLS['final_answer'] = {
+        "function": skill_final_answer,
+        "description": "Provides the final answer to the user's request. Args: answer (string)",
+        "parameters": {"answer": "The final answer text"}
+    }
+except ImportError:
+    logger.error("Failed to import skill: final_answer", exc_info=True)
+
+# Example: Add memory skills if needed and handle import errors
+# try:
+#     from skills.memory import skill_save_memory, skill_recall_memory
+#     TOOLS['save_memory'] = {
+#         "function": skill_save_memory,
+#         "description": "Saves information to long-term memory. Args: content (string), metadata (optional dict)",
+#         "parameters": {"content": "Information to save", "metadata": "(Optional) Dictionary of metadata"}
+#     }
+#     TOOLS['recall_memory'] = {
+#         "function": skill_recall_memory,
+#         "description": "Recalls relevant information from long-term memory based on a query. Args: query (string), top_k (optional int)",
+#         "parameters": {"query": "Search query", "top_k": "(Optional) Number of results to return"}
+#     }
+# except ImportError:
+#     logger.error("Failed to import memory skills", exc_info=True)
+
+# --- End Explicit Skill Imports ---
 
 def get_tool(tool_name: str) -> dict | None:
-    """Busca uma ferramenta pelo nome."""
+    """Retorna a descrição e função de uma ferramenta específica."""
     return TOOLS.get(tool_name)
 
 def get_tool_descriptions() -> str:
-    """Retorna uma string formatada com as descrições de todas as ferramentas para o prompt do LLM."""
+    """Retorna uma string formatada com as descrições de todas as ferramentas."""
     descriptions = []
-    tool_names = sorted([name for name in TOOLS if name != "final_answer"])
-    
-    for name in tool_names:
-        tool_info = TOOLS[name]
-        tool_info_no_func = tool_info.copy()
-        if "function" in tool_info_no_func:
-             del tool_info_no_func["function"]
+    for name, tool_info in TOOLS.items():
+        # Formatar parâmetros para melhor clareza no prompt
+        params_str_list = []
+        if tool_info.get("parameters"):
+             for param_name, param_desc in tool_info["parameters"].items():
+                 params_str_list.append(f"  - {param_name}: {param_desc}")
+             params_str = "\n".join(params_str_list)
+             descriptions.append(f"- {name}:\n  Description: {tool_info['description']}\n  Parameters:\n{params_str}")
+        else:
+            descriptions.append(f"- {name}:\n  Description: {tool_info['description']}\n  Parameters: None")
 
-        # Formatar como JSON ou outra string estruturada
-        # Usar indentação para legibilidade no prompt
-        try:
-            desc_json = json.dumps(tool_info_no_func, indent=2, ensure_ascii=False)
-            descriptions.append(f"Tool Name: {name}\nTool Description:\n{desc_json}")
-        except TypeError as e:
-             print(f"[Tools WARN] Não foi possível serializar a descrição da ferramenta '{name}': {e}")
-             descriptions.append(f"Tool Name: {name}\nTool Description: Error serializing description.")
-
-    return "\n\n".join(descriptions)
-
-# Exemplo de como obter a string formatada (para referência)
-# TOOL_DESCRIPTIONS_FOR_PROMPT = get_tool_descriptions()
-# print(TOOL_DESCRIPTIONS_FOR_PROMPT) 
+    return "\n".join(descriptions) 
