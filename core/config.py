@@ -49,8 +49,10 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
+# <<< REMOVING TAVILY CONFIG >>>
 # Configurações de Ferramentas Externas
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+# TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+# TAVILY_ENABLED = os.getenv("TAVILY_ENABLED", "False").lower() == "true"
 
 # Outras configurações (se necessário)
 # ... 
@@ -67,15 +69,15 @@ MAX_REACT_ITERATIONS = int(os.getenv('MAX_REACT_ITERATIONS', '10'))
 
 # --- Configurações do Servidor LLM (llama.cpp) ---
 # Caminho para o executável do servidor llama.cpp (se não estiver no PATH)
-LLAMA_SERVER_EXECUTABLE = os.environ.get("LLAMA_SERVER_EXECUTABLE", os.path.join(PROJECT_ROOT, "llama.cpp/build/bin/llama-server")) # Corrigido para apontar para o build
+# LLAMA_SERVER_EXECUTABLE = os.environ.get("LLAMA_SERVER_EXECUTABLE", os.path.join(PROJECT_ROOT, "llama.cpp/build/bin/llama-server")) # Corrigido para apontar para o build <<< COMMENTED OUT - Using main binary directly
 # Caminho para o arquivo do modelo GGUF
-LLAMA_MODEL_PATH = os.environ.get("LLAMA_MODEL_PATH", "models/openchat-3.5.Q4_K_M.gguf") # <-- Atualizado para OpenChat
+LLAMA_MODEL_PATH = os.environ.get("LLAMA_MODEL_PATH", os.path.join(PROJECT_ROOT, "models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf")) # <<< Using Llama 3, ensure path relative to PROJECT_ROOT
 # Argumentos adicionais para passar ao servidor llama.cpp
 # Ex: número de camadas GPU, tamanho do contexto, etc.
 # IMPORTANTE: Garanta que o tamanho do contexto (-c) aqui seja consistente ou maior que o usado nos prompts.
-LLAMA_SERVER_ARGS = os.environ.get("LLAMA_SERVER_ARGS", "-c 4096 --temp 0.2 --top-p 0.95 --repeat-penalty 1.15 --ngl 28") # <-- Novos args para OpenChat
+# LLAMA_SERVER_ARGS = os.environ.get("LLAMA_SERVER_ARGS", "-c 4096 --temp 0.2 --top-p 0.95 --repeat-penalty 1.15 --ngl 28") # <-- Novos args para OpenChat <<< COMMENTED OUT - Args passed directly to main binary
 # URL completa do endpoint de chat do servidor llama.cpp
-LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions")
+# LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions") <<< COMMENTED OUT - Not using HTTP server
 # Cabeçalhos HTTP adicionais (ex: para autenticação, se necessário)
 LLAMA_DEFAULT_HEADERS = {
     "Content-Type": "application/json",

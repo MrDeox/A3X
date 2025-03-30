@@ -1,7 +1,5 @@
 import re
 import requests
-import os
-import traceback # Keep for potential debugging
 import json
 # --- Import BASE URL from config ---
 from core.config import LLAMA_SERVER_URL as BASE_LLM_URL
@@ -155,8 +153,8 @@ def skill_generate_code(action_input: dict, agent_memory: dict, agent_history: l
               raw_resp_text = response.text[:200] # Get first 200 chars
          return {"status": "error", "action": "generate_code_failed", "data": {"message": f"Erro ao decodificar JSON da resposta do LLM: {e}. Resposta recebida (início): '{raw_resp_text}'"}}
     except Exception as e:
-        print(f"\n[Erro Inesperado na Skill Generate] {e}")
-        traceback.print_exc() # Print traceback for unexpected errors
+        # Use logger.exception to include traceback info automatically
+        logger.exception(f"Erro inesperado na Skill Generate: {e}")
         return {
             "status": "error",
             "action": "generate_code_failed",

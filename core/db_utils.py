@@ -41,26 +41,26 @@ def get_db_connection():
     conn = None # Inicializa conn
     try:
         conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False) 
+        # conn.enable_load_extension(True)  # Temporariamente desabilitado para contornar erro em Python compilado sem suporte a SQLite extensions
         conn.row_factory = sqlite3.Row 
         
         # Tenta carregar extensões VSS
-        conn.enable_load_extension(True)
-        try:
-            # Verifica se os arquivos existem
-            if not os.path.exists(VECTOR_EXTENSION_PATH):
-                logger.warning(f"Arquivo da extensão vector0 NÃO encontrado no caminho esperado: {VECTOR_EXTENSION_PATH}")
-            if not os.path.exists(VSS_EXTENSION_PATH):
-                logger.warning(f"Arquivo da extensão vss0 NÃO encontrado no caminho esperado: {VSS_EXTENSION_PATH}")
+        # try:
+        #     # Verifica se os arquivos existem
+        #     if not os.path.exists(VECTOR_EXTENSION_PATH):
+        #         logger.warning(f"Arquivo da extensão vector0 NÃO encontrado no caminho esperado: {VECTOR_EXTENSION_PATH}")
+        #     if not os.path.exists(VSS_EXTENSION_PATH):
+        #         logger.warning(f"Arquivo da extensão vss0 NÃO encontrado no caminho esperado: {VSS_EXTENSION_PATH}")
             
-            # Carrega as extensões na ordem correta
-            conn.load_extension(VECTOR_EXTENSION_PATH)
-            logger.info("Extensão vector0 carregada com sucesso!")
+        #     # Carrega as extensões na ordem correta
+        #     conn.load_extension(VECTOR_EXTENSION_PATH)
+        #     logger.info("Extensão vector0 carregada com sucesso!")
             
-            conn.load_extension(VSS_EXTENSION_PATH)
-            logger.info("Extensão vss0 carregada com sucesso!")
-        except sqlite3.OperationalError as e:
-             logger.warning(f"Falha ao carregar extensão sqlite-vss: {e}. Busca vetorial estará DESABILITADA.")
-        conn.enable_load_extension(False) 
+        #     conn.load_extension(VSS_EXTENSION_PATH)
+        #     logger.info("Extensão vss0 carregada com sucesso!")
+        # except sqlite3.OperationalError as e:
+        #      logger.warning(f"Falha ao carregar extensão sqlite-vss: {e}. Busca vetorial estará DESABILITADA.")
+        # conn.enable_load_extension(False) 
 
         return conn
     except sqlite3.Error as e:

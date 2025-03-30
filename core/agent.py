@@ -5,7 +5,7 @@ import datetime
 import os
 import sys
 import traceback
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any, List, AsyncGenerator
 
 import requests
 
@@ -14,9 +14,8 @@ from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_UR
 from core.tools import TOOLS, get_tool_descriptions
 # Removed memory skill import as it's not directly used here anymore
 from core.db_utils import save_agent_state, load_agent_state
-from core.prompt_builder import build_react_prompt, build_final_answer_prompt
-# <<< ADDED IMPORT >>>
-from core.format_recovery import parse_react_output
+from core.prompt_builder import build_react_prompt
+from core.agent_parser import parse_llm_response
 # <<< CORRECTED IMPORTS (Replaced core.utils) >>>
 # from core.utils import agent_logger, setup_agent_logger, history_manager, tool_executor, llm_client, agent_parser, agent_reflector
 import logging # Already imported, but ensure it is
@@ -48,6 +47,26 @@ agent_logger = logging.getLogger(__name__)
 # Constante para ID do estado do agente
 AGENT_STATE_ID = 1
 
+# --- Helper for Simple Task Detection ---
+def _is_simple_list_files_task(objective: str) -> bool:
+    """Checks if the objective is likely a simple request to list files."""
+    # Simple keyword check for now, can be improved
+    objective_lower = objective.lower().strip()
+    keywords = ["liste", "listar", "lista", "mostre", "arquivos", "diretório", "pasta"]
+    # Check if it contains list keywords and not complex actions like "read and list" or "delete"
+    if (any(kw in objective_lower for kw in keywords) and
+            "ler" not in objective_lower and
+            "conteúdo" not in objective_lower and
+            "criar" not in objective_lower and
+            "deletar" not in objective_lower and
+            "apagar" not in objective_lower and
+            "executar" not in objective_lower):
+        # Basic check, assumes simple listing if these keywords are present
+        # And keywords for other actions are absent.
+        # A more robust check might involve simple NLP or regex.
+        return True
+    return False
+
 # --- Classe ReactAgent ---
 class ReactAgent:
     def __init__(self, llm_url: str, system_prompt: str):
@@ -62,14 +81,16 @@ class ReactAgent:
         # Removed _last_error_type, not needed with new handlers
         agent_logger.info(f"[ReactAgent INIT] Agente inicializado. Memória carregada: {list(self._memory.keys())}")
 
-    # --- run (Refatorado para iterar sobre o plano) ---
-    async def run(self, objective: str) -> str:
-        """Executa o ciclo ReAct (agora orientado por plano) para atingir o objetivo."""
-        # Initialize potential final response
-        final_response: Optional[str] = None
+    # --- run (Refatorado para ser um AsyncGenerator) ---
+    async def run(self, objective: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Executa o ciclo ReAct (agora orientado por plano) para atingir o objetivo,
+        gerando cada passo (Thought, Action, Observation, Final Answer) como um dicionário.
+        """
         log_prefix_base = "[ReactAgent]"
-        self._current_plan = None # Ensure plan is reset
-        plan_to_execute: List[str] = [] # Plan steps to iterate over
+        self._current_plan = None
+        plan_to_execute: List[str] = []
+        final_answer_yielded = False # Flag para controlar se a resposta final foi gerada
 
         try:
             # --- Setup History --- 
@@ -79,312 +100,170 @@ class ReactAgent:
 
             # --- Planning Phase --- 
             agent_logger.info("--- Generating Plan ---")
-            tool_desc = get_tool_descriptions()
-            generated_plan = await generate_plan(objective, tool_desc, agent_logger, self.llm_url)
-            
-            if generated_plan:
-                plan_to_execute = generated_plan
+            if _is_simple_list_files_task(objective):
+                agent_logger.info("[Planner] Detected simple list_files task. Skipping complex planning.")
+                # Create a direct plan: 1. list_files, 2. final_answer
+                plan_to_execute = [
+                    f"Use the list_files tool for the objective: '{objective}'", # Step description for clarity
+                    "Use the final_answer tool to provide the list of files."
+                ]
                 plan_str = json.dumps(plan_to_execute, indent=2, ensure_ascii=False)
-                agent_logger.info(f"Plan Generated:\n{plan_str}")
+                agent_logger.info(f"Simple Plan Generated:\n{plan_str}")
             else:
-                agent_logger.warning("Failed to generate a plan. Proceeding with the original objective as a single-step plan.")
-                plan_to_execute = [objective] # Fallback: Treat original objective as a 1-step plan
-            
+                tool_desc = get_tool_descriptions()
+                generated_plan = await generate_plan(objective, tool_desc, agent_logger, self.llm_url)
+                if generated_plan:
+                    plan_to_execute = generated_plan
+                    plan_str = json.dumps(plan_to_execute, indent=2, ensure_ascii=False)
+                    agent_logger.info(f"Plan Generated:\n{plan_str}")
+                else:
+                    agent_logger.warning("Failed to generate a plan. Proceeding with objective as single step.")
+                    plan_to_execute = [objective]
             agent_logger.info("--- Starting Plan Execution ---")
 
-            # --- Plan Execution Loop --- 
+            # --- Plan Execution Loop / ReAct Cycle ---
             current_step_index = 0
             total_iterations = 0
-            max_total_iterations = self.max_iterations # Use configured max iterations
+            max_total_iterations = self.max_iterations
 
             while current_step_index < len(plan_to_execute) and total_iterations < max_total_iterations:
-                current_step = plan_to_execute[current_step_index]
-                agent_logger.info(f"--- Executing Plan Step {current_step_index + 1}/{len(plan_to_execute)} --- Total Iterations: {total_iterations + 1}/{max_total_iterations}")
+                current_step_objective = plan_to_execute[current_step_index]
+                log_prefix = f"{log_prefix_base} Cycle {total_iterations + 1} (Step {current_step_index + 1}/{len(plan_to_execute)})"
+                agent_logger.info(f"\n{log_prefix} (Step Objective: '{current_step_objective[:60]}...')" )
 
-                should_break, final_response_from_cycle = await self._execute_react_cycle(
-                    cycle_num=total_iterations + 1, 
-                    log_prefix_base=log_prefix_base,
-                    current_step_objective=current_step, # Pass step as the objective for this cycle
-                    objective=objective, # Pass overall objective
-                    plan=plan_to_execute, # Pass the plan
-                    current_step_index=current_step_index # Pass step index
+                # Trim history
+                self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
+
+                # Build Prompt
+                prompt = build_react_prompt(
+                    objective=current_step_objective, # <<< Use step objective for react cycle
+                    history=self._history,
+                    system_prompt=self.system_prompt,
+                    tool_descriptions=get_tool_descriptions(),
+                    agent_logger=agent_logger
                 )
-                
-                total_iterations += 1 
 
-                if should_break:
-                    final_response = final_response_from_cycle # Update final response (could be success or error)
-                    agent_logger.info(f"{log_prefix_base} Execution loop breaking due to cycle result (Final Answer or Error). Step Index: {current_step_index}")
-                    break # Exit the while loop
+                # Call LLM
+                agent_logger.info(f"{log_prefix} Calling LLM...")
+                llm_response_raw = ""
+                try:
+                    # Usa a função call_llm (não geradora aqui)
+                    async for chunk in call_llm(prompt, llm_url=self.llm_url, stream=False):
+                        llm_response_raw += chunk # Acumula a resposta não-streamed
+                    agent_logger.info(f"{log_prefix} LLM Response received.")
+                    agent_logger.debug(f"{log_prefix} Raw LLM Response:\n{llm_response_raw}")
+                except Exception as llm_err:
+                    agent_logger.exception(f"{log_prefix} Error calling LLM:")
+                    yield {"type": "error", "content": f"Failed to get response from LLM: {llm_err}"}
+                    return # Encerra o gerador em erro de LLM
+
+                # Parse LLM Response
+                try:
+                    # <<< CORRECTED: Use parse_llm_response from agent_parser >>>
+                    parsed_output_tuple = parse_llm_response(llm_response_raw, agent_logger)
+                    # Handle potential None return from parser if JSON is invalid but doesn't raise
+                    if parsed_output_tuple is None:
+                         agent_logger.error(f"{log_prefix} Failed to parse LLM response (parse_llm_response returned None). Raw: '{llm_response_raw[:100]}...'")
+                         yield {"type": "error", "content": "Failed to parse LLM response."}
+                         return # Stop if parsing fundamentally failed
+
+                    # Convert tuple to dict for consistent handling downstream
+                    thought, action_name, action_input = parsed_output_tuple
+                    parsed_output = {}
+                    if thought: parsed_output["thought"] = thought
+                    if action_name: parsed_output["action_name"] = action_name
+                    # Ensure action_input is always a dict, even if None from parser (e.g., for final_answer)
+                    parsed_output["action_input"] = action_input if action_input is not None else {}
+
+                except json.JSONDecodeError as parse_err:
+                    agent_logger.error(f"{log_prefix} Failed to parse LLM response (JSONDecodeError). Raw: '{llm_response_raw[:100]}...'")
+                    # Log the full error and traceback
+                    agent_logger.exception(f"{log_prefix} JSON Parsing Traceback:")
+                    # Consider adding reflection/recovery logic here if desired
+                    yield {"type": "error", "content": f"Failed to parse LLM response: {parse_err}"}
+                    return # Stop if parsing failed
+
+                # Yield Thought
+                if parsed_output.get("thought"):
+                    thought = parsed_output["thought"]
+                    self._history.append(f"Thought: {thought}")
+                    yield {"type": "thought", "content": thought}
                 else:
-                    # If the cycle completed normally (no break), move to the next step
-                    agent_logger.info(f"{log_prefix_base} Step {current_step_index + 1} completed. Moving to next step.")
-                    current_step_index += 1
+                    agent_logger.warning(f"{log_prefix} No 'Thought' found in parsed output.")
+                    # Pode acontecer, continua para Action
+
+                # Handle Action or Final Answer
+                if "action_name" in parsed_output and parsed_output["action_name"] == "final_answer":
+                    final_answer = parsed_output.get("action_input", {}).get("answer", "No final answer provided.")
+                    agent_logger.info(f"{log_prefix} Final Answer received: '{final_answer[:100]}...'")
+                    self._history.append(f"Final Answer: {final_answer}")
+                    yield {"type": "final_answer", "content": final_answer}
+                    final_answer_yielded = True
+                    break # Fim do ciclo e do loop while
+
+                elif "action_name" in parsed_output:
+                    action_name = parsed_output["action_name"]
+                    action_input = parsed_output.get("action_input", {})
+                    agent_logger.info(f"{log_prefix} Action: {action_name}, Input: {action_input}")
+
+                    # Yield Action
+                    yield {"type": "action", "tool_name": action_name, "tool_input": action_input}
+
+                    # Execute Action
+                    tool_result = execute_tool(action_name, action_input, TOOLS, agent_logger)
+                    agent_logger.info(f"{log_prefix} Tool Result Status: {tool_result.get('status', 'N/A')}")
+                    # <<< ERRO AQUI: observation_str não é usado em yield, e history deve ter string <<< CORREÇÃO ABAIXO
+                    # observation_str = json.dumps(tool_result, indent=2, ensure_ascii=False) # Format result for history/yield
+                    try:
+                         observation_str_for_history = json.dumps(tool_result) # Compacto para histórico
+                    except TypeError:
+                         observation_str_for_history = str(tool_result) # Fallback se não serializável
+
+                    # Yield Observation (yield o dicionário completo)
+                    self._history.append(f"Observation: {observation_str_for_history}")
+                    yield {"type": "observation", "content": tool_result} # Yield the dict result
+
+                    # Reflection (Optional, pode ser habilitado/desabilitado)
+                    # reflection = reflect_on_observation(objective, self._history, agent_logger, self.llm_url)
+                    # if reflection:
+                    #    agent_logger.info(f"{log_prefix} Reflection: {reflection}")
+                    #    self._history.append(f"Reflection: {reflection}") # Add reflection to history if needed
+
+                else:
+                    agent_logger.error(f"{log_prefix} No valid Action or Final Answer found in parsed output.")
+                    yield {"type": "error", "content": "LLM did not provide a valid action or final answer."}
+                    break # Parar se o LLM não der uma ação válida
+
+                # Increment counters and move to next step if applicable
+                total_iterations += 1
+                # A lógica de avançar `current_step_index` pode ser mais complexa,
+                # dependendo se a ação atual cumpriu o passo do plano.
+                # Por simplicidade, avançamos o passo do plano após cada ciclo de ação bem-sucedido.
+            current_step_index += 1
 
             # --- After Loop --- 
-            if final_response is None: # Check if loop finished without a final answer or break
+            if not final_answer_yielded: # Se saiu do loop sem dar yield em final_answer
                 if total_iterations >= max_total_iterations:
-                    # Reached max iteration limit during plan execution
-                    agent_logger.warning(f"{log_prefix_base} Maximum total iterations ({max_total_iterations}) reached during plan execution.")
-                    last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "No observation."
-                    final_response = f"Erro: Maximum total iterations ({max_total_iterations}) reached. Last observation: {last_observation}"
+                    msg = f"Agent stopped: Maximum total iterations ({max_total_iterations}) reached."
+                    agent_logger.warning(f"{log_prefix_base} {msg}")
+                    yield {"type": "error", "content": msg}
                 elif current_step_index >= len(plan_to_execute):
-                    # Completed all plan steps (and did *not* hit max iterations)
-                    agent_logger.warning(f"{log_prefix_base} Plan execution completed, but no final answer action was explicitly returned.")
-                    last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "No observation."
-                    final_response = f"Plan completed. Last observation: {last_observation}" 
+                    msg = "Agent stopped: Plan execution completed, but no 'final_answer' action was triggered."
+                    agent_logger.warning(f"{log_prefix_base} {msg}")
+                    yield {"type": "info", "content": msg} # Talvez não seja um erro, apenas terminou o plano
                 else:
-                    # Should not happen if loop logic is correct
-                    agent_logger.error(f"{log_prefix_base} Loop exited unexpectedly without setting final_response.")
-                    final_response = "Erro: Loop concluído inesperadamente."
-
-            # --- End of ReAct Cycle Loop ---
+                     msg = "Agent stopped unexpectedly after loop."
+                     agent_logger.error(f"{log_prefix_base} {msg}")
+                     yield {"type": "error", "content": msg}
 
         except Exception as main_loop_err:
-            agent_logger.exception(f"{log_prefix_base} Exceção inesperada no loop principal ReAct: {main_loop_err}")
-            final_response = f"Erro Interno Crítico no Agente: {main_loop_err}"
+            agent_logger.exception(f"{log_prefix_base} Unexpected exception during agent run: {main_loop_err}")
+            yield {"type": "error", "content": f"Critical Agent Error: {main_loop_err}"}
 
         finally:
             # --- Save State --- 
-            agent_logger.info(f"{log_prefix_base} Salvando estado final do agente (ID: {AGENT_STATE_ID}).")
+            agent_logger.info(f"{log_prefix_base} Saving final agent state (ID: {AGENT_STATE_ID}).")
             save_agent_state(AGENT_STATE_ID, self._memory)
-            agent_logger.info(f"{log_prefix_base} Ciclo ReAct finalizado. Retornando: '{final_response[:100]}...'" if final_response else "[No Final Response]")
+            agent_logger.info(f"{log_prefix_base} Agent run finished.")
 
-        return final_response if final_response is not None else "Erro: O agente finalizou sem uma resposta definida."
-
-    # --- _execute_react_cycle (Integrate Reflector) ---
-    async def _execute_react_cycle(
-        self,
-        cycle_num: int,
-        log_prefix_base: str,
-        current_step_objective: str, # Renamed for clarity
-        objective: str, # Overall objective
-        plan: List[str], # Current plan
-        current_step_index: int # Current step index
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Executes a single ReAct cycle: Prompt LLM -> Parse Response -> Execute Action -> Reflect -> Decide.
-        Returns (should_break_loop, response_on_break)
-        """
-        log_prefix = f"{log_prefix_base} Cycle {cycle_num}/{len(plan) if plan else '?'}"
-        agent_logger.info(f"\n{log_prefix} (Step Objective: '{current_step_objective[:60]}...' Inicio: {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]})" )
-
-        # <<< ADDED: Trim history before prompt generation >>>
-        self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
-
-        # --- START ADDED DEBUG LOGGING (Keep for now) ---
-        agent_logger.debug(f"{log_prefix} --- Start Cycle Input ---")
-        agent_logger.debug(f"{log_prefix} Objective: {current_step_objective}")
-        try:
-            history_to_log = self._history[-(MAX_HISTORY_TURNS * 2):]
-            history_log_str = json.dumps(history_to_log, indent=2, ensure_ascii=False)
-            agent_logger.debug(f"{log_prefix} Relevant History (Last ~{MAX_HISTORY_TURNS} turns):\n{history_log_str}")
-        except Exception as log_err:
-            agent_logger.error(f"{log_prefix} Failed to serialize history for logging: {log_err}")
-        agent_logger.debug(f"{log_prefix} --- End Cycle Input ---")
-        # --- END ADDED DEBUG LOGGING ---
-
-        start_cycle_time = datetime.datetime.now()
-        # 1. Prepare Prompt
-        prompt = build_react_prompt(
-            objective=objective,
-            history=self._history,
-            system_prompt=self.system_prompt,
-            tool_descriptions=get_tool_descriptions(),
-            agent_logger=agent_logger
-        )
-
-        # 2. Call LLM
-        agent_logger.info(f"{log_prefix} Calling LLM...")
-        llm_response_raw = ""
-        async for chunk in call_llm(messages=prompt, stream=False):
-             llm_response_raw = chunk # Should yield only one chunk
-
-        if not llm_response_raw:
-            agent_logger.error(f"{log_prefix} LLM call failed. Stopping plan.")
-            # Reflect on the LLM failure
-            observation_dict = {"status": "error", "action": "llm_failed", "data": {"message": "LLM did not return a response."}}
-            decision, _ = await reflect_on_observation(
-                objective=objective, plan=plan, current_step_index=current_step_index,
-                action_name="_call_llm", action_input={},
-                observation_dict=observation_dict,
-                history=self._history, memory=self._memory, agent_logger=agent_logger,
-                agent_instance=self
-            )
-            return True, "Erro: Falha na chamada ao LLM."
-
-        agent_logger.info(f"{log_prefix} LLM Response (Raw):\n{llm_response_raw}")
-        self._history.append(f"LLM Response:\n{llm_response_raw}") # Add raw response for context
-
-        # 3. Parse LLM Response using the new function
-        agent_logger.info(f"{log_prefix} Parsing LLM response...")
-        parsed_output = parse_react_output(llm_response_raw)
-
-        if "error" in parsed_output:
-            parse_error_str = parsed_output["error"]
-            agent_logger.error(f"{log_prefix} Parsing Failed: {parse_error_str}")
-            observation_dict = {"status": "error", "action": "parsing_failed", "data": {"message": parse_error_str}}
-            observation_str = f"Observation: {json.dumps(observation_dict)}" # Keep observation simple
-            self._history.append(observation_str)
-            # Call Reflector for Parse Error
-            decision, _ = await reflect_on_observation(
-                objective=objective, plan=plan, current_step_index=current_step_index,
-                action_name="_parse_llm", action_input={},
-                observation_dict=observation_dict,
-                history=self._history, memory=self._memory, agent_logger=agent_logger,
-                agent_instance=self
-            )
-            agent_logger.error(f"{log_prefix} Stopping plan due to LLM response parsing error (Reflector decision: {decision})")
-            return True, f"Erro: Falha ao processar resposta do LLM ({parse_error_str})"
-        
-        # Extract successfully parsed components
-        thought = parsed_output.get("thought", "N/A") # Handle missing thought gracefully
-        action_name = parsed_output.get("action")
-        action_input = parsed_output.get("action_input", {}) # Default to empty dict if missing
-
-        if not action_name:
-            missing_action_error = "Formato ReAct inválido: Chave 'Action:' obrigatória está ausente ou mal formatada."
-            agent_logger.error(f"{log_prefix} Parsing Failed: {missing_action_error}")
-            observation_dict = {"status": "error", "action": "parsing_failed", "data": {"message": missing_action_error}}
-            observation_str = f"Observation: {json.dumps(observation_dict)}"
-            self._history.append(observation_str)
-            # Call Reflector
-            decision, _ = await reflect_on_observation(
-                 objective=objective, plan=plan, current_step_index=current_step_index,
-                 action_name="_parse_llm", action_input={},
-                 observation_dict=observation_dict,
-                 history=self._history, memory=self._memory, agent_logger=agent_logger,
-                 agent_instance=self
-            )
-            agent_logger.error(f"{log_prefix} Stopping plan due to missing 'Action:' (Reflector decision: {decision})")
-            return True, f"Erro: {missing_action_error}"
-
-        agent_logger.info(f"{log_prefix} Thought: {thought}")
-        agent_logger.info(f"{log_prefix} Ação Decidida: {action_name}, Input: {action_input}")
-
-        # 4. Executar Ação ou Finalizar e obter observation_dict
-        observation_dict: Optional[Dict] = None
-        observation_str: Optional[str] = None
-        final_answer_text: Optional[str] = None
-
-        if action_name == "final_answer":
-            # final_answer_text = action_input.get("answer", "Finalizado sem resposta específica.") # <<< OLD: Get from input
-            # agent_logger.info(f"{log_prefix} Ação Final: {final_answer_text}")
-            # # Create observation dict for reflector
-            # observation_dict = {"status": "success", "action": "final_answer", "data": {"answer": final_answer_text}}
-            # observation_str = f"Final Answer: {final_answer_text}" # History uses slightly different format
-
-            # <<< NEW: Stream final answer from LLM >>>
-            agent_logger.info(f"{log_prefix} Preparing to stream final answer...")
-            print(f"\n[A³X]: ", end="") # Print prefix for streaming output
-            
-            # Collect relevant history (adjust slice as needed)
-            relevant_history = self._history[-(MAX_HISTORY_TURNS*2):] # Get recent turns
-
-            # Build prompt and call LLM in streaming mode
-            prompt_messages = build_final_answer_prompt(objective, relevant_history, agent_logger)
-            
-            streamed_answer_text = ""
-            try:
-                async for chunk in call_llm(prompt_messages, stream=True):
-                    print(chunk, end="", flush=True)
-                    streamed_answer_text += chunk
-                print() # Final newline after streaming completes
-                agent_logger.info(f"{log_prefix} Finished streaming final answer.")
-                final_answer_text = streamed_answer_text # Store the fully streamed answer
-            except Exception as stream_err:
-                agent_logger.exception(f"{log_prefix} Error during final answer streaming:")
-                print(f"\n[Erro ao gerar resposta final: {stream_err}]")
-                final_answer_text = f"[Erro ao gerar resposta final: {stream_err}]"
-
-            # Still need observation_dict and observation_str for reflector/history
-            observation_dict = {"status": "success", "action": "final_answer", "data": {"answer": final_answer_text}}
-            observation_str = f"Final Answer: {final_answer_text}" 
-
-        elif action_name in self.tools:
-            tool_result = execute_tool(
-                tool_name=action_name,
-                action_input=action_input,
-                tools_dict=self.tools,
-                agent_logger=agent_logger
-            )
-            observation_dict = tool_result # Tool result is already a dict
-            # Format observation string for history
-            try:
-                observation_str = f"Observation: {json.dumps(observation_dict, ensure_ascii=False)}"
-            except TypeError as json_err:
-                agent_logger.error(f"{log_prefix} Failed to serialize tool_result to JSON: {json_err}. Result: {tool_result}")
-                observation_dict = {"status": "error", "action": "internal_error", "data": {"message": f"Failed to serialize tool result: {json_err}"}}
-                observation_str = f"Observation: {json.dumps(observation_dict)}"
-            # Save code to memory if the action was execute_code (this seems misplaced, should probably be done in reflector or executor)
-            # if action_name == "execute_code":
-            #     self._memory['last_code'] = action_input.get('code')
-            
-        else: # Tool not found
-            agent_logger.warning(f"{log_prefix} Tool '{action_name}' not found.")
-            observation_dict = {"status": "error", "action": "tool_not_found", "data": {"message": f"A ferramenta '{action_name}' não existe."}}
-            observation_str = f"Observation: {json.dumps(observation_dict)}"
-        
-        # Append observation to history AFTER potential tool execution
-        if observation_str: 
-            self._history.append(observation_str)
-
-        # 5. Reflect on Observation
-        if observation_dict:
-            agent_logger.info(f"{log_prefix} Calling Reflector (Duration: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
-            # <<< AWAIT >>>
-            decision, new_plan = await reflect_on_observation(
-                objective=objective, # Overall objective
-                plan=plan, 
-                current_step_index=current_step_index,
-                action_name=action_name, # Action attempted
-                action_input=action_input,
-                observation_dict=observation_dict,
-                history=self._history, # History *includes* the latest observation
-                memory=self._memory,
-                agent_logger=agent_logger,
-                agent_instance=self # <<< Pass agent instance >>>
-            )
-            agent_logger.info(f"[Reflector] Decision: {decision}")
-        else:
-            # Should not happen if logic above is correct
-            agent_logger.error(f"{log_prefix} Observation dictionary was None, cannot reflect. Stopping.")
-            decision = "stop_plan"
-            new_plan = None
-
-        # 6. Process Reflector Decision
-        should_break_loop = False
-        response_on_break = None
-
-        if decision == "continue_plan":
-            should_break_loop = False
-        elif decision == "plan_complete":
-            should_break_loop = True
-            response_on_break = final_answer_text if final_answer_text is not None else observation_dict.get("data", {}).get("answer", "Plan Complete.")
-        elif decision == "stop_plan":
-            should_break_loop = True
-            error_detail = observation_dict.get("data", {}).get("message", "Stopped by Reflector")
-            response_on_break = f"Erro: Plano interrompido ({error_detail})"
-        elif decision == "replace_step_and_retry":
-             agent_logger.warning(f"[Reflector] Decision '{decision}' requires plan modification - not fully implemented. Treating as stop_plan.")
-             # TODO: Implement plan update logic here (update plan list, maybe reset index?)
-             # self._current_plan = new_plan # Need to modify agent's plan directly?
-             should_break_loop = True # Stop for now
-             response_on_break = "Erro: Replanning/Retry não implementado."
-        elif decision == "retry_step":
-             agent_logger.warning(f"[Reflector] Decision '{decision}' not implemented. Treating as stop_plan.")
-             should_break_loop = True # Stop for now
-             response_on_break = "Erro: Retry Step não implementado."
-        elif decision == "ask_user":
-             agent_logger.warning(f"[Reflector] Decision '{decision}' not implemented. Treating as stop_plan.")
-             should_break_loop = True # Stop for now
-             response_on_break = "Erro: Ask User não implementado."
-        else:
-            agent_logger.error(f"{log_prefix} Decisão desconhecida do Reflector: '{decision}'. Parando por segurança.")
-            should_break_loop = True
-            response_on_break = f"Erro: Decisão desconhecida do Reflector: {decision}"
-
-        return should_break_loop, response_on_break
-
-    # <<< REMOVED METHOD: _execute_tool >>>
-    # <<< REMOVED METHOD: _trim_history >>>
+    # --- REMOVED _execute_react_cycle ---
