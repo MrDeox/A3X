@@ -85,7 +85,12 @@ async def generate_plan(
 
     # 2. Call the LLM
     try:
-        llm_response_raw = await call_llm(planning_prompt_messages, llm_url=llm_url)
+        # <<< MODIFIED: Consume async generator for non-streaming call >>>
+        llm_response_raw = ""
+        async for chunk in call_llm(planning_prompt_messages, llm_url=llm_url, stream=False):
+            llm_response_raw = chunk # Should yield only one chunk
+        
+        # llm_response_raw = await call_llm(planning_prompt_messages, llm_url=llm_url) # <<< OLD WAY
         agent_logger.debug(f"[Planner] Raw LLM response:\n{llm_response_raw}")
     except Exception as e:
         agent_logger.exception(f"[Planner] Error calling LLM for planning: {e}")
