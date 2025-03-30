@@ -87,9 +87,32 @@ async def generate_plan(
     try:
         # <<< MODIFIED: Consume async generator for non-streaming call >>>
         llm_response_raw = ""
-        async for chunk in call_llm(planning_prompt_messages, llm_url=llm_url, stream=False):
-            llm_response_raw = chunk # Should yield only one chunk
-        
+        # Instead of async for, directly get the iterator and await the first item
+        llm_response_iterator = call_llm(planning_prompt_messages, llm_url=llm_url, stream=False)
+        # Ensure we get an async iterator
+        if hasattr(llm_response_iterator, '__aiter__'):
+            # <<< REVERTED: Use simple async for loop >>>
+            async for chunk in llm_response_iterator:
+                llm_response_raw += chunk
+            # <<< END REVERT >>>
+            # <<< MODIFIED: Collect items using async list comprehension >>>
+            # response_chunks = [chunk async for chunk in llm_response_iterator]
+            # if response_chunks:
+            #     llm_response_raw = response_chunks[0]
+            # else:
+            #      agent_logger.warning("[Planner] LLM call (non-streaming) returned no chunks.")
+            #      llm_response_raw = "" # Treat as empty response
+            # async_iterator = llm_response_iterator.__aiter__()
+            # try:
+            #     llm_response_raw = await async_iterator.__anext__()
+            # except StopAsyncIteration:
+            #     agent_logger.warning("[Planner] LLM call (non-streaming) returned no chunks.")
+            #     llm_response_raw = "" # Treat as empty response
+        else:
+            # This case shouldn't happen if call_llm always returns an async generator/iterable
+            agent_logger.error("[Planner] LLM call (non-streaming) did not return an async iterable object.")
+            return None
+
         # llm_response_raw = await call_llm(planning_prompt_messages, llm_url=llm_url) # <<< OLD WAY
         agent_logger.debug(f"[Planner] Raw LLM response:\n{llm_response_raw}")
     except Exception as e:

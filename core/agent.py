@@ -5,7 +5,7 @@ import os
 from typing import Dict, Any, List, AsyncGenerator, Optional
 
 # Local imports
-from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS, MAX_META_DEPTH, MAX_TOKENS_FALLBACK, CONTEXT_SIZE
+from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_DEFAULT_HEADERS, MAX_META_DEPTH, MAX_TOKENS_FALLBACK, CONTEXT_SIZE
 from core.tools import TOOLS, get_tool_descriptions
 from core.db_utils import save_agent_state, load_agent_state
 from core.prompt_builder import build_react_prompt
@@ -120,8 +120,14 @@ class ReactAgent:
         """Executa a ferramenta especificada com os inputs fornecidos."""
         agent_logger.info(f"{log_prefix} Executing Action: {action_name} with input: {action_input}")
         try:
-            # Pass memory and history to the tool
-            tool_result = execute_tool(action_name, action_input, self._memory, self._history, agent_logger)
+            # <<< CORRECTED CALL: Pass arguments in the correct order >>>
+            tool_result = execute_tool(
+                tool_name=action_name, 
+                action_input=action_input, 
+                tools_dict=self.tools, # Pass self.tools
+                agent_logger=agent_logger, # Pass the module logger
+                agent_memory=self._memory # Pass agent memory
+            )
             agent_logger.info(f"{log_prefix} Tool Result Status: {tool_result.get('status', 'N/A')}")
             return tool_result
         except Exception as tool_err:

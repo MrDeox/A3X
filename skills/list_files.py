@@ -37,15 +37,19 @@ MAX_ITEMS = 1000 # Limit for number of items listed
 def skill_list_files(action_input: dict, resolved_path: Path = None, original_path_str: str = None, agent_memory: dict = None, agent_history: list | None = None) -> dict:
     """
     Lists non-hidden files and directories within a specified workspace directory.
+    Optionally filters by a specific file extension.
 
     Relies on the @validate_workspace_path decorator to handle path validation,
-    workspace checks, existence checks, and type checks.
+    workspace checks, existence checks, and type checks for the directory.
 
     Args:
         action_input (dict): The original dictionary passed to the skill, potentially
                              containing 'directory' or an alias.
         resolved_path (Path, injected): The validated, absolute Path object for the
                                        directory, injected by the decorator.
+        extension (str, optional): If provided (e.g., via action_input['extension']),
+                                   filters the results to include only files with this extension.
+                                   Must include the leading dot (e.g., '.py').
         original_path_str (str, injected): The original path string requested,
                                            injected by the decorator.
         agent_memory (dict, optional): Agent's memory (not used).
@@ -57,6 +61,26 @@ def skill_list_files(action_input: dict, resolved_path: Path = None, original_pa
               {"status": "success/error", "action": "directory_listed/list_files_failed",
                "data": {"message": "...", "directory": "...", "items": [...]}}
     """
+    # The decorator handles 'directory'. We need to manually get 'extension'.
+    # <<< MODIFIED: Check for 'file_filter' and 'file_name_pattern' as well >>>
+    possible_keys = ['extension', 'file_filter', 'file_name_pattern', 'filter']
+    extension = None
+    if isinstance(action_input, dict):
+        for key in possible_keys:
+            if key in action_input:
+                extension = action_input[key]
+                break # Use the first one found
+
+    # extension = action_input.get('extension') or action_input.get('file_filter') if isinstance(action_input, dict) else None
+    if extension and not extension.startswith('.'):
+        # Handle glob patterns like '*.py'
+        if '*.' in extension:
+            extension = extension.replace('*.', '.') # Normalize to just the extension
+        elif not extension.startswith('.'):
+            extension = "." + extension # Ensure leading dot for simple extensions
+    if extension == '.': # Ignore if just a dot
+        extension = None
+
     # The decorator has already validated 'directory' from action_input, resolved it to 'resolved_path',
     # checked it exists, is a directory, and is within the workspace.
     # It also provides the original string via 'original_path_str'.
@@ -80,6 +104,9 @@ def skill_list_files(action_input: dict, resolved_path: Path = None, original_pa
         items = []
         count = 0
         # Use iterdir on the validated, resolved path
+        filter_active = bool(extension)
+        logger.debug(f"Listing directory: {resolved_path}. Extension filter: '{extension}' (Active: {filter_active})")
+
         for item in resolved_path.iterdir():
             if count >= MAX_ITEMS:
                  logger.warning(f"Item limit ({MAX_ITEMS}) reached while listing '{resolved_path}'. List truncated.")
@@ -89,6 +116,10 @@ def skill_list_files(action_input: dict, resolved_path: Path = None, original_pa
             # but we still need to filter contents *within* the target dir.
             if not item.name.startswith('.'):
                 try:
+                    # Apply extension filter if active AND item is a file
+                    if filter_active and item.is_file() and item.suffix.lower() != extension.lower():
+                        continue # Skip this item if extension doesn't match
+
                     # Make path relative to WORKSPACE_PATH for consistent output
                     relative_path = str(item.relative_to(WORKSPACE_PATH))
                 except ValueError:
@@ -104,8 +135,9 @@ def skill_list_files(action_input: dict, resolved_path: Path = None, original_pa
                     items.append(relative_path)
                 count += 1
 
+        filter_message = f" matching extension '{extension}'" if filter_active else ""
         num_items = len(items)
-        message = f"{num_items} non-hidden item(s) found in '{path_repr}'."
+        message = f"{num_items} non-hidden item(s){filter_message} found in '{path_repr}'."
         if count >= MAX_ITEMS:
             message += f" (Result truncated at {MAX_ITEMS} items)"
 

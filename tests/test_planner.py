@@ -1,4 +1,3 @@
-
 # tests/test_planner.py
 import pytest
 import json
@@ -6,11 +5,13 @@ import logging
 import requests # Import requests *only* for exception types
 from unittest import mock
 from unittest.mock import MagicMock, patch, AsyncMock # Import AsyncMock
+import sys
+import os
 
 # Import the functions/constants to be tested
 from core.planner import generate_plan, PLANNING_SCHEMA
 from core.prompt_builder import build_planning_prompt
-# Do NOT import call_llm directly if we are patching it by string path
+from core.llm_interface import call_llm # Import for patching target
 
 # Mock logger fixture
 @pytest.fixture
@@ -34,17 +35,28 @@ async def test_generate_plan_success(mock_agent_logger, mock_tool_descriptions, 
     """Test successful plan generation."""
     objective = "Test objective"
     expected_plan = ["Step 1", "Step 2"]
-    mock_llm_content = json.dumps(expected_plan) # Planner expects a JSON list string
+    # Ensure the mock content is *exactly* what the parser expects (raw JSON)
+    mock_llm_content = json.dumps(expected_plan)
 
-    # Patch the correct target: where call_llm is LOOKED UP when generate_plan runs
-    # Use new_callable=AsyncMock for async functions
+    # Define an async generator function for the mock
+    async def mock_llm_return():
+        yield mock_llm_content
+
     with patch('core.planner.call_llm', new_callable=AsyncMock) as mock_call_llm:
-        mock_call_llm.return_value = mock_llm_content # Set return value on the AsyncMock
+        # Set the side_effect to the async generator function itself
+        mock_call_llm.return_value = mock_llm_return()
 
         plan = await generate_plan(objective, mock_tool_descriptions, mock_agent_logger, mock_llm_url)
 
+        # Add assertion to check the mock was called correctly
+        mock_call_llm.assert_called_once()
+        
+        # Explicitly check the plan value before assertion
+        print(f"\n[Test Log] generate_plan returned: {plan}\n")
+
     assert plan == expected_plan
-    mock_call_llm.assert_awaited_once()
+    # mock_call_llm.assert_called_once() # Check that the mock was called
+    # Redundant - checked above
     call_args, call_kwargs = mock_call_llm.await_args # Use await_args for async mock
     messages = call_args[0]
     assert any(objective in msg['content'] for msg in messages if msg['role'] == 'user')
@@ -54,17 +66,26 @@ async def test_generate_plan_success(mock_agent_logger, mock_tool_descriptions, 
 async def test_generate_plan_llm_http_error(mock_agent_logger, mock_tool_descriptions, mock_llm_url):
     """Test plan generation when call_llm raises an HTTPError."""
     objective = "Test objective for HTTP error"
-    http_error = requests.exceptions.HTTPError("Mock 500 Error", response=MagicMock())
+    mock_response = MagicMock(spec=requests.Response)
+    mock_response.status_code = 500
+    mock_response.reason = "Internal Server Error"
+    mock_response.url = mock_llm_url
+    mock_response.request = MagicMock(spec=requests.PreparedRequest) # Mock the request attribute
+    http_error = requests.exceptions.HTTPError("Mock 500 Error", response=mock_response)
 
-    # Patch with AsyncMock and set side_effect
+    # Define an async function to raise the error
+    async def mock_llm_raise_http():
+        raise http_error
+        yield # Need yield to be treated as an async generator by caller
+
     with patch('core.planner.call_llm', new_callable=AsyncMock) as mock_call_llm:
-        mock_call_llm.side_effect = http_error
+        # Set side_effect to the error-raising function itself
+        mock_call_llm.return_value = mock_llm_raise_http()
 
         plan = await generate_plan(objective, mock_tool_descriptions, mock_agent_logger, mock_llm_url)
 
     assert plan is None
-    mock_call_llm.assert_awaited_once()
-    # Check the exception log message precisely if possible
+    mock_call_llm.assert_called_once()
     mock_agent_logger.exception.assert_called_once_with(f"[Planner] Error calling LLM for planning: {http_error}")
 
 @pytest.mark.asyncio
@@ -73,14 +94,18 @@ async def test_generate_plan_llm_timeout(mock_agent_logger, mock_tool_descriptio
     objective = "Test objective for timeout"
     timeout_error = requests.exceptions.Timeout("Mock Timeout Error")
 
-    # Patch with AsyncMock and set side_effect
+    # Define an async function to raise the error
+    async def mock_llm_raise_timeout():
+        raise timeout_error
+        yield # Need yield to be treated as an async generator
+
     with patch('core.planner.call_llm', new_callable=AsyncMock) as mock_call_llm:
-        mock_call_llm.side_effect = timeout_error
+        mock_call_llm.return_value = mock_llm_raise_timeout()
 
         plan = await generate_plan(objective, mock_tool_descriptions, mock_agent_logger, mock_llm_url)
 
     assert plan is None
-    mock_call_llm.assert_awaited_once()
+    mock_call_llm.assert_called_once()
     mock_agent_logger.exception.assert_called_once_with(f"[Planner] Error calling LLM for planning: {timeout_error}")
 
 @pytest.mark.asyncio
@@ -89,16 +114,19 @@ async def test_generate_plan_invalid_json_response(mock_agent_logger, mock_tool_
     objective = "Test objective for invalid json"
     mock_llm_content = "This is not valid JSON { nor a block ```json ... ```"
 
-    # Patch with AsyncMock and set return_value
+    async def mock_llm_return_invalid():
+        yield mock_llm_content
+
     with patch('core.planner.call_llm', new_callable=AsyncMock) as mock_call_llm:
-        mock_call_llm.return_value = mock_llm_content
+        mock_call_llm.return_value = mock_llm_return_invalid()
 
         plan = await generate_plan(objective, mock_tool_descriptions, mock_agent_logger, mock_llm_url)
 
     assert plan is None
-    mock_call_llm.assert_awaited_once()
+    mock_call_llm.assert_called_once()
     # Check that an error containing 'No JSON block found' or 'decode' was logged
-    error_logs = [call for call in mock_agent_logger.error.call_args_list if 'JSON' in str(call.args[0])]
+    # Ensure the correct logger method (error) is checked
+    error_logs = [call for call in mock_agent_logger.error.call_args_list if "Failed to decode JSON" in str(call.args[0])]
     assert len(error_logs) > 0, "Expected JSON decode/find error log message"
 
 @pytest.mark.asyncio
@@ -107,16 +135,18 @@ async def test_generate_plan_valid_json_not_list(mock_agent_logger, mock_tool_de
     objective = "Test objective valid json not list"
     mock_llm_content = json.dumps({"plan": "This is not a list"}) # Valid JSON, wrong type
 
-    # Patch with AsyncMock and set return_value
+    async def mock_llm_return_dict():
+        yield mock_llm_content
+
     with patch('core.planner.call_llm', new_callable=AsyncMock) as mock_call_llm:
-        mock_call_llm.return_value = mock_llm_content
+        mock_call_llm.return_value = mock_llm_return_dict()
 
         plan = await generate_plan(objective, mock_tool_descriptions, mock_agent_logger, mock_llm_url)
 
     assert plan is None
-    mock_call_llm.assert_awaited_once()
+    mock_call_llm.assert_called_once()
     # Check that an error containing 'not a list' was logged
-    error_logs = [call for call in mock_agent_logger.error.call_args_list if 'not a list of strings' in str(call.args[0])]
+    error_logs = [call for call in mock_agent_logger.error.call_args_list if "LLM response is not a list" in str(call.args[0])]
     assert len(error_logs) > 0, "Expected 'not a list' error log message"
 
 @pytest.mark.asyncio
@@ -125,16 +155,18 @@ async def test_generate_plan_list_not_strings(mock_agent_logger, mock_tool_descr
     objective = "Test objective plan not strings"
     mock_llm_content = json.dumps(["Step 1", {"step": 2}]) # List contains a dict
 
-    # Patch with AsyncMock and set return_value
+    async def mock_llm_return_mixed_list():
+        yield mock_llm_content
+
     with patch('core.planner.call_llm', new_callable=AsyncMock) as mock_call_llm:
-        mock_call_llm.return_value = mock_llm_content
+        mock_call_llm.return_value = mock_llm_return_mixed_list()
 
         plan = await generate_plan(objective, mock_tool_descriptions, mock_agent_logger, mock_llm_url)
 
     assert plan is None
-    mock_call_llm.assert_awaited_once()
+    mock_call_llm.assert_called_once()
     # Check that an error containing 'not a list of strings' was logged
-    error_logs = [call for call in mock_agent_logger.error.call_args_list if 'not a list of strings' in str(call.args[0])]
+    error_logs = [call for call in mock_agent_logger.error.call_args_list if "Plan list contains non-string elements" in str(call.args[0])]
     assert len(error_logs) > 0, "Expected 'list not strings' error log message"
 
 # --- Test for build_planning_prompt --- 

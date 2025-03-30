@@ -8,7 +8,18 @@ import traceback
 from typing import List, Dict, Optional, AsyncGenerator
 
 # Local imports (assuming config is accessible from core)
-from .config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
+# <<< MODIFIED: Handle potential ImportError or missing LLAMA_SERVER_URL >>>
+try:
+    from .config import LLAMA_DEFAULT_HEADERS
+    # Try importing LLAMA_SERVER_URL, but don't fail if it's missing/commented out
+    from .config import LLAMA_SERVER_URL as _CONFIG_LLAMA_URL 
+except ImportError:
+    LLAMA_DEFAULT_HEADERS = {"Content-Type": "application/json"} # Sensible fallback
+    _CONFIG_LLAMA_URL = None
+    llm_logger.warning("Could not import config from core.config or LLAMA_SERVER_URL is missing. Using defaults.")
+
+# Define a default URL within the module
+_DEFAULT_LLM_URL = "http://127.0.0.1:8080/v1/chat/completions"
 
 # Initialize logger for this module
 llm_logger = logging.getLogger(__name__)
@@ -47,10 +58,16 @@ async def call_llm(
         ValueError: Se a resposta da API não for JSON válido (modo não-streaming) ou se stream falhar.
         StopAsyncIteration: Quando o stream termina (se stream=True).
     """
-    target_url = llm_url if llm_url else LLAMA_SERVER_URL
+    # <<< MODIFIED: Determine target URL robustly >>>
+    # 1. Use llm_url if provided directly
+    # 2. Use LLAMA_SERVER_URL from config if imported successfully
+    # 3. Use the in-module default _DEFAULT_LLM_URL
+    # 4. Use os.getenv as a final fallback (redundant if config loads .env, but safe)
+    target_url = llm_url or _CONFIG_LLAMA_URL or os.getenv("LLAMA_SERVER_URL", _DEFAULT_LLM_URL)
+
     if not target_url:
-        llm_logger.error("LLM API URL não configurada (LLAMA_SERVER_URL).")
-        raise ValueError("LLM API URL não está configurada.")
+        llm_logger.error("LLM API URL could not be determined. Check config and .env.")
+        raise ValueError("LLM API URL could not be determined.")
 
     payload = {
         "messages": messages,

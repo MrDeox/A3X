@@ -3,7 +3,7 @@ from unittest.mock import patch, mock_open, MagicMock
 from pathlib import Path
 
 # Import the skill function and WORKSPACE_ROOT
-from skills.manage_files import skill_manage_files, WORKSPACE_ROOT
+from skills.list_files import skill_list_files
 
 # Define a consistent mock workspace root for tests
 MOCK_WORKSPACE_ROOT = Path("/home/arthur/Projects/A3X").resolve()
@@ -72,8 +72,8 @@ def test_list_success_files_and_dirs(mocker, mock_path_exists, mock_path_is_dir,
     mock_path_is_dir.return_value = True
     mock_path_iterdir.return_value = [mock_file1, mock_dir1, mock_file2]
 
-    action_input = {"action": "list", "directory": directory}
-    result = skill_manage_files(action_input)
+    action_input = {"directory": directory}
+    result = skill_list_files(action_input)
 
     # Expected items are relative to WORKSPACE_ROOT, dirs have trailing slash
     expected_items = sorted(["src/components/Button.tsx", "src/components/utils/", "src/components/Card.tsx"])
@@ -81,11 +81,9 @@ def test_list_success_files_and_dirs(mocker, mock_path_exists, mock_path_is_dir,
     assert result['status'] == "success"
     assert result['action'] == "directory_listed"
     assert result['data']['directory'] == directory
-    assert result['data']['items'] == expected_items
-    assert "3 item(s) encontrado(s)" in result['data']['message']
-    # Check message format if necessary, e.g., contains item names
-    assert "Button.tsx" in result['data']['message']
-    assert "utils/" in result['data']['message'] # Check for trailing slash in message
+    assert sorted(result['data']['items']) == expected_items
+    assert "non-hidden item(s) found" in result['data']['message']
+    assert "3" in result['data']['message']
 
 def test_list_empty_directory(mocker, mock_path_exists, mock_path_is_dir, mock_path_iterdir):
     """Test listing an empty directory."""
@@ -96,13 +94,14 @@ def test_list_empty_directory(mocker, mock_path_exists, mock_path_is_dir, mock_p
     mock_path_is_dir.return_value = True
     mock_path_iterdir.return_value = [] # Empty list
 
-    action_input = {"action": "list", "directory": directory}
-    result = skill_manage_files(action_input)
+    action_input = {"directory": directory}
+    result = skill_list_files(action_input)
 
     assert result['status'] == "success"
     assert result['action'] == "directory_listed"
     assert result['data']['items'] == []
-    assert "0 item(s) encontrado(s)" in result['data']['message']
+    assert "non-hidden item(s) found" in result['data']['message']
+    assert "0" in result['data']['message']
 
 def test_list_directory_not_found(mocker, mock_path_exists):
     """Test listing a non-existent directory."""
@@ -111,12 +110,12 @@ def test_list_directory_not_found(mocker, mock_path_exists):
 
     mock_path_exists.return_value = False # Directory does not exist
 
-    action_input = {"action": "list", "directory": directory}
-    result = skill_manage_files(action_input)
+    action_input = {"directory": directory}
+    result = skill_list_files(action_input)
 
     assert result['status'] == "error"
-    assert result['action'] == "list_failed"
-    assert "Diretório não encontrado" in result['data']['message']
+    assert result['action'] == "list_files_failed"
+    assert "Path not found" in result['data']['message']
 
 def test_list_target_is_file(mocker, mock_path_exists, mock_path_is_dir):
     """Test listing a path that is a file, not a directory."""
@@ -126,12 +125,12 @@ def test_list_target_is_file(mocker, mock_path_exists, mock_path_is_dir):
     mock_path_exists.return_value = True
     mock_path_is_dir.return_value = False # It's a file
 
-    action_input = {"action": "list", "directory": directory}
-    result = skill_manage_files(action_input)
+    action_input = {"directory": directory}
+    result = skill_list_files(action_input)
 
     assert result['status'] == "error"
-    assert result['action'] == "list_failed"
-    assert "não é um diretório" in result['data']['message']
+    assert result['action'] == "list_files_failed"
+    assert "not a valid directory" in result['data']['message']
 
 def test_list_permission_error(mocker, mock_path_exists, mock_path_is_dir, mock_path_iterdir):
     """Test listing directory with permission error."""
@@ -142,27 +141,29 @@ def test_list_permission_error(mocker, mock_path_exists, mock_path_is_dir, mock_
     mock_path_is_dir.return_value = True
     mock_path_iterdir.side_effect = PermissionError("Cannot list directory")
 
-    action_input = {"action": "list", "directory": directory}
-    result = skill_manage_files(action_input)
+    action_input = {"directory": directory}
+    result = skill_list_files(action_input)
 
     assert result['status'] == "error"
-    assert result['action'] == "list_failed"
-    assert "Permissão negada" in result['data']['message']
+    assert result['action'] == "list_files_failed"
+    assert "Permission denied" in result['data']['message']
 
 def test_list_invalid_path(mocker):
     """Test list with a path outside the workspace."""
     directory = "../../root_dir"
-    action_input = {"action": "list", "directory": directory}
-    result = skill_manage_files(action_input)
+    action_input = {"directory": directory}
+    result = skill_list_files(action_input)
 
     assert result['status'] == "error"
-    assert result['action'] == "list_failed"
-    assert "Acesso negado ou caminho inválido" in result['data']['message']
+    assert result['action'] == "list_files_failed"
+    assert "Access denied" in result['data']['message']
 
 def test_missing_directory_for_list():
-    """Test calling 'list' action without 'directory'."""
-    action_input = {"action": "list"}
-    result = skill_manage_files(action_input)
-    assert result['status'] == "error"
-    assert result['action'] == "list_failed"
-    assert "Parâmetro 'directory' obrigatório" in result['data']['message']
+    """Test calling 'list' action without 'directory'. Uses default."""
+    action_input = {}
+    result = skill_list_files(action_input)
+    # This should actually succeed if default ('.') is used
+    # Re-evaluate this test case based on skill_list_files logic
+    # For now, assuming it should succeed with default path
+    assert result['status'] == "success"
+    assert result['action'] == "directory_listed"

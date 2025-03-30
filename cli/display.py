@@ -12,7 +12,7 @@ try:
 except ImportError:
     # Handle case where core modules might not be directly importable this way
     # This might require adjusting PYTHONPATH or how ReactAgent is passed
-    ReactAgent = object # Placeholder if import fails, adjust as necessary
+    # ReactAgent = object # Placeholder if import fails, adjust as necessary - REMOVED
     call_llm = None # Placeholder if import fails
 
 # Logger setup (consider passing logger instance or using a shared config)
