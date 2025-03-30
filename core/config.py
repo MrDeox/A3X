@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+import logging
 
 # <<< ADDED: Define project_root >>>
 # Assume config.py is in the 'core' directory, so go up one level
@@ -53,3 +54,13 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 # Outras configurações (se necessário)
 # ... 
+
+# --- General Configuration ---
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+DB_FILE = os.getenv('DB_FILE', os.path.join(PROJECT_ROOT, 'memory.db')) # <<< Define DB_FILE >>>
+
+# --- Agent Configuration ---
+AGENT_STATE_ID = os.getenv('AGENT_STATE_ID', '1') # Default agent state ID
+MAX_REACT_ITERATIONS = int(os.getenv('MAX_REACT_ITERATIONS', '10'))
+# ... (rest of the file) 

@@ -1,7 +1,11 @@
 # core/agent_reflector.py
 import json
 import logging
-from typing import List, Dict, Any, Optional, Tuple, Literal
+from typing import List, Dict, Any, Optional, Tuple, Literal, TYPE_CHECKING
+
+# Avoid circular import for type hinting
+if TYPE_CHECKING:
+    from .agent import ReactAgent 
 
 # Logger for this module
 logger = logging.getLogger(__name__)
@@ -19,7 +23,7 @@ Decision = Literal[
     "ask_user"
 ]
 
-def reflect_on_observation(
+async def reflect_on_observation(
     objective: str,
     plan: List[str],
     current_step_index: int,
@@ -28,7 +32,8 @@ def reflect_on_observation(
     observation_dict: dict,
     history: list,
     memory: MemoryType,
-    agent_logger: logging.Logger
+    agent_logger: logging.Logger,
+    agent_instance: 'ReactAgent'
 ) -> Tuple[Decision, Optional[List[str]]]:
     """Analyzes the observation from the last action and decides the next course of action.
 
@@ -42,6 +47,7 @@ def reflect_on_observation(
         history: The agent's conversation history.
         memory: The agent's memory state.
         agent_logger: The logger instance for agent activities.
+        agent_instance: The instance of the ReactAgent for potential recursive calls.
 
     Returns:
         A tuple containing:
@@ -75,30 +81,73 @@ def reflect_on_observation(
 
     elif status == "error":
         error_message = observation_dict.get("data", {}).get("message", "Unknown error")
-        agent_logger.error(f"[Reflector] Error detected during action '{action_name}'. Status: {status}, Action: {observed_action}, Message: {error_message}")
+        agent_logger.error(f"[Reflector] Error detected during action '{action_name}'. Status: {status}, Action: {observed_action}, Message: {error_message[:500]}...")
 
         # --- Error Handling Logic --- 
         if observed_action == "tool_not_found":
-            agent_logger.warning(f"[Reflector] Tool '{action_name}' not found. Stopping plan.")
-            # Future: Could try asking user or replanning here.
-            return "stop_plan", new_plan
+            agent_logger.warning(f"[Reflector] Tool '{action_name}' not found. Suggesting step retry.")
+            return "retry_step", new_plan
             
         elif observed_action == "execution_failed":
-            agent_logger.warning(f"[Reflector] Code execution failed for action '{action_name}'.")
-            # <<< PLACEHOLDER for Auto-Correction Logic >>>
-            # Here, we would call the logic moved from agent.py:
-            # 1. Build meta-objective (e.g., "Correct the code that caused this error: {error_message}")
-            # 2. Call agent.run(meta_objective) recursively (needs agent instance access or refactoring)
-            # 3. Process result: 
-            #    - If successful modification -> return "replace_step_and_retry", [new_step]
-            #    - If failed modification -> return "stop_plan", None
-            agent_logger.info("[Reflector] Auto-correction for execution_failed not implemented yet. Stopping plan.")
-            return "stop_plan", new_plan # Stop plan for now
-            
+            agent_logger.warning(f"[Reflector] Code execution failed for action '{action_name}'. Attempting auto-correction.")
+            original_code = action_input.get('code')
+            if not original_code:
+                agent_logger.error("[Reflector] Cannot attempt correction: Original code not found in action_input.")
+                return "stop_plan", new_plan
+
+            # 1. Build Meta-Objective
+            error_detail = error_message # Default to full message
+            if isinstance(error_message, str):
+                lines = error_message.strip().split('\n')
+                # Try to get the last non-empty line as error detail
+                for line in reversed(lines):
+                    if line.strip():
+                        error_detail = line.strip()
+                        break 
+            meta_objective = (
+                f"The following {action_input.get('language', 'python')} code failed execution:\n"
+                f"```\n{original_code}\n```\n"
+                f"The error was: {error_detail}\n"
+                f"Please analyze the error and the code, then use the 'modify_code' tool to provide a corrected version."
+            )
+            agent_logger.info(f"[Reflector] Generated Meta-Objective for correction: {meta_objective[:200]}...")
+
+            # 2. Call agent.run recursively
+            try:
+                agent_logger.info("[Reflector] --- Starting Meta-Cycle for Auto-Correction ---")
+                meta_result_str = await agent_instance.run(meta_objective)
+                agent_logger.info("[Reflector] --- Meta-Cycle Completed --- ")
+                agent_logger.debug(f"[Reflector] Meta-Cycle Result (raw): {meta_result_str}")
+            except Exception as meta_err:
+                agent_logger.exception("[Reflector] Exception during recursive agent run for auto-correction:")
+                return "stop_plan", new_plan
+
+            # 3. Process Meta-Result
+            try:
+                parsed_meta_result = json.loads(meta_result_str)
+                if parsed_meta_result.get('status') == 'success' and 'modified_code' in parsed_meta_result.get('data', {}):
+                    modified_code = parsed_meta_result['data']['modified_code']
+                    agent_logger.info("[Reflector] Auto-correction successful. Modified code received.")
+                    # Save corrected code to memory
+                    agent_instance.memory['last_code'] = modified_code
+                    agent_logger.info("[Reflector] Corrected code saved to memory['last_code']. Continuing plan.")
+                    # Decide to continue the main plan. The LLM in the next regular cycle
+                    # might choose to use the corrected code from memory.
+                    return "continue_plan", new_plan
+                else:
+                    fail_reason = parsed_meta_result.get('data', {}).get('message', 'Unknown reason')
+                    agent_logger.error(f"[Reflector] Auto-correction meta-cycle did not return successful modified code. Status: {parsed_meta_result.get('status')}, Reason: {fail_reason}. Stopping plan.")
+                    return "stop_plan", new_plan
+            except json.JSONDecodeError as json_err:
+                agent_logger.error(f"[Reflector] Failed to parse meta-cycle result as JSON: {json_err}. Result: {meta_result_str[:500]}... Stopping plan.")
+                return "stop_plan", new_plan
+            except Exception as proc_err:
+                agent_logger.exception("[Reflector] Unexpected error processing meta-cycle result:")
+                return "stop_plan", new_plan
+
         elif observed_action in ["parsing_failed", "llm_call_failed", "internal_error"]:
-            # These errors typically indicate issues before tool execution or internal agent problems
-            agent_logger.error(f"[Reflector] Internal agent error detected ({observed_action}). Stopping plan.")
-            return "stop_plan", new_plan
+            agent_logger.error(f"[Reflector] Internal agent error detected ({observed_action}). Suggesting step retry.")
+            return "retry_step", new_plan
 
         else:
             # Catch-all for other unspecified errors

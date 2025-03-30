@@ -44,7 +44,7 @@ class ReactAgent:
         agent_logger.info(f"[ReactAgent INIT] Agente inicializado. Memória carregada: {list(self._memory.keys())}")
 
     # --- run (Refatorado para iterar sobre o plano) ---
-    def run(self, objective: str) -> str:
+    async def run(self, objective: str) -> str:
         """Executa o ciclo ReAct (agora orientado por plano) para atingir o objetivo."""
         # Initialize potential final response
         final_response: Optional[str] = None
@@ -61,7 +61,7 @@ class ReactAgent:
             # --- Planning Phase --- 
             agent_logger.info("--- Generating Plan ---")
             tool_desc = get_tool_descriptions()
-            generated_plan = planner.generate_plan(objective, tool_desc, agent_logger, self.llm_url)
+            generated_plan = await planner.generate_plan(objective, tool_desc, agent_logger, self.llm_url)
             
             if generated_plan:
                 plan_to_execute = generated_plan
@@ -82,7 +82,7 @@ class ReactAgent:
                 current_step = plan_to_execute[current_step_index]
                 agent_logger.info(f"--- Executing Plan Step {current_step_index + 1}/{len(plan_to_execute)} --- Total Iterations: {total_iterations + 1}/{max_total_iterations}")
 
-                should_break, final_response_from_cycle = self._execute_react_cycle(
+                should_break, final_response_from_cycle = await self._execute_react_cycle(
                     cycle_num=total_iterations + 1, 
                     log_prefix_base=log_prefix_base,
                     current_step_objective=current_step, # Pass step as the objective for this cycle
@@ -104,16 +104,16 @@ class ReactAgent:
 
             # --- After Loop --- 
             if final_response is None: # Check if loop finished without a final answer or break
-                if current_step_index >= len(plan_to_execute):
-                    # Completed all plan steps, but no 'final_answer' action was triggered
-                    agent_logger.warning(f"{log_prefix_base} Plan execution completed, but no final answer action was explicitly returned.")
-                    last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "No observation."
-                    final_response = f"Plan completed. Last observation: {last_observation}" 
-                elif total_iterations >= max_total_iterations:
+                if total_iterations >= max_total_iterations:
                     # Reached max iteration limit during plan execution
                     agent_logger.warning(f"{log_prefix_base} Maximum total iterations ({max_total_iterations}) reached during plan execution.")
                     last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "No observation."
                     final_response = f"Erro: Maximum total iterations ({max_total_iterations}) reached. Last observation: {last_observation}"
+                elif current_step_index >= len(plan_to_execute):
+                    # Completed all plan steps (and did *not* hit max iterations)
+                    agent_logger.warning(f"{log_prefix_base} Plan execution completed, but no final answer action was explicitly returned.")
+                    last_observation = self._history[-1] if self._history and self._history[-1].startswith("Observation:") else "No observation."
+                    final_response = f"Plan completed. Last observation: {last_observation}" 
                 else:
                     # Should not happen if loop logic is correct
                     agent_logger.error(f"{log_prefix_base} Loop exited unexpectedly without setting final_response.")
@@ -134,7 +134,7 @@ class ReactAgent:
         return final_response if final_response is not None else "Erro: O agente finalizou sem uma resposta definida."
 
     # --- _execute_react_cycle (Integrate Reflector) ---
-    def _execute_react_cycle(
+    async def _execute_react_cycle(
         self,
         cycle_num: int,
         log_prefix_base: str,
@@ -170,7 +170,7 @@ class ReactAgent:
 
         # 2. Chamar LLM
         try:
-            llm_response_raw = self._call_llm(prompt_messages)
+            llm_response_raw = await call_llm(prompt_messages, self.llm_url)
             agent_logger.info(f"{log_prefix} Resposta LLM Recebida (Duração: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
         except Exception as e:
             agent_logger.exception(f"{log_prefix} Exceção durante a chamada LLM: {e}")
@@ -179,10 +179,14 @@ class ReactAgent:
             observation_str = f"Observation: {json.dumps(observation_dict)}" # Create observation string
             self._history.append(observation_str) # Append error observation
             # <<< Call Reflector for LLM Error >>>
-            decision, _ = agent_reflector.reflect_on_observation(
+            # <<< AWAIT >>>
+            decision, _ = await agent_reflector.reflect_on_observation(
                 objective=objective, plan=plan, current_step_index=current_step_index,
-                action_name="_llm_call", action_input={}, observation_dict=observation_dict,
-                history=self._history, memory=self._memory, agent_logger=agent_logger
+                action_name="_llm_call", action_input={},
+                # <<< PASS observation_dict and agent_instance >>>
+                observation_dict=observation_dict, 
+                history=self._history, memory=self._memory, agent_logger=agent_logger,
+                agent_instance=self
             )
             # For now, LLM errors always stop the plan
             agent_logger.error(f"{log_prefix} Stopping plan due to LLM call error (Reflector decision: {decision})")
@@ -191,7 +195,7 @@ class ReactAgent:
         log_llm_response = llm_response_raw[:1000] + ('...' if len(llm_response_raw) > 1000 else '')
         agent_logger.debug(f"{log_prefix} Resposta LLM (Raw Content):\n---\n{log_llm_response}\n---")
 
-        self._history.append(llm_response_raw) 
+        self._history.append(llm_response_raw)
 
         # 3. Parsear Resposta LLM
         try:
@@ -205,10 +209,13 @@ class ReactAgent:
             observation_str = f"Observation: {json.dumps(observation_dict)}"
             self._history.append(observation_str)
             # <<< Call Reflector for Parse Error >>>
-            decision, _ = agent_reflector.reflect_on_observation(
+            # <<< AWAIT >>>
+            decision, _ = await agent_reflector.reflect_on_observation(
                 objective=objective, plan=plan, current_step_index=current_step_index,
-                action_name="_parse_llm", action_input={}, observation_dict=observation_dict,
-                history=self._history, memory=self._memory, agent_logger=agent_logger
+                action_name="_parse_llm", action_input={},
+                observation_dict=observation_dict, # Already present
+                history=self._history, memory=self._memory, agent_logger=agent_logger,
+                agent_instance=self # Already present
             )
             agent_logger.error(f"{log_prefix} Stopping plan due to LLM response parsing error (Reflector decision: {decision})")
             return True, f"Erro: Falha ao processar resposta do LLM ({parse_error})"
@@ -228,7 +235,7 @@ class ReactAgent:
             observation_str = f"Final Answer: {final_answer_text}" # History uses slightly different format
 
         elif action_name in self.tools:
-            tool_result = tool_executor.execute_tool(
+            tool_result = await tool_executor.execute_tool(
                 tool_name=action_name,
                 action_input=action_input,
                 tools_dict=self.tools,
@@ -242,36 +249,34 @@ class ReactAgent:
                 agent_logger.error(f"{log_prefix} Failed to serialize tool_result to JSON: {json_err}. Result: {tool_result}")
                 observation_dict = {"status": "error", "action": "internal_error", "data": {"message": f"Failed to serialize tool result: {json_err}"}}
                 observation_str = f"Observation: {json.dumps(observation_dict)}"
-            # Save code to memory (remains the same)
-            # ... (memory saving logic) ...
-                
+            # Save code to memory if the action was execute_code (this seems misplaced, should probably be done in reflector or executor)
+            # if action_name == "execute_code":
+            #     self._memory['last_code'] = action_input.get('code')
+            
         else: # Tool not found
             agent_logger.warning(f"{log_prefix} Tool '{action_name}' not found.")
             observation_dict = {"status": "error", "action": "tool_not_found", "data": {"message": f"A ferramenta '{action_name}' não existe."}}
             observation_str = f"Observation: {json.dumps(observation_dict)}"
         
-        # 5. Append Observation to History (Ensure it happens *before* reflection)
-        if observation_str:
-            agent_logger.debug(f"[DEBUG HISTORY APPEND] Appending: '{observation_str[:200]}...'")
+        # Append observation to history AFTER potential tool execution
+        if observation_str: 
             self._history.append(observation_str)
-        else:
-             # This case should ideally not happen with the new structure
-             agent_logger.error(f"{log_prefix} Observation string was unexpectedly None before reflection.")
-             observation_dict = {"status": "error", "action": "internal_error", "data": {"message": "Failed to generate observation string."}}
-             self._history.append(f"Observation: {json.dumps(observation_dict)}")
 
-        # 6. Reflect on Observation
+        # 5. Reflect on Observation
         if observation_dict:
-            decision, new_plan = agent_reflector.reflect_on_observation(
+            agent_logger.info(f"{log_prefix} Calling Reflector (Duration: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
+            # <<< AWAIT >>>
+            decision, new_plan = await agent_reflector.reflect_on_observation(
                 objective=objective, # Overall objective
-                plan=plan, # Current plan
+                plan=plan, 
                 current_step_index=current_step_index,
                 action_name=action_name, # Action attempted
                 action_input=action_input,
                 observation_dict=observation_dict,
                 history=self._history, # History *includes* the latest observation
                 memory=self._memory,
-                agent_logger=agent_logger
+                agent_logger=agent_logger,
+                agent_instance=self # <<< Pass agent instance >>>
             )
             agent_logger.info(f"[Reflector] Decision: {decision}")
         else:
@@ -280,7 +285,7 @@ class ReactAgent:
             decision = "stop_plan"
             new_plan = None
 
-        # 7. Process Reflector Decision
+        # 6. Process Reflector Decision
         should_break_loop = False
         response_on_break = None
 
@@ -312,20 +317,10 @@ class ReactAgent:
             should_break_loop = True
             response_on_break = f"Erro: Decisão desconhecida do Reflector: {decision}"
 
-        # 8. Trim History (Still do this at the end of the cycle)
+        # 7. Trim History (Still do this at the end of the cycle)
         self._history = history_manager.trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
 
         return should_break_loop, response_on_break
-
-    # --- _call_llm (Remains the same, delegates) ---
-    def _call_llm(self, messages: list[dict]) -> str:
-        """Chama o LLM local através da interface centralizada, forçando JSON para o ReAct."""
-        # <<< DELEGATE TO LLM INTERFACE >>>
-        return call_llm(
-            llm_url=self.llm_url,
-            messages=messages,
-            force_json_output=True # <<< Always force JSON for ReAct cycle >>>
-        )
 
     # <<< REMOVED METHOD: _execute_tool >>>
     # <<< REMOVED METHOD: _trim_history >>>
