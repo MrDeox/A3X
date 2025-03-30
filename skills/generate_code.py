@@ -1,8 +1,12 @@
 import re
 import requests
 import json
+import logging
 # --- Import BASE URL from config ---
 from core.config import LLAMA_SERVER_URL as BASE_LLM_URL
+
+# <<< ADDED Logger initialization >>>
+logger = logging.getLogger(__name__)
 
 # --- NEW Standard Signature ---
 def skill_generate_code(action_input: dict, agent_memory: dict, agent_history: list | None = None) -> dict:

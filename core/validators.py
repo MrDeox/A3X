@@ -123,7 +123,7 @@ def validate_workspace_path(
                              # Resolve without strict to check containment only
                              resolved_path = path_obj.resolve()
                              logger.debug(f"Absolute path '{path_str}' does not exist, but proceeding as check_existence=False.")
-                    except (OSError, SecurityError) as e:
+                    except (OSError) as e:
                         logger.error(f"Error resolving absolute path '{path_str}': {e}", exc_info=True)
                         message = f"Error resolving absolute path '{path_str}'. It might be invalid or inaccessible. Error: {e}"
                         return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
@@ -137,7 +137,7 @@ def validate_workspace_path(
                          message = f"Path not found: Relative path '{path_str}' does not exist within the workspace."
                          logger.warning(message)
                          return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
-                    except (OSError, SecurityError) as e:
+                    except (OSError) as e:
                         logger.error(f"Error resolving relative path '{path_str}': {e}", exc_info=True)
                         message = f"Error resolving relative path '{path_str}'. It might be invalid or inaccessible. Error: {e}"
                         return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
@@ -192,7 +192,6 @@ def validate_workspace_path(
                 return func(*args, **kwargs)
 
             except (ValueError, OSError) as e: # Catch potential final resolution/filesystem errors
-                 # SecurityError is not a standard Python exception, removed unless defined elsewhere
                  logger.error(f"Error validating path '{path_str}': {e}", exc_info=True)
                  message = f"Error processing path '{path_str}'. It might be invalid or inaccessible. Error: {e}"
                  return {"status": "error", "action": action_name_on_error, "data": {"message": message}}

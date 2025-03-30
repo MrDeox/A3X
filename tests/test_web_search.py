@@ -4,12 +4,18 @@ import os
 from unittest.mock import MagicMock, patch
 
 # Adiciona o diretório raiz ao path para importar os módulos
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# <<< MODIFIED Path Insertion >>>
+# Ensure the path is absolute and go up one level from 'tests' directory
+TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(TEST_DIR)
+sys.path.insert(0, PROJECT_ROOT)
 
 # Assume que core.config pode ser importado para testar TAVILY_ENABLED
 try:
     from skills.web_search import skill_search_web, TAVILY_ENABLED, TAVILY_API_KEY
-except ImportError:
+except ImportError as e:
+    # Log the error for better debugging if skip occurs
+    print(f"[Test Setup Warning] Could not import skills.web_search: {e}")
     pytest.skip("Não foi possível importar skills.web_search", allow_module_level=True)
 
 # Mock data for Tavily API response

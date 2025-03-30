@@ -4,11 +4,12 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 import os
 import datetime
+from typing import Optional # <<< Added Optional import
 
 logger = logging.getLogger(__name__)
 
 # Local imports
-from core.config import PROJECT_ROOT
+# from core.config import PROJECT_ROOT
 
 # --- Model Configuration ---
 # Model name from Hugging Face model hub
@@ -16,6 +17,9 @@ from core.config import PROJECT_ROOT
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-base") # <<< NEW MODEL
 # Cache directory for models (optional, defaults to ~/.cache/huggingface/hub)
 # CACHE_DIR = os.environ.get("HF_HOME")
+
+# <<< ADDED Definition for NORMALIZE_EMBEDDINGS >>>
+NORMALIZE_EMBEDDINGS = True # Set based on usage in calculate_similarity
 
 # Global variable to hold the model instance (lazy loading)
 _model_instance = None
