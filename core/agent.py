@@ -14,18 +14,36 @@ from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_UR
 from core.tools import TOOLS, get_tool_descriptions
 # Removed memory skill import as it's not directly used here anymore
 from core.db_utils import save_agent_state, load_agent_state
-from core.prompts import get_react_prompt_v2 # Use v2 prompt
+from core.prompt_builder import build_react_prompt, build_final_answer_prompt
 # <<< ADDED IMPORT >>>
 from core.format_recovery import parse_react_output
-from core.utils import agent_logger, setup_agent_logger, history_manager, tool_executor, llm_client, agent_parser, agent_reflector
+# <<< CORRECTED IMPORTS (Replaced core.utils) >>>
+# from core.utils import agent_logger, setup_agent_logger, history_manager, tool_executor, llm_client, agent_parser, agent_reflector
+import logging # Already imported, but ensure it is
+from core.history_manager import trim_history # <-- CORRECTED import
+from core.tool_executor import execute_tool # <-- CORRECTED import
+from core.llm_interface import call_llm # <-- CORRECTED import
+# from core.agent_parser import AgentParser # Assuming class name <-- REMOVE IMPORT
+from core.agent_reflector import reflect_on_observation # Assuming class name <-- CORRECTED import name
+from core.planner import generate_plan # <<< ADDED planner import >>>
+from core.tools import get_tool_descriptions, TOOLS # <<< ADDED get_tool_descriptions import >>>
+
 # <<< REMOVE unused imports >>>
 # from core import agent_error_handler, agent_autocorrect
 
 # <<< IMPORT NEW INTERFACE >>>
-from .llm_interface import call_llm
+# from .llm_interface import call_llm # This might be redundant if LLMClient is used
 
 # Initialize logger
 agent_logger = logging.getLogger(__name__)
+
+# Instantiate necessary components (assuming they are classes)
+# We might need to adjust this based on actual implementations
+# history_manager = HistoryManager() # Example instantiation
+# tool_executor = ToolExecutor() <-- REMOVED instantiation
+# llm_client = LLMClient(base_url=LLAMA_SERVER_URL, headers=LLAMA_DEFAULT_HEADERS) # Example with config <-- REMOVED instantiation
+# agent_parser = AgentParser() <-- REMOVE INSTANTIATION
+# agent_reflector = AgentReflector() <-- REMOVE INSTANTIATION
 
 # Constante para ID do estado do agente
 AGENT_STATE_ID = 1
@@ -62,7 +80,7 @@ class ReactAgent:
             # --- Planning Phase --- 
             agent_logger.info("--- Generating Plan ---")
             tool_desc = get_tool_descriptions()
-            generated_plan = await planner.generate_plan(objective, tool_desc, agent_logger, self.llm_url)
+            generated_plan = await generate_plan(objective, tool_desc, agent_logger, self.llm_url)
             
             if generated_plan:
                 plan_to_execute = generated_plan
@@ -151,6 +169,9 @@ class ReactAgent:
         log_prefix = f"{log_prefix_base} Cycle {cycle_num}/{len(plan) if plan else '?'}"
         agent_logger.info(f"\n{log_prefix} (Step Objective: '{current_step_objective[:60]}...' Inicio: {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]})" )
 
+        # <<< ADDED: Trim history before prompt generation >>>
+        self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
+
         # --- START ADDED DEBUG LOGGING (Keep for now) ---
         agent_logger.debug(f"{log_prefix} --- Start Cycle Input ---")
         agent_logger.debug(f"{log_prefix} Objective: {current_step_objective}")
@@ -165,32 +186,25 @@ class ReactAgent:
 
         start_cycle_time = datetime.datetime.now()
         # 1. Prepare Prompt
-        prompt = get_react_prompt_v2(
+        prompt = build_react_prompt(
             objective=objective,
-            plan=plan,
-            current_step_index=current_step_index,
             history=self._history,
-            tools_descriptions=self._get_tools_description(),
-            scratchpad="", # Initial scratchpad is empty for the first LLM call in a cycle
-            memory=self._memory,
+            system_prompt=self.system_prompt,
+            tool_descriptions=get_tool_descriptions(),
+            agent_logger=agent_logger
         )
 
         # 2. Call LLM
         agent_logger.info(f"{log_prefix} Calling LLM...")
-        llm_response_raw = await llm_client.generate_text(
-            prompt=prompt,
-            temperature=0.1, # Low temp for more deterministic action
-            max_tokens=MAX_TOKENS_FALLBACK, # Use fallback max tokens
-            stop=["Observation:"],
-            agent_logger=agent_logger,
-            context_size=CONTEXT_SIZE # Pass context size
-        )
+        llm_response_raw = ""
+        async for chunk in call_llm(messages=prompt, stream=False):
+             llm_response_raw = chunk # Should yield only one chunk
 
         if not llm_response_raw:
             agent_logger.error(f"{log_prefix} LLM call failed. Stopping plan.")
             # Reflect on the LLM failure
             observation_dict = {"status": "error", "action": "llm_failed", "data": {"message": "LLM did not return a response."}}
-            decision, _ = await agent_reflector.reflect_on_observation(
+            decision, _ = await reflect_on_observation(
                 objective=objective, plan=plan, current_step_index=current_step_index,
                 action_name="_call_llm", action_input={},
                 observation_dict=observation_dict,
@@ -213,7 +227,7 @@ class ReactAgent:
             observation_str = f"Observation: {json.dumps(observation_dict)}" # Keep observation simple
             self._history.append(observation_str)
             # Call Reflector for Parse Error
-            decision, _ = await agent_reflector.reflect_on_observation(
+            decision, _ = await reflect_on_observation(
                 objective=objective, plan=plan, current_step_index=current_step_index,
                 action_name="_parse_llm", action_input={},
                 observation_dict=observation_dict,
@@ -235,7 +249,7 @@ class ReactAgent:
             observation_str = f"Observation: {json.dumps(observation_dict)}"
             self._history.append(observation_str)
             # Call Reflector
-            decision, _ = await agent_reflector.reflect_on_observation(
+            decision, _ = await reflect_on_observation(
                  objective=objective, plan=plan, current_step_index=current_step_index,
                  action_name="_parse_llm", action_input={},
                  observation_dict=observation_dict,
@@ -254,14 +268,41 @@ class ReactAgent:
         final_answer_text: Optional[str] = None
 
         if action_name == "final_answer":
-            final_answer_text = action_input.get("answer", "Finalizado sem resposta específica.")
-            agent_logger.info(f"{log_prefix} Ação Final: {final_answer_text}")
-            # Create observation dict for reflector
+            # final_answer_text = action_input.get("answer", "Finalizado sem resposta específica.") # <<< OLD: Get from input
+            # agent_logger.info(f"{log_prefix} Ação Final: {final_answer_text}")
+            # # Create observation dict for reflector
+            # observation_dict = {"status": "success", "action": "final_answer", "data": {"answer": final_answer_text}}
+            # observation_str = f"Final Answer: {final_answer_text}" # History uses slightly different format
+
+            # <<< NEW: Stream final answer from LLM >>>
+            agent_logger.info(f"{log_prefix} Preparing to stream final answer...")
+            print(f"\n[A³X]: ", end="") # Print prefix for streaming output
+            
+            # Collect relevant history (adjust slice as needed)
+            relevant_history = self._history[-(MAX_HISTORY_TURNS*2):] # Get recent turns
+
+            # Build prompt and call LLM in streaming mode
+            prompt_messages = build_final_answer_prompt(objective, relevant_history, agent_logger)
+            
+            streamed_answer_text = ""
+            try:
+                async for chunk in call_llm(prompt_messages, stream=True):
+                    print(chunk, end="", flush=True)
+                    streamed_answer_text += chunk
+                print() # Final newline after streaming completes
+                agent_logger.info(f"{log_prefix} Finished streaming final answer.")
+                final_answer_text = streamed_answer_text # Store the fully streamed answer
+            except Exception as stream_err:
+                agent_logger.exception(f"{log_prefix} Error during final answer streaming:")
+                print(f"\n[Erro ao gerar resposta final: {stream_err}]")
+                final_answer_text = f"[Erro ao gerar resposta final: {stream_err}]"
+
+            # Still need observation_dict and observation_str for reflector/history
             observation_dict = {"status": "success", "action": "final_answer", "data": {"answer": final_answer_text}}
-            observation_str = f"Final Answer: {final_answer_text}" # History uses slightly different format
+            observation_str = f"Final Answer: {final_answer_text}" 
 
         elif action_name in self.tools:
-            tool_result = await tool_executor.execute_tool(
+            tool_result = execute_tool(
                 tool_name=action_name,
                 action_input=action_input,
                 tools_dict=self.tools,
@@ -292,7 +333,7 @@ class ReactAgent:
         if observation_dict:
             agent_logger.info(f"{log_prefix} Calling Reflector (Duration: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
             # <<< AWAIT >>>
-            decision, new_plan = await agent_reflector.reflect_on_observation(
+            decision, new_plan = await reflect_on_observation(
                 objective=objective, # Overall objective
                 plan=plan, 
                 current_step_index=current_step_index,
@@ -323,7 +364,7 @@ class ReactAgent:
         elif decision == "stop_plan":
             should_break_loop = True
             error_detail = observation_dict.get("data", {}).get("message", "Stopped by Reflector")
-            response_on_break = f"Erro: Plano interrompido pelo Reflector. Detalhe: {error_detail}"
+            response_on_break = f"Erro: Plano interrompido ({error_detail})"
         elif decision == "replace_step_and_retry":
              agent_logger.warning(f"[Reflector] Decision '{decision}' requires plan modification - not fully implemented. Treating as stop_plan.")
              # TODO: Implement plan update logic here (update plan list, maybe reset index?)
@@ -342,9 +383,6 @@ class ReactAgent:
             agent_logger.error(f"{log_prefix} Decisão desconhecida do Reflector: '{decision}'. Parando por segurança.")
             should_break_loop = True
             response_on_break = f"Erro: Decisão desconhecida do Reflector: {decision}"
-
-        # 7. Trim History (Still do this at the end of the cycle)
-        self._history = history_manager.trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
 
         return should_break_loop, response_on_break
 

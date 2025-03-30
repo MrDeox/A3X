@@ -1,4 +1,3 @@
-
 import logging
 from typing import List, Dict
 
@@ -63,4 +62,20 @@ def build_planning_prompt(objective: str, tool_descriptions: str, planner_system
     # Logger não é passado aqui, mas pode ser adicionado se necessário debug
     # print(f"[Planner Prompt DEBUG] {messages}")
     return messages
+
+# <<< NEW FUNCTION >>>
+def build_final_answer_prompt(objective: str, steps: List[str], agent_logger: logging.Logger) -> List[Dict[str, str]]:
+    agent_logger.info("Construindo prompt para resposta final com streaming...")
+    context_str = "\n".join(steps)
+    return [
+        {"role": "system", "content": "Você é um assistente de IA que responde com base nos passos anteriores de forma clara, direta e completa."},
+        {"role": "user", "content": f"""Com base nos seguintes passos e observações, gere uma resposta final para o usuário.
+
+Objetivo: {objective}
+
+Histórico:
+{context_str}
+
+Responda agora de forma direta e informativa, como um assistente humano finalizando a tarefa."""}
+    ]
 
