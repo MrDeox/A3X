@@ -1,48 +1,23 @@
 import logging
 import re
 import json
-import datetime
 import os
-import sys
-import traceback
-from typing import Tuple, Optional, Dict, Any, List, AsyncGenerator
-
-import requests
+from typing import Dict, Any, List, AsyncGenerator, Optional
 
 # Local imports
 from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS, MAX_META_DEPTH, MAX_TOKENS_FALLBACK, CONTEXT_SIZE
 from core.tools import TOOLS, get_tool_descriptions
-# Removed memory skill import as it's not directly used here anymore
 from core.db_utils import save_agent_state, load_agent_state
 from core.prompt_builder import build_react_prompt
 from core.agent_parser import parse_llm_response
-# <<< CORRECTED IMPORTS (Replaced core.utils) >>>
-# from core.utils import agent_logger, setup_agent_logger, history_manager, tool_executor, llm_client, agent_parser, agent_reflector
-import logging # Already imported, but ensure it is
-from core.history_manager import trim_history # <-- CORRECTED import
-from core.tool_executor import execute_tool # <-- CORRECTED import
-from core.llm_interface import call_llm # <-- CORRECTED import
-# from core.agent_parser import AgentParser # Assuming class name <-- REMOVE IMPORT
-from core.agent_reflector import reflect_on_observation # Assuming class name <-- CORRECTED import name
-from core.planner import generate_plan # <<< ADDED planner import >>>
-from core.tools import get_tool_descriptions, TOOLS # <<< ADDED get_tool_descriptions import >>>
-
-# <<< REMOVE unused imports >>>
-# from core import agent_error_handler, agent_autocorrect
-
-# <<< IMPORT NEW INTERFACE >>>
-# from .llm_interface import call_llm # This might be redundant if LLMClient is used
+from core.history_manager import trim_history
+from core.tool_executor import execute_tool
+from core.llm_interface import call_llm
+from core.agent_reflector import reflect_on_observation
+from core.planner import generate_plan
 
 # Initialize logger
 agent_logger = logging.getLogger(__name__)
-
-# Instantiate necessary components (assuming they are classes)
-# We might need to adjust this based on actual implementations
-# history_manager = HistoryManager() # Example instantiation
-# tool_executor = ToolExecutor() <-- REMOVED instantiation
-# llm_client = LLMClient(base_url=LLAMA_SERVER_URL, headers=LLAMA_DEFAULT_HEADERS) # Example with config <-- REMOVED instantiation
-# agent_parser = AgentParser() <-- REMOVE INSTANTIATION
-# agent_reflector = AgentReflector() <-- REMOVE INSTANTIATION
 
 # Constante para ID do estado do agente
 AGENT_STATE_ID = 1
@@ -69,7 +44,7 @@ def _is_simple_list_files_task(objective: str) -> bool:
 
 # --- Classe ReactAgent ---
 class ReactAgent:
-    def __init__(self, llm_url: str, system_prompt: str):
+    def __init__(self, system_prompt: str, llm_url: Optional[str] = None):
         """Inicializa o Agente ReAct."""
         self.llm_url = llm_url
         self.system_prompt = system_prompt
@@ -78,8 +53,7 @@ class ReactAgent:
         self._memory = load_agent_state(AGENT_STATE_ID) # Carrega estado/memória inicial
         self.max_iterations = MAX_REACT_ITERATIONS
         self._current_plan = None # <<< Initialize plan >>>
-        # Removed _last_error_type, not needed with new handlers
-        agent_logger.info(f"[ReactAgent INIT] Agente inicializado. Memória carregada: {list(self._memory.keys())}")
+        agent_logger.info(f"[ReactAgent INIT] Agente inicializado. LLM URL: {'Default' if not self.llm_url else self.llm_url}. Memória carregada: {list(self._memory.keys())}")
 
     # --- run (Refatorado para ser um AsyncGenerator) ---
     async def run(self, objective: str) -> AsyncGenerator[Dict[str, Any], None]:
@@ -265,5 +239,3 @@ class ReactAgent:
             agent_logger.info(f"{log_prefix_base} Saving final agent state (ID: {AGENT_STATE_ID}).")
             save_agent_state(AGENT_STATE_ID, self._memory)
             agent_logger.info(f"{log_prefix_base} Agent run finished.")
-
-    # --- REMOVED _execute_react_cycle ---
