@@ -83,4 +83,10 @@ LLAMA_DEFAULT_HEADERS = {
 }
 
 # --- Configurações de Banco de Dados e Memória ---
-DB_FILE = os.environ.get("DB_FILE", "memory.db") 
+DB_FILE = os.environ.get("DB_FILE", "memory.db")
+
+# Fallback máximo de tokens para respostas do LLM
+MAX_TOKENS_FALLBACK = int(os.environ.get("MAX_TOKENS_FALLBACK", 1024)) 
+
+# Tamanho do contexto do modelo LLM (deve ser compatível com o modelo carregado)
+CONTEXT_SIZE = int(os.environ.get("CONTEXT_SIZE", 4096)) 
