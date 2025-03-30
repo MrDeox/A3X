@@ -21,7 +21,8 @@
         "delete_file",
         "save_memory",
         "recall_memory",
-        "final_answer"
+        "final_answer",
+        "capture_screen"
       ]
     },
     "Action Input": {

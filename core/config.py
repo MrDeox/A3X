@@ -64,3 +64,23 @@ DB_FILE = os.getenv('DB_FILE', os.path.join(PROJECT_ROOT, 'memory.db')) # <<< De
 AGENT_STATE_ID = os.getenv('AGENT_STATE_ID', '1') # Default agent state ID
 MAX_REACT_ITERATIONS = int(os.getenv('MAX_REACT_ITERATIONS', '10'))
 # ... (rest of the file) 
+
+# --- Configurações do Servidor LLM (llama.cpp) ---
+# Caminho para o executável do servidor llama.cpp (se não estiver no PATH)
+LLAMA_SERVER_EXECUTABLE = os.environ.get("LLAMA_SERVER_EXECUTABLE", os.path.join(PROJECT_ROOT, "llama.cpp/build/bin/llama-server")) # Corrigido para apontar para o build
+# Caminho para o arquivo do modelo GGUF
+LLAMA_MODEL_PATH = os.environ.get("LLAMA_MODEL_PATH", "models/openchat-3.5.Q4_K_M.gguf") # <-- Atualizado para OpenChat
+# Argumentos adicionais para passar ao servidor llama.cpp
+# Ex: número de camadas GPU, tamanho do contexto, etc.
+# IMPORTANTE: Garanta que o tamanho do contexto (-c) aqui seja consistente ou maior que o usado nos prompts.
+LLAMA_SERVER_ARGS = os.environ.get("LLAMA_SERVER_ARGS", "-c 4096 --temp 0.2 --top-p 0.95 --repeat-penalty 1.15 --ngl 28") # <-- Novos args para OpenChat
+# URL completa do endpoint de chat do servidor llama.cpp
+LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions")
+# Cabeçalhos HTTP adicionais (ex: para autenticação, se necessário)
+LLAMA_DEFAULT_HEADERS = {
+    "Content-Type": "application/json",
+    # "Authorization": f"Bearer {os.getenv('LLAMA_API_KEY')}" # Exemplo se API key fosse necessária
+}
+
+# --- Configurações de Banco de Dados e Memória ---
+DB_FILE = os.environ.get("DB_FILE", "memory.db") 

@@ -10,13 +10,14 @@ from typing import Tuple, Optional, Dict, Any, List
 import requests
 
 # Local imports
-from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS, MAX_META_DEPTH
+from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS, MAX_META_DEPTH, MAX_TOKENS_FALLBACK, CONTEXT_SIZE
 from core.tools import TOOLS, get_tool_descriptions
 # Removed memory skill import as it's not directly used here anymore
 from core.db_utils import save_agent_state, load_agent_state
-
-# <<< NEW IMPORTS for modular functions >>>
-from core import agent_parser, prompt_builder, history_manager, tool_executor, planner, agent_reflector
+from core.prompts import get_react_prompt_v2 # Use v2 prompt
+# <<< ADDED IMPORT >>>
+from core.format_recovery import parse_react_output
+from core.utils import agent_logger, setup_agent_logger, history_manager, tool_executor, llm_client, agent_parser, agent_reflector
 # <<< REMOVE unused imports >>>
 # from core import agent_error_handler, agent_autocorrect
 
@@ -143,8 +144,9 @@ class ReactAgent:
         plan: List[str], # Current plan
         current_step_index: int # Current step index
     ) -> Tuple[bool, Optional[str]]:
-        """Executa um único ciclo do loop ReAct, incluindo reflexão sobre a observação.
-        Retorna (should_break_loop, final_response_if_break)
+        """
+        Executes a single ReAct cycle: Prompt LLM -> Parse Response -> Execute Action -> Reflect -> Decide.
+        Returns (should_break_loop, response_on_break)
         """
         log_prefix = f"{log_prefix_base} Cycle {cycle_num}/{len(plan) if plan else '?'}"
         agent_logger.info(f"\n{log_prefix} (Step Objective: '{current_step_objective[:60]}...' Inicio: {datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]})" )
@@ -162,64 +164,88 @@ class ReactAgent:
         # --- END ADDED DEBUG LOGGING ---
 
         start_cycle_time = datetime.datetime.now()
-        # 1. Construir Prompt (Uses current_step_objective)
-        tool_desc = get_tool_descriptions()
-        prompt_messages = prompt_builder.build_react_prompt(
-            current_step_objective, self._history, self.system_prompt, tool_desc, agent_logger
+        # 1. Prepare Prompt
+        prompt = get_react_prompt_v2(
+            objective=objective,
+            plan=plan,
+            current_step_index=current_step_index,
+            history=self._history,
+            tools_descriptions=self._get_tools_description(),
+            scratchpad="", # Initial scratchpad is empty for the first LLM call in a cycle
+            memory=self._memory,
         )
 
-        # 2. Chamar LLM
-        try:
-            llm_response_raw = await call_llm(prompt_messages, self.llm_url)
-            agent_logger.info(f"{log_prefix} Resposta LLM Recebida (Duração: {(datetime.datetime.now() - start_cycle_time).total_seconds():.3f}s)")
-        except Exception as e:
-            agent_logger.exception(f"{log_prefix} Exceção durante a chamada LLM: {e}")
-            llm_error_str = f"Erro: Falha na chamada LLM: {e}"
-            observation_dict = {"status": "error", "action": "llm_call_failed", "data": {"message": llm_error_str}}
-            observation_str = f"Observation: {json.dumps(observation_dict)}" # Create observation string
-            self._history.append(observation_str) # Append error observation
-            # <<< Call Reflector for LLM Error >>>
-            # <<< AWAIT >>>
+        # 2. Call LLM
+        agent_logger.info(f"{log_prefix} Calling LLM...")
+        llm_response_raw = await llm_client.generate_text(
+            prompt=prompt,
+            temperature=0.1, # Low temp for more deterministic action
+            max_tokens=MAX_TOKENS_FALLBACK, # Use fallback max tokens
+            stop=["Observation:"],
+            agent_logger=agent_logger,
+            context_size=CONTEXT_SIZE # Pass context size
+        )
+
+        if not llm_response_raw:
+            agent_logger.error(f"{log_prefix} LLM call failed. Stopping plan.")
+            # Reflect on the LLM failure
+            observation_dict = {"status": "error", "action": "llm_failed", "data": {"message": "LLM did not return a response."}}
             decision, _ = await agent_reflector.reflect_on_observation(
                 objective=objective, plan=plan, current_step_index=current_step_index,
-                action_name="_llm_call", action_input={},
-                # <<< PASS observation_dict and agent_instance >>>
-                observation_dict=observation_dict, 
+                action_name="_call_llm", action_input={},
+                observation_dict=observation_dict,
                 history=self._history, memory=self._memory, agent_logger=agent_logger,
                 agent_instance=self
             )
-            # For now, LLM errors always stop the plan
-            agent_logger.error(f"{log_prefix} Stopping plan due to LLM call error (Reflector decision: {decision})")
-            return True, f"Erro: Falha ao comunicar com LLM ({e})"
+            return True, "Erro: Falha na chamada ao LLM."
 
-        log_llm_response = llm_response_raw[:1000] + ('...' if len(llm_response_raw) > 1000 else '')
-        agent_logger.debug(f"{log_prefix} Resposta LLM (Raw Content):\n---\n{log_llm_response}\n---")
+        agent_logger.info(f"{log_prefix} LLM Response (Raw):\n{llm_response_raw}")
+        self._history.append(f"LLM Response:\n{llm_response_raw}") # Add raw response for context
 
-        self._history.append(llm_response_raw)
+        # 3. Parse LLM Response using the new function
+        agent_logger.info(f"{log_prefix} Parsing LLM response...")
+        parsed_output = parse_react_output(llm_response_raw)
 
-        # 3. Parsear Resposta LLM
-        try:
-            thought, action_name, action_input = agent_parser.parse_llm_response(llm_response_raw, agent_logger)
-            if not action_name:
-                raise ValueError("JSON válido, mas chave 'Action' obrigatória está ausente.")
-        except (json.JSONDecodeError, ValueError) as parse_error:
-            agent_logger.error(f"{log_prefix} Parsing Failed: {parse_error}")
-            parse_error_str = f"Erro interno ao processar a resposta do LLM: {parse_error}"
-            observation_dict = {"status": "error", "action": "parsing_failed", "data": {"message": str(parse_error)}}
-            observation_str = f"Observation: {json.dumps(observation_dict)}"
+        if "error" in parsed_output:
+            parse_error_str = parsed_output["error"]
+            agent_logger.error(f"{log_prefix} Parsing Failed: {parse_error_str}")
+            observation_dict = {"status": "error", "action": "parsing_failed", "data": {"message": parse_error_str}}
+            observation_str = f"Observation: {json.dumps(observation_dict)}" # Keep observation simple
             self._history.append(observation_str)
-            # <<< Call Reflector for Parse Error >>>
-            # <<< AWAIT >>>
+            # Call Reflector for Parse Error
             decision, _ = await agent_reflector.reflect_on_observation(
                 objective=objective, plan=plan, current_step_index=current_step_index,
                 action_name="_parse_llm", action_input={},
-                observation_dict=observation_dict, # Already present
+                observation_dict=observation_dict,
                 history=self._history, memory=self._memory, agent_logger=agent_logger,
-                agent_instance=self # Already present
+                agent_instance=self
             )
             agent_logger.error(f"{log_prefix} Stopping plan due to LLM response parsing error (Reflector decision: {decision})")
-            return True, f"Erro: Falha ao processar resposta do LLM ({parse_error})"
+            return True, f"Erro: Falha ao processar resposta do LLM ({parse_error_str})"
+        
+        # Extract successfully parsed components
+        thought = parsed_output.get("thought", "N/A") # Handle missing thought gracefully
+        action_name = parsed_output.get("action")
+        action_input = parsed_output.get("action_input", {}) # Default to empty dict if missing
 
+        if not action_name:
+            missing_action_error = "Formato ReAct inválido: Chave 'Action:' obrigatória está ausente ou mal formatada."
+            agent_logger.error(f"{log_prefix} Parsing Failed: {missing_action_error}")
+            observation_dict = {"status": "error", "action": "parsing_failed", "data": {"message": missing_action_error}}
+            observation_str = f"Observation: {json.dumps(observation_dict)}"
+            self._history.append(observation_str)
+            # Call Reflector
+            decision, _ = await agent_reflector.reflect_on_observation(
+                 objective=objective, plan=plan, current_step_index=current_step_index,
+                 action_name="_parse_llm", action_input={},
+                 observation_dict=observation_dict,
+                 history=self._history, memory=self._memory, agent_logger=agent_logger,
+                 agent_instance=self
+            )
+            agent_logger.error(f"{log_prefix} Stopping plan due to missing 'Action:' (Reflector decision: {decision})")
+            return True, f"Erro: {missing_action_error}"
+
+        agent_logger.info(f"{log_prefix} Thought: {thought}")
         agent_logger.info(f"{log_prefix} Ação Decidida: {action_name}, Input: {action_input}")
 
         # 4. Executar Ação ou Finalizar e obter observation_dict

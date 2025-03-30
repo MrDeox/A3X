@@ -1,7 +1,10 @@
-requests>=2.31.0
-python-dotenv>=1.0.0
-pytest>=8.0.0
-pytest-mock
-tavily-python
-sentence-transformers
-openai
+pytest
+pytest-asyncio
+python-dotenv
+pyperclip
+requests
+pyautogui
+mss
+beautifulsoup4>=4.12.3
+lxml>=5.1.0
+readability-lxml>=0.8.1

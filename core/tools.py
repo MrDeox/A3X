@@ -17,6 +17,7 @@ try:
     from skills.modify_code import skill_modify_code
     from skills.final_answer import skill_final_answer
     from skills.memory import skill_save_memory, skill_recall_memory
+    from skills.capture_screen import skill_capture_screen
     # Adicionaremos outras skills aqui depois
 except ImportError as e:
     print(f"[Tools ERROR] Falha ao importar skills: {e}. Verifique os caminhos e nomes dos arquivos.")
@@ -29,6 +30,7 @@ except ImportError as e:
     def skill_final_answer(*args, **kwargs): return {"status": "error", "data": {"message": "skill_final_answer não carregada"}}
     def skill_save_memory(*args, **kwargs): return {"status": "error", "data": {"message": "skill_save_memory não carregada"}}
     def skill_recall_memory(*args, **kwargs): return {"status": "error", "data": {"message": "skill_recall_memory não carregada"}}
+    def skill_capture_screen(*args, **kwargs): return {"status": "error", "data": {"message": "skill_capture_screen não carregada"}}
 
 # Definição inicial das ferramentas (Formato pode evoluir)
 # Usaremos um dicionário onde a chave é o nome da ferramenta
@@ -251,6 +253,36 @@ TOOLS = {
                 }
             },
             "required": ["modification", "code_to_modify"]
+        }
+    },
+    "capture_screen": {
+        "function": skill_capture_screen,
+        "description": "Captura uma imagem da tela (monitor inteiro ou região especificada) e salva em um arquivo temporário. Retorna o caminho do arquivo.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "region": {
+                    "type": "object",
+                    "description": "Opcional: Dicionário especificando a área a capturar com {top, left, width, height}. Se omitido, captura o monitor inteiro.",
+                    "properties": {
+                        "top": {"type": "integer"},
+                        "left": {"type": "integer"},
+                        "width": {"type": "integer"},
+                        "height": {"type": "integer"}
+                    },
+                    "required": ["top", "left", "width", "height"]
+                },
+                 "monitor": {
+                     "type": "integer",
+                     "description": "Opcional: O índice do monitor a capturar (1 para primário, 2 para segundo, etc.). Padrão: 1.",
+                     "default": 1
+                 },
+                 "filename": {
+                     "type": "string",
+                     "description": "Opcional: Nome base para o arquivo de screenshot (sem extensão). Um timestamp será adicionado se omitido."
+                 }
+            },
+            # Nenhum parâmetro é estritamente obrigatório (captura monitor 1 por padrão)
         }
     }
 }
