@@ -83,13 +83,8 @@ def _initialize_agent(system_prompt: str) -> Optional[ReactAgent]:
     """Inicializa e retorna uma instância do ReactAgent."""
     logger.info("Initializing ReactAgent...")
     try:
-        # Validação da URL do LLM removida (assumindo que não é mais necessária se não usar HTTP)
-        # llm_api_url = LLAMA_SERVER_URL
-        # if not llm_api_url or not llm_api_url.startswith("http"):
-        #     raise ValueError(f"Invalid LLAMA_SERVER_URL found: {llm_api_url}")
-
+        # Validação da URL do LLM removida
         # Assume que ReactAgent não precisa mais de llm_url se for interagir diretamente
-        # Ajustar a inicialização do ReactAgent conforme necessário
         agent = ReactAgent(system_prompt=system_prompt)
         logger.info("Agent ready.")
         return agent
