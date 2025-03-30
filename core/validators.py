@@ -53,13 +53,17 @@ def validate_workspace_path(
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> Any:
+            # Capture all kwargs passed to the wrapper
+            passed_kwargs = kwargs.copy() 
+
             if WORKSPACE_PATH is None:
                 logger.error("WORKSPACE_PATH is not configured. Cannot perform path validation.")
                 return {"status": "error", "action": action_name_on_error, "data": {"message": "Internal configuration error: WORKSPACE_PATH not set."}}
 
-            path_str = kwargs.get(arg_name)
+            # Use passed_kwargs to find the path string
+            path_str = passed_kwargs.get(arg_name)
 
-            # Enhanced logic to find path_str, assuming first arg might be action_input dict
+            # Enhanced logic to find path_str in args[0] if it's a dict
             if not path_str:
                 if args and isinstance(args[0], dict):
                     action_input = args[0]
@@ -112,54 +116,39 @@ def validate_workspace_path(
                 if path_obj.is_absolute():
                     # Even if absolute, ensure it resolves before checking workspace containment
                     try:
-                       resolved_path = path_obj.resolve(strict=True) # Strict check if absolute path exists
-                    except FileNotFoundError:
-                        # If absolute path doesn't exist, but check_existence is False, we might allow it if it's within workspace bounds
-                        if check_existence:
-                             message = f"Path not found: Absolute path '{path_str}' does not exist."
-                             logger.warning(message)
-                             return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
-                        else:
-                             # Resolve without strict to check containment only
-                             resolved_path = path_obj.resolve()
-                             logger.debug(f"Absolute path '{path_str}' does not exist, but proceeding as check_existence=False.")
-                    except (OSError) as e:
+                       resolved_path = path_obj.resolve(strict=False) 
+                    except (OSError) as e: # Removed SecurityError
                         logger.error(f"Error resolving absolute path '{path_str}': {e}", exc_info=True)
                         message = f"Error resolving absolute path '{path_str}'. It might be invalid or inaccessible. Error: {e}"
                         return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
                 else:
                     # Resolve relative paths from WORKSPACE_PATH
-                    # Use strict=check_existence to control whether non-existent relative paths fail early
+                    # Use strict=False initially, check existence later
                     try:
-                        resolved_path = (WORKSPACE_PATH / path_obj).resolve(strict=check_existence)
-                    except FileNotFoundError:
-                         # This happens if strict=True and path doesn't exist
-                         message = f"Path not found: Relative path '{path_str}' does not exist within the workspace."
-                         logger.warning(message)
-                         return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
-                    except (OSError) as e:
+                        resolved_path = (WORKSPACE_PATH / path_obj).resolve(strict=False)
+                    except (OSError) as e: # Removed SecurityError
                         logger.error(f"Error resolving relative path '{path_str}': {e}", exc_info=True)
                         message = f"Error resolving relative path '{path_str}'. It might be invalid or inaccessible. Error: {e}"
                         return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
 
                 # --- Workspace Check --- 
-                # Need to re-resolve without strict if strict=False and path didn't exist initially
-                if not check_existence and not resolved_path.exists():
-                     # Re-resolve non-strictly ONLY to check containment boundary
-                     containment_check_path = (WORKSPACE_PATH / path_obj).resolve() if not path_obj.is_absolute() else path_obj.resolve()
-                else:
-                     containment_check_path = resolved_path
+                # Re-resolve might not be needed if initial resolve was non-strict
+                containment_check_path = resolved_path 
+                # if not check_existence and not resolved_path.exists():
+                #      # Re-resolve non-strictly ONLY to check containment boundary
+                #      containment_check_path = (WORKSPACE_PATH / path_obj).resolve() if not path_obj.is_absolute() else path_obj.resolve()
+                # else:
+                #      containment_check_path = resolved_path
                 
                 if not containment_check_path.is_relative_to(WORKSPACE_PATH):
                     message = f"Access denied: Path '{path_str}' resolves outside the designated workspace ('{WORKSPACE_PATH}'). Resolved to '{containment_check_path}'"
                     logger.warning(message)
                     return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
 
-                # --- Existence Check (Redundant if strict=True was used, but safe check) ---
+                # --- Existence Check --- 
                 path_exists = resolved_path.exists()
                 if check_existence and not path_exists:
-                    # This case should ideally be caught by strict=True, but included for robustness
-                    message = f"Path not found: '{path_str}' (resolved to '{resolved_path}') does not exist." 
+                    message = f"Path not found: '{path_str}' (resolved to '{resolved_path}') does not exist."
                     logger.warning(message)
                     return {"status": "error", "action": action_name_on_error, "data": {"message": message}}
 
@@ -183,13 +172,44 @@ def validate_workspace_path(
 
                 # --- Validation Success --- 
                 logger.debug(f"Path validation successful for '{path_str}'. Resolved to: {resolved_path}")
-                # Inject the resolved path into the function call
-                # Ensure we don't overwrite if already present (though functools.wraps helps)
-                kwargs['resolved_path'] = resolved_path 
-                # Pass the original path string as well, might be useful for messages
-                kwargs['original_path_str'] = path_str 
+                
+                # Prepare kwargs for the wrapped function
+                # Start with all originally passed kwargs
+                func_kwargs = passed_kwargs.copy()
+                
+                # Inject resolved path and original string
+                func_kwargs['resolved_path'] = resolved_path
+                func_kwargs['original_path_str'] = path_str
 
-                return func(*args, **kwargs)
+                # Remove the original path argument name if it existed
+                if arg_name in func_kwargs:
+                    del func_kwargs[arg_name]
+                
+                # Call the original function with original args and *modified* kwargs
+                # Ensure the original first argument (action_input dict) is passed
+                # if it exists and args are present.
+                original_args = list(args)
+                if args and isinstance(args[0], dict) and 'action_input' not in func_kwargs:
+                     # If action_input was passed positionally, keep it that way.
+                     # The func_kwargs already contains resolved_path etc.
+                     return func(*original_args, **func_kwargs)
+                elif 'action_input' in passed_kwargs and 'action_input' not in func_kwargs:
+                     # If action_input was passed as a keyword arg, add it back to func_kwargs
+                     # This path might be less common for skills
+                     func_kwargs['action_input'] = passed_kwargs['action_input']
+                     return func(**func_kwargs) # Call without original args if action_input was kwarg
+                else:
+                     # Fallback: Assume action_input components were passed as kwargs.
+                     # Reconstruct the action_input dict from passed_kwargs, excluding injected/context args.
+                     injected_args = {'resolved_path', 'original_path_str'}
+                     context_args = {'agent_memory', 'agent_history'} # Assuming these are standard
+                     reconstructed_action_input = {
+                         k: v for k, v in passed_kwargs.items()
+                         if k not in injected_args and k not in context_args
+                     }
+                     # Call func with reconstructed action_input positionally and injected/context kwargs
+                     # Note: func_kwargs already has injected + context args from the copy earlier
+                     return func(reconstructed_action_input, **func_kwargs)
 
             except (ValueError, OSError) as e: # Catch potential final resolution/filesystem errors
                  logger.error(f"Error validating path '{path_str}': {e}", exc_info=True)

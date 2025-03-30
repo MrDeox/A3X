@@ -2,8 +2,24 @@ import re
 import requests
 import json
 import logging
+import os
 # --- Import BASE URL from config ---
-from core.config import LLAMA_SERVER_URL as BASE_LLM_URL
+# <<< REMOVED direct import of LLAMA_SERVER_URL >>>
+# from core.config import LLAMA_SERVER_URL as BASE_LLM_URL
+# <<< IMPORT call_llm to potentially get the URL implicitly >>>
+# Note: generate_code makes its own HTTP call, doesn't use call_llm yet.
+#       Need to decide if we refactor generate_code to use call_llm
+#       or get the default URL differently.
+# For now, let's try getting the default from llm_interface's logic.
+try:
+    # Attempt to get the resolved default URL from llm_interface internal var
+    # This is a bit fragile, relies on internal details of llm_interface
+    from core.llm_interface import _DEFAULT_LLM_URL, _CONFIG_LLAMA_URL
+    # Prioritize config URL if available, then internal default, then env var
+    BASE_LLM_URL = _CONFIG_LLAMA_URL or _DEFAULT_LLM_URL or os.getenv("LLAMA_SERVER_URL", _DEFAULT_LLM_URL)
+except ImportError:
+    logging.warning("Could not import URL config from llm_interface. Using hardcoded default or env var.")
+    BASE_LLM_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions")
 
 # <<< ADDED Logger initialization >>>
 logger = logging.getLogger(__name__)

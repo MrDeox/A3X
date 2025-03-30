@@ -75,14 +75,14 @@ def mock_tool_executor():
 
 # Updated agent_instance fixture using the new dependencies
 @pytest.fixture
-def agent_instance(mock_llm_interface, mock_planner, mock_reflector, mock_parser, mock_tool_executor, mock_db):
+def agent_instance(mock_llm_interface, mock_planner, mock_reflector, mock_parser, mock_tool_executor, mock_db, mock_llm_url):
     """Provides a fully mocked Agent instance for testing basic execution flow."""
     # Mock load_agent_state which might be called during init
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr("core.agent.load_agent_state", lambda _: {})
-        # Instantiate ReactAgent with only llm_url and system_prompt
+        # Instantiate ReactAgent with the provided mock_llm_url and a mock system_prompt
         # The other mock fixtures are used by tests to patch module-level functions
-        agent_obj = ReactAgent(llm_url="mock_llm_url", system_prompt="mock_system_prompt")
+        agent_obj = ReactAgent(llm_url=mock_llm_url, system_prompt="mock_system_prompt")
     return agent_obj # Return the agent object
 
 
@@ -279,3 +279,9 @@ def managed_llama_server(request):
 #
 
 # Removed old agent_instance and LLM_JSON_RESPONSE_HELLO_FINAL fixtures
+
+@pytest.fixture
+def mock_llm_url():
+    """Fixture para fornecer uma URL mock para o LLM."""
+    # <<< MODIFIED: Use a valid local URL format >>>
+    return "http://127.0.0.1:12345/v1/chat/completions" # Avoids DNS resolution errors

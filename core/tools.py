@@ -91,26 +91,6 @@ except ImportError:
     logger.error("Failed to import skill: modify_code", exc_info=True)
 
 try:
-    from skills.text_to_speech import skill_text_to_speech
-    TOOLS['text_to_speech'] = {
-        "function": skill_text_to_speech,
-        "description": "Converts text to speech using Piper TTS. Args: text, voice_model_path, output_dir (optional), filename (optional)",
-        "parameters": {"text": "Text to convert", "voice_model_path": "Path to .onnx model", "output_dir": "(Optional) Output directory", "filename": "(Optional) Output filename (no extension)"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: text_to_speech", exc_info=True)
-
-try:
-    from skills.translate_text import skill_translate_text
-    TOOLS['translate_text'] = {
-        "function": skill_translate_text,
-        "description": "Translates text between languages. Args: text, source_lang, target_lang",
-        "parameters": {"text": "Text to translate", "source_lang": "Source language code (e.g., en)", "target_lang": "Target language code (e.g., pt)"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: translate_text", exc_info=True)
-
-try:
     from skills.ocr_image import skill_ocr_image
     TOOLS['ocr_image'] = {
         "function": skill_ocr_image,
@@ -119,16 +99,6 @@ try:
     }
 except ImportError:
     logger.error("Failed to import skill: ocr_image", exc_info=True)
-
-try:
-    from skills.detect_objects import skill_detect_objects
-    TOOLS['detect_objects'] = {
-        "function": skill_detect_objects,
-        "description": "Detects objects in an image using YOLOv8. Args: image_path, confidence_threshold (optional, default 0.25)",
-        "parameters": {"image_path": "Path to the image file", "confidence_threshold": "(Optional) Minimum confidence score (0.0-1.0)"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: detect_objects", exc_info=True)
 
 try:
     from skills.classify_sentiment import skill_classify_sentiment
