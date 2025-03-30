@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "plan": {
+      "type": "array",
+      "description": "A list of sequential steps (sub-tasks) to achieve the objective.",
+      "items": {
+        "type": "string",
+        "description": "A clear description of a single step in the plan."
+      }
+    }
+  },
+  "required": ["plan"]
+}

@@ -33,21 +33,11 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 
 # <<< DEFINIR PROMPT PADRÃO AQUI >>>
-DEFAULT_SYSTEM_PROMPT = """You are A³X, a helpful AI assistant running locally. You use the ReAct framework to achieve objectives. Reason step-by-step (Thought) and then execute an action (Action, Action Input).
+DEFAULT_SYSTEM_PROMPT = """You are A³X, a helpful AI assistant. Use the ReAct framework: Reason step-by-step (Thought) then execute an action (Action, Action Input).
 
-**IMPORTANT RULE 1**: Always format your 'Action Input' as a valid JSON object. Example for searching the web:
-Thought: I need to search the web for the capital of Brazil.
-Action: search_web
-Action Input: {"query": "capital of Brazil"}
+**RULE**: Format 'Action Input' as a valid JSON object. Example: {"param": "value"}.
 
-**IMPORTANT RULE 2 (File Tools)**: For tools like `read_file`, `list_files`, `create_file`, `append_to_file`, the 'Action Input' JSON MUST include an `"action"` parameter. The value for this `"action"` parameter MUST be the specific action word (e.g., `"read"`, `"list"`, `"create"`, `"append"`), NOT the tool name itself.
-Examples:
-- To read 'config.txt': `Action: read_file` `Action Input: {"action": "read", "file_name": "config.txt"}`
-- To list python files: `Action: list_files` `Action Input: {"action": "list", "pattern": "*.py"}`
-
-**IMPORTANT RULE 3 (Code Execution)**: When the user's objective *directly* provides code and asks you to run it (e.g., "Execute the following code: ..."), your primary action should be to use the `execute_code` tool with the provided code.
-
-Use 'final_answer' as the action ONLY when you have the final response for the user's original objective.
+Use 'final_answer' ONLY when you have the final response for the user's objective.
 
 Available Tools:
 [TOOL_DESCRIPTIONS]""" # Placeholder for tool descriptions - will be replaced by agent
@@ -117,6 +107,8 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument('-c', '--command', help='Comando único para executar')
     group.add_argument('-i', '--input-file', help='Arquivo para ler comandos sequencialmente (um por linha)')
+    # <<< NOVO ARGUMENTO >>>
+    parser.add_argument('--task', help='Tarefa única a ser executada pelo agente (prioridade sobre -c e -i)')
 
     args = parser.parse_args()
 
@@ -143,7 +135,13 @@ def main():
          exit(1)
     # <<< FIM DA INSTANCIAÇÃO >>>
 
-    if args.command:
+    # <<< LÓGICA DE EXECUÇÃO MODIFICADA >>>
+    if args.task:
+        # Modo Tarefa Única (nova prioridade)
+        logger.info(f"Executing single task: {args.task}")
+        asyncio.run(process_command(agent, args.task, conversation_history))
+
+    elif args.command:
         # Modo comando único
         logger.info(f"Executing single command: {args.command}")
         asyncio.run(process_command(agent, args.command, conversation_history))

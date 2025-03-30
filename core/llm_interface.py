@@ -65,7 +65,8 @@ async def call_llm(messages: List[Dict[str, str]], llm_url: Optional[str] = None
 
     start_time = datetime.datetime.now()
     try:
-        response = requests.post(target_url, headers=headers, json=payload, timeout=120) # Timeout de 120 segundos
+        # Aumenta o timeout para 300 segundos (5 minutos)
+        response = requests.post(target_url, headers=headers, json=payload, timeout=300)
         response.raise_for_status() # Levanta erro para status HTTP 4xx/5xx
 
         end_time = datetime.datetime.now()
