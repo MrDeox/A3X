@@ -28,14 +28,21 @@ except ImportError as e:
 
 # <<< ADDED Import from new display module >>>
 try:
-    from cli.display import handle_agent_interaction
+    from cli.display import handle_agent_interaction, stream_direct_llm
 except ImportError as e:
     print(f"[CLI Interface FATAL] Failed to import display module: {e}. Ensure cli/display.py exists.")
     sys.exit(1)
 
-# Configurar logging (poderia vir de uma config centralizada)
-logging.basicConfig(level=LOG_LEVEL, format='[%(levelname)s CLI] %(message)s')
-logger = logging.getLogger(__name__)
+# <<< ADDED Import for logging setup >>>
+try:
+    from core.logging_config import setup_logging
+except ImportError as e:
+    print(f"[CLI Interface FATAL] Failed to import logging config: {e}.")
+    sys.exit(1)
+
+# <<< REMOVED Local Logging Setup >>>
+# logging.basicConfig(level=LOG_LEVEL, format='[%(levelname)s CLI] %(message)s')
+logger = logging.getLogger(__name__) # Keep getting the logger for this module
 
 # Instância do Console Rich
 console = Console()
@@ -106,20 +113,6 @@ def change_to_project_root():
         console.print(f"[bold red][Fatal Error][/] Could not change to project directory: {cd_err}")
         sys.exit(1)
 
-async def stream_direct_llm(prompt: str):
-    """Chama o LLM diretamente em modo streaming."""
-    logger.info(f"Streaming direct prompt: '{prompt[:50]}...'")
-    console.print(Panel("--- Streaming LLM Response ---", border_style="blue"))
-    messages = [{"role": "user", "content": prompt}]
-    try:
-        # Assume call_llm handles initialization/connection implicitly now
-        async for chunk in call_llm(messages, stream=True):
-            console.print(chunk, end="")
-        console.print() # Final newline
-    except Exception as stream_err:
-        logger.exception("Error during direct LLM stream:")
-        console.print(f"\n[bold red][Error Streaming][/] {stream_err}")
-
 async def _run_interactive_mode(agent: ReactAgent):
     """Executa o loop de interação com o usuário."""
     console.print("[bold green]Modo Interativo A³X.[/] Digite 'sair', 'exit' ou 'quit' para terminar.")
@@ -160,6 +153,7 @@ async def _process_input_file(agent: ReactAgent, file_path: str):
 def run_cli():
     """Função principal que configura e executa a interface de linha de comando."""
     load_dotenv() # Carrega .env
+    setup_logging() # <<< CALL Centralized Logging Setup >>>
     change_to_project_root() # Garante que estamos no diretório certo
 
     args = _parse_arguments()

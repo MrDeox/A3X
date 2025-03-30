@@ -1,4 +1,5 @@
 import logging
+import asyncio # Added asyncio
 from typing import Optional # Added for type hinting compatibility if needed later
 
 from rich.console import Console
@@ -7,10 +8,12 @@ from rich.panel import Panel
 # Assuming project_root setup is handled elsewhere or core modules are in PYTHONPATH
 try:
     from core.agent import ReactAgent # Needs ReactAgent type hint
+    from core.llm_interface import call_llm # Added call_llm import
 except ImportError:
     # Handle case where core modules might not be directly importable this way
     # This might require adjusting PYTHONPATH or how ReactAgent is passed
     ReactAgent = object # Placeholder if import fails, adjust as necessary
+    call_llm = None # Placeholder if import fails
 
 # Logger setup (consider passing logger instance or using a shared config)
 logger = logging.getLogger(__name__) # Or get logger configured in interface.py
@@ -86,4 +89,23 @@ Input: {action_input}""", title="🎬 Action", border_style="cyan", title_align=
     #     "agent_outcome": agent_outcome
     # })
     # ... (limitar histórico se necessário) ...
+
+# Added stream_direct_llm function
+async def stream_direct_llm(prompt: str):
+    """Chama o LLM diretamente em modo streaming e exibe na console."""
+    if not call_llm: # Check if import failed
+        console.print("[bold red][Error][/] LLM interface not available.")
+        return
+
+    logger.info(f"Streaming direct prompt: '{prompt[:50]}...'")
+    console.print(Panel("--- Streaming LLM Response ---", border_style="blue"))
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        # Assume call_llm handles initialization/connection implicitly now
+        async for chunk in call_llm(messages, stream=True):
+            console.print(chunk, end="")
+        console.print() # Final newline
+    except Exception as stream_err:
+        logger.exception("Error during direct LLM stream:")
+        console.print(f"\n[bold red][Error Streaming][/] {stream_err}")
 
