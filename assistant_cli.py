@@ -6,6 +6,9 @@ import argparse
 import time
 import traceback # Para debug de erros
 import logging # Usar logging
+import sys
+import subprocess # Necessário para executar código via firejail
+import asyncio # <<< Adicionar import >>>
 
 # Configurar logging básico para o CLI
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s CLI] %(message)s')
@@ -18,11 +21,16 @@ load_dotenv()
 # Removidos NLU, Planner, Dispatcher por enquanto
 # from core.nlu import interpret_command
 # from core.nlg import generate_natural_response, generate_simplified_response # Mantém NLG por enquanto
-from core.config import MAX_HISTORY_TURNS, LLAMA_SERVER_URL # <<< Import LLAMA_SERVER_URL >>>
+from core.config import MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LOG_LEVEL, DB_FILE, AGENT_STATE_ID # <<< Import LLAMA_SERVER_URL >>>
 # from core.dispatcher import get_skill, SKILL_DISPATCHER
 # from core.planner import generate_plan
-from core.db_utils import initialize_database # <<< IMPORT DB INIT >>>
+from core.db_utils import initialize_database, save_agent_state, load_agent_state
 from core.agent import ReactAgent # <-- NOVO IMPORT
+
+# Adiciona o diretório pai ao sys.path para encontrar a pasta 'core'
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+sys.path.insert(0, project_root)
 
 # <<< DEFINIR PROMPT PADRÃO AQUI >>>
 DEFAULT_SYSTEM_PROMPT = """You are A³X, a helpful AI assistant running locally. You use the ReAct framework to achieve objectives. Reason step-by-step (Thought) and then execute an action (Action, Action Input).
@@ -37,13 +45,37 @@ Examples:
 - To read 'config.txt': `Action: read_file` `Action Input: {"action": "read", "file_name": "config.txt"}`
 - To list python files: `Action: list_files` `Action Input: {"action": "list", "pattern": "*.py"}`
 
+**IMPORTANT RULE 3 (Code Execution)**: When the user's objective *directly* provides code and asks you to run it (e.g., "Execute the following code: ..."), your primary action should be to use the `execute_code` tool with the provided code.
+
 Use 'final_answer' as the action ONLY when you have the final response for the user's original objective.
 
 Available Tools:
 [TOOL_DESCRIPTIONS]""" # Placeholder for tool descriptions - will be replaced by agent
 
+# --- Funções Auxiliares ---
+
+# Função para garantir que estamos no diretório correto
+def change_to_project_root():
+    """Garante que o script seja executado a partir do diretório raiz do projeto."""
+    # Determina o diretório raiz do projeto (diretório pai do diretório do script)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    try:
+        # Tenta ir para a raiz apenas se não estiver lá
+        if os.getcwd() != project_root:
+            os.chdir(project_root)
+        logger.info(f"Running in directory: {os.getcwd()}")
+    except FileNotFoundError:
+        logger.error(f"Project root directory not found: {project_root}. Exiting.")
+        print(f"[Fatal Error] Project directory not found: {project_root}")
+        sys.exit(1)
+    except Exception as cd_err:
+        logger.error(f"Error changing directory to {project_root}: {cd_err}. Exiting.")
+        print(f"[Fatal Error] Could not change to project directory: {cd_err}")
+        sys.exit(1)
+
 # Função process_command agora recebe a instância do agente
-def process_command(agent: ReactAgent, command: str, conversation_history: list) -> None:
+async def process_command(agent: ReactAgent, command: str, conversation_history: list) -> None:
     """Processa um único comando usando a instância fornecida do Agente ReAct."""
     logger.info(f"Processing command: '{command}'")
     print(f"\n> {command}")
@@ -56,7 +88,7 @@ def process_command(agent: ReactAgent, command: str, conversation_history: list)
 
     try:
         # Usa a instância do agente passada como argumento
-        final_response = agent.run(objective=command)
+        final_response = await agent.run(objective=command)
         agent_outcome = {"status": "success", "action": "react_cycle_completed", "data": {"message": final_response}}
         logger.info(f"Agent completed. Final response: {final_response}")
 
@@ -79,20 +111,7 @@ def process_command(agent: ReactAgent, command: str, conversation_history: list)
 
 def main():
     # Garante execução no diretório raiz do projeto
-    project_root = "/home/arthur/Projects/A3X" # AJUSTE SE NECESSÁRIO
-    try:
-        # Tenta ir para a raiz apenas se não estiver lá
-        if os.getcwd() != project_root:
-             os.chdir(project_root)
-        logger.info(f"Running in directory: {os.getcwd()}")
-    except FileNotFoundError:
-        logger.error(f"Project root directory not found: {project_root}. Exiting.")
-        print(f"[Fatal Error] Project directory not found: {project_root}")
-        exit(1)
-    except Exception as cd_err:
-         logger.error(f"Error changing directory to {project_root}: {cd_err}. Exiting.")
-         print(f"[Fatal Error] Could not change to project directory: {cd_err}")
-         exit(1)
+    change_to_project_root()
 
     parser = argparse.ArgumentParser(description='Assistente CLI A³X (ReAct)')
     group = parser.add_mutually_exclusive_group()
@@ -126,7 +145,8 @@ def main():
 
     if args.command:
         # Modo comando único
-        process_command(agent, args.command, conversation_history) # Passa a instância agent
+        logger.info(f"Executing single command: {args.command}")
+        asyncio.run(process_command(agent, args.command, conversation_history))
 
     elif args.input_file:
         # Modo arquivo de entrada
@@ -139,7 +159,7 @@ def main():
                 for line_num, command in enumerate(commands, 1):
                     logger.info(f"--- Processing command from line {line_num} ---")
                     print(f"\n--- Command from Line {line_num} ---")
-                    process_command(agent, command, conversation_history) # Passa a MESMA instância agent
+                    asyncio.run(process_command(agent, command, conversation_history))
                     time.sleep(1) # Pausa opcional
             logger.info("Finished processing input file.")
             print("\n[Info] End of input file.")
@@ -162,7 +182,7 @@ def main():
                     break
                 if not command:
                     continue
-                process_command(agent, command, conversation_history) # Passa a MESMA instância agent
+                asyncio.run(process_command(agent, command, conversation_history))
             except KeyboardInterrupt:
                 logger.info("KeyboardInterrupt received. Shutting down.")
                 print("\nExiting assistant...")

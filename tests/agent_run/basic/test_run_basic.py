@@ -1,48 +1,133 @@
 # tests/test_agent_run_basic.py
 import pytest
 import json
-from unittest.mock import MagicMock, call, AsyncMock
+from unittest.mock import MagicMock, call, AsyncMock, patch
+import logging
 
 # Import necessary components (adjust paths if needed)
 from core.agent import ReactAgent
-from core.tools import TOOLS
+from core.tools import TOOLS, get_tool_descriptions
 from core.config import MAX_REACT_ITERATIONS
 # Import exception type if needed for specific error tests, e.g.:
 from requests.exceptions import HTTPError, Timeout, RequestException
+
+# --- Mock Data Fixtures for test_react_agent_run_list_files ---
+
+@pytest.fixture
+def LLM_JSON_RESPONSE_LIST_FILES():
+    """Mock LLM response suggesting the list_files tool."""
+    return json.dumps({
+        "thought": "The user wants to list files in the current directory. I should use the list_files tool.",
+        "Action": "list_files",
+        "action_input": {"directory": "."}
+    })
+
+@pytest.fixture
+def LIST_FILES_RESULT_SUCCESS():
+    """Mock successful result from the list_files (manage_files) tool."""
+    # Simulate finding a couple of files/directories
+    return {"status": "success", "files": ["file1.txt", "subdir", "file2.py"]}
+
+@pytest.fixture
+def LLM_JSON_RESPONSE_LIST_FILES_FINAL(LIST_FILES_RESULT_SUCCESS):
+    """Mock LLM response providing the final answer after listing files."""
+    # Escape the JSON string within the final answer content if needed,
+    # or format it clearly for the LLM context.
+    formatted_result = json.dumps(LIST_FILES_RESULT_SUCCESS, indent=2)
+    return json.dumps({
+        "thought": f"The 'list_files' tool executed successfully and returned the file list. I should present this result to the user using the final_answer tool. The result was: {formatted_result}",
+        "Action": "final_answer",
+        "action_input": {"answer": f"Successfully listed files in '.':\n```json\n{formatted_result}\n```"}
+    })
+
+@pytest.fixture
+def mock_list_files_tool(LIST_FILES_RESULT_SUCCESS):
+    """Mocks the tool_executor.execute_tool specifically for 'list_files'."""
+    mock_execute = AsyncMock()
+    # Configure the mock to return the success result ONLY when called with
+    # tool_name='list_files' and action_input={'directory': '.'}
+    def side_effect(tool_name: str, action_input: dict, tools_dict: dict, agent_logger: logging.Logger):
+        if tool_name == "list_files" and action_input.get("directory") == ".":
+             return LIST_FILES_RESULT_SUCCESS
+        # Return a default value or raise an error for unexpected calls if needed
+        return {"status": "error", "message": "Mock received unexpected tool call"}
+    mock_execute.side_effect = side_effect
+    return mock_execute
 
 # --- Basic Agent Run Tests ---
 
 @pytest.mark.asyncio
 async def test_react_agent_run_list_files(
-    agent_instance, mock_db, mocker,
-    LLM_JSON_RESPONSE_LIST_FILES, LLM_JSON_RESPONSE_LIST_FILES_FINAL,
-    LIST_FILES_RESULT_SUCCESS, mock_list_files_tool # Use fixtures
+    agent_instance, # Uses the agent_instance global from conftest.py
+    managed_llama_server, # Uses the server fixture from conftest.py
+    LLM_JSON_RESPONSE_LIST_FILES,
+    LLM_JSON_RESPONSE_LIST_FILES_FINAL,
+    mock_list_files_tool, # Mock for execute_tool
+    LIST_FILES_RESULT_SUCCESS # Used by LLM_JSON_RESPONSE_LIST_FILES_FINAL and mock_list_files_tool
 ):
-    """Testa um fluxo básico com a ferramenta list_files e final_answer, agora com planejamento."""
-    agent, mock_call_llm = agent_instance 
+    """
+    Tests a simple run where the agent lists files using the manage_files tool.
+    Verifies the flow: LLM -> Tool -> LLM -> Final Answer.
+    Mocks the LLM calls and the tool execution via patching module functions.
+    """
+    # Mock das chamadas de função relevantes nos módulos core
+    # Patching a função `call_llm` no módulo `core.agent`
+    # Patching a função `execute_tool` no módulo `core.tool_executor`
+    # Patching a função `generate_plan` no módulo `core.planner`
+    # Patching a função `reflect_on_observation` no módulo `core.agent_reflector`
+    with patch('core.agent.call_llm', new_callable=AsyncMock) as mock_call_llm, \
+         patch('core.tool_executor.execute_tool', new=mock_list_files_tool), \
+         patch('core.planner.generate_plan', new_callable=AsyncMock) as mock_generate_plan, \
+         patch('core.agent_reflector.reflect_on_observation', new_callable=AsyncMock) as mock_reflect:
 
-    objective = "Liste os arquivos no diretório atual."
-    mock_plan = ["Step 1: List files in current directory.", "Step 2: Provide the final answer."]
-    mock_planner = mocker.patch('core.agent.planner.generate_plan', return_value=mock_plan)
+        # 1. Mock Planning: Assume planner generates a simple plan
+        mock_generate_plan.return_value = ["Step 1: List files in the current directory.", "Step 2: Provide the final answer."]
 
-    # Configure side effects for the two LLM calls needed
-    mock_call_llm.side_effect = [
-        LLM_JSON_RESPONSE_LIST_FILES,       # Response for step 1
-        LLM_JSON_RESPONSE_LIST_FILES_FINAL  # Response for step 2
-    ]
+        # 2. Mock Reflector: Continue after tool, complete after final answer
+        reflector_decisions = [("continue_plan", None), ("plan_complete", None)] # Updated to return tuples
+        mock_reflect.side_effect = reflector_decisions
 
-    # Tool mock already done by mock_list_files_tool fixture
-    mock_tool_func = mock_list_files_tool # Get the mock function from fixture
+        # 3. Mock LLM calls for the ReAct cycle within _execute_react_cycle
+        mock_call_llm.side_effect = [
+            LLM_JSON_RESPONSE_LIST_FILES,
+            LLM_JSON_RESPONSE_LIST_FILES_FINAL,
+        ]
 
-    # Execute o run
-    final_response = await agent.run(objective)
+        # 4. Run the agent
+        objective = "List the files in the current directory."
+        # Need agent logger for assertions
+        agent_logger = logging.getLogger("core.agent") 
+        agent_instance.agent_logger = agent_logger # Attach logger if not done automatically
+        # Need tool descriptions for assertion
+        tool_desc = get_tool_descriptions()
 
-    # Verificações
-    mock_planner.assert_awaited_once_with(objective, mocker.ANY, mocker.ANY, agent.llm_url)
-    assert mock_call_llm.await_count == 2
-    mock_tool_func.assert_called_once_with(action_input={'directory': '.'})
-    assert "Files listed: mock_file.txt" in final_response
-    mock_db.assert_called_once() # Check if state was saved
+        final_response = await agent_instance.run(objective)
+
+        # --- Asserts ---
+        # Verificar se o plano foi gerado (Adjust args based on actual planner.generate_plan signature)
+        # Expect tool descriptions string, not the tools dictionary
+        mock_generate_plan.assert_awaited_once_with(objective, tool_desc, agent_instance.agent_logger, agent_instance.llm_url)
+
+        # Verificar chamadas ao LLM (duas vezes dentro do ciclo ReAct)
+        assert mock_call_llm.call_count == 2
+        # (Optional: check specific LLM call args if needed)
+
+        # Verify tool executor call (mock_list_files_tool)
+        mock_list_files_tool.assert_awaited_once_with(
+            tool_name="list_files",
+            action_input={"directory": "."},
+            tools_dict=agent_instance.tools,
+            agent_logger=agent_instance.agent_logger
+        )
+
+        # Verify Reflector calls
+        assert mock_reflect.call_count == 2
+        # (Optional: check observation_dict passed to reflector)
+
+        # Verify the final response (Adjust based on what run returns on success)
+        final_answer_content = json.loads(LLM_JSON_RESPONSE_LIST_FILES_FINAL)["action_input"]["answer"]
+        assert final_response is not None
+        assert final_answer_content in final_response # Check if the final answer is in the returned string
 
 @pytest.mark.asyncio
 async def test_react_agent_run_final_answer_direct(

@@ -68,7 +68,7 @@ TOOLS = {
     },
     "execute_code": {
         "function": skill_execute_code,
-        "description": "Executa um bloco de código Python fornecido diretamente no Action Input, dentro de um ambiente seguro (sandbox).",
+        "description": "Use esta ferramenta para EXECUTAR um bloco de código Python fornecido diretamente no parâmetro 'code'. O código é executado em um ambiente seguro (sandbox). Esta é a ferramenta correta quando o objetivo é rodar um código específico.",
         "parameters": {
             "type": "object",
             "properties": {

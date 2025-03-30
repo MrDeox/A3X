@@ -211,8 +211,8 @@ def test_react_search_web():
     print(f"  >> Resposta final encontrada contendo: 'A capital da França é Paris'")
 
 
-@pytest.mark.skip(reason="Integration test needs review/update for current agent logic")
-def test_react_list_files():
+# @pytest.mark.skip(reason="Integration test needs review/update for current agent logic") # Removed skip
+def test_react_list_files(managed_llama_server): # Added fixture
     """
     Testa o fluxo ReAct para a ferramenta list_files (usando manage_files internamente).
     Usa verificações de substrings.

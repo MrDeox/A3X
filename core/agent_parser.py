@@ -17,7 +17,7 @@ def parse_llm_response(response: str, agent_logger: logging.Logger) -> Tuple[Opt
 
         thought = data.get("Thought")
         action = data.get("Action")
-        action_input = data.get("Action Input") # This should already be a dict if schema is respected
+        action_input = data.get("action_input") # Corrected key: lowercase, no space
 
         # Validação básica
         if not action:
@@ -26,15 +26,15 @@ def parse_llm_response(response: str, agent_logger: logging.Logger) -> Tuple[Opt
              # Por enquanto, vamos logar e retornar None para action, o que deve ser tratado no loop run
              return thought, None, action_input
         if action == "final_answer" and not action_input:
-             agent_logger.warning(f"[Agent Parse WARN] 'final_answer' action received without 'Action Input'. Creating default. JSON: {data}")
+             agent_logger.warning(f"[Agent Parse WARN] 'final_answer' action received without 'action_input'. Creating default. JSON: {data}")
              action_input = {"answer": "Erro: Ação final solicitada sem fornecer a resposta."}
         elif action != "final_answer" and action_input is None:
-             agent_logger.info(f"[Agent Parse INFO] Action '{action}' received without 'Action Input'. Assuming empty dict. JSON: {data}")
+             agent_logger.info(f"[Agent Parse INFO] Action '{action}' received without 'action_input'. Assuming empty dict. JSON: {data}")
              action_input = {} # Assume dict vazio se não houver input para outras ações
 
         # Garante que action_input é um dict se não for None
         if action_input is not None and not isinstance(action_input, dict):
-             agent_logger.error(f"[Agent Parse ERROR] 'Action Input' in JSON is not a dictionary: {type(action_input)}. Content: {action_input}. Treating as empty.")
+             agent_logger.error(f"[Agent Parse ERROR] 'action_input' in JSON is not a dictionary: {type(action_input)}. Content: {action_input}. Treating as empty.")
              action_input = {} # Fallback para dict vazio se o tipo estiver errado
 
         agent_logger.info(f"[Agent Parse INFO] JSON parsed successfully. Action: '{action}'")
