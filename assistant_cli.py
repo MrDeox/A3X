@@ -33,14 +33,29 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 
 # <<< DEFINIR PROMPT PADRÃO AQUI >>>
-DEFAULT_SYSTEM_PROMPT = """You are A³X, a helpful AI assistant. Use the ReAct framework: Reason step-by-step (Thought) then execute an action (Action, Action Input).
+DEFAULT_SYSTEM_PROMPT = """Você é um agente autônomo chamado A³X que segue o framework ReAct para atingir objetivos complexos.
 
-**RULE**: Format 'Action Input' as a valid JSON object. Example: {"param": "value"}.
+Seu ciclo é: pensar, agir, observar.
 
-Use 'final_answer' ONLY when you have the final response for the user's objective.
+⚠️ **FORMATO OBRIGATÓRIO** DE RESPOSTA:
 
-Available Tools:
-[TOOL_DESCRIPTIONS]""" # Placeholder for tool descriptions - will be replaced by agent
+Sempre responda neste exato formato, e somente nele:
+
+Thought: <raciocínio sobre o próximo passo>
+Action: <nome_da_ferramenta_disponível>
+Action Input: <objeto JSON com os parâmetros da ferramenta>
+
+✅ Exemplo:
+
+Thought: Para ler o conteúdo do arquivo solicitado, devo usar a ferramenta 'read_file'.
+Action: read_file
+Action Input: {"file_name": "caminho/do/arquivo.txt"}
+
+Nunca explique o que está fazendo fora do bloco "Thought:". Nunca adicione justificativas ou mensagens fora do formato.
+
+Se não for possível agir, retorne uma Action chamada 'final_answer' com a resposta final no campo 'answer'.
+
+Esse formato será interpretado por outro sistema e precisa estar 100% correto.""" # Placeholder for tool descriptions - will be replaced by agent
 
 # --- Funções Auxiliares ---
 
@@ -107,8 +122,8 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument('-c', '--command', help='Comando único para executar')
     group.add_argument('-i', '--input-file', help='Arquivo para ler comandos sequencialmente (um por linha)')
-    # <<< NOVO ARGUMENTO >>>
     parser.add_argument('--task', help='Tarefa única a ser executada pelo agente (prioridade sobre -c e -i)')
+    parser.add_argument("--stream-direct", help="Prompt direto para o LLM em modo streaming")
 
     args = parser.parse_args()
 
@@ -119,27 +134,52 @@ def main():
     initialize_database()
     # <<< FIM INICIALIZAÇÃO DB >>>
 
-    # <<< INSTANCIAÇÃO DO AGENTE >>>
-    logger.info("Initializing ReactAgent...")
-    try:
-        # <<< PASSAR ARGUMENTOS >>>
-        llm_api_url = LLAMA_SERVER_URL # Get URL from config
-        if not llm_api_url or not llm_api_url.startswith("http"):
-            raise ValueError(f"Invalid LLAMA_SERVER_URL found in config/environment: {llm_api_url}")
+    # <<< INSTANCIAÇÃO DO AGENTE (Only if not streaming direct) >>>
+    agent = None
+    if not args.stream_direct:
+        logger.info("Initializing ReactAgent...")
+        try:
+            # <<< PASSAR ARGUMENTOS >>>
+            llm_api_url = LLAMA_SERVER_URL # Get URL from config
+            if not llm_api_url or not llm_api_url.startswith("http"):
+                raise ValueError(f"Invalid LLAMA_SERVER_URL found in config/environment: {llm_api_url}")
 
-        agent = ReactAgent(llm_url=llm_api_url, system_prompt=DEFAULT_SYSTEM_PROMPT)
-        logger.info("Agent ready.")
-    except Exception as agent_init_err:
-         logger.exception("Fatal error initializing ReactAgent:")
-         print(f"[Fatal Error] Could not initialize the agent: {agent_init_err}")
-         exit(1)
+            agent = ReactAgent(llm_url=llm_api_url, system_prompt=DEFAULT_SYSTEM_PROMPT)
+            logger.info("Agent ready.")
+        except Exception as agent_init_err:
+             logger.exception("Fatal error initializing ReactAgent:")
+             print(f"[Fatal Error] Could not initialize the agent: {agent_init_err}")
+             exit(1)
     # <<< FIM DA INSTANCIAÇÃO >>>
 
     # <<< LÓGICA DE EXECUÇÃO MODIFICADA >>>
-    if args.task:
+    if args.stream_direct:
+        # <<< ADDED: Direct Streaming Mode >>>
+        logger.info(f"Streaming direct prompt: '{args.stream_direct[:50]}...'")
+        print("--- Streaming LLM Response --- ")
+        
+        async def stream_direct_call():
+            messages = [{"role": "user", "content": args.stream_direct}]
+            try:
+                # Import call_llm here to avoid potential issues if agent init fails
+                from core.llm_interface import call_llm 
+                async for chunk in call_llm(messages, stream=True):
+                    print(chunk, end="", flush=True)
+                print() # Final newline
+            except Exception as stream_err:
+                logger.exception("Error during direct LLM stream:")
+                print(f"\n[Error Streaming] {stream_err}")
+                
+        asyncio.run(stream_direct_call())
+        # <<< END ADDED >>>
+        
+    elif args.task:
         # Modo Tarefa Única (nova prioridade)
         logger.info(f"Executing single task: {args.task}")
-        asyncio.run(process_command(agent, args.task, conversation_history))
+        if agent:
+            asyncio.run(process_command(agent, args.task, conversation_history))
+        else:
+            logger.error("Agent not initialized, cannot run task.")
 
     elif args.command:
         # Modo comando único
