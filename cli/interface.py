@@ -17,7 +17,7 @@ sys.path.insert(0, project_root)
 
 # Imports do Core (após adicionar ao path)
 try:
-    from core.config import MAX_HISTORY_TURNS, LLAMA_SERVER_URL, LOG_LEVEL, DB_FILE, AGENT_STATE_ID
+    from core.config import MAX_HISTORY_TURNS, LOG_LEVEL, MEMORY_DB_PATH # Assuming DB_FILE and AGENT_STATE_ID are not needed directly here
     from core.db_utils import initialize_database
     from core.agent import ReactAgent
     from core.llm_interface import call_llm # Import para stream_direct
@@ -32,57 +32,56 @@ logger = logging.getLogger(__name__)
 # Instância do Console Rich
 console = Console()
 
-# <<< DEFINIR PROMPT PADRÃO AQUI >>>
-# Idealmente, carregar de um arquivo de configuração ou .md
-DEFAULT_SYSTEM_PROMPT = """Você é um agente autônomo chamado A³X que segue o framework ReAct para atingir objetivos complexos.
+# <<< REMOVED DEFAULT_SYSTEM_PROMPT DEFINITION >>>
+# DEFAULT_SYSTEM_PROMPT = """..."""
 
-Seu ciclo é: pensar, agir, observar.
+# --- Helper Functions ---
 
-⚠️ **FORMATO OBRIGATÓRIO** DE RESPOSTA:
+def _load_system_prompt(file_path: str = "prompts/react_system_prompt.md") -> str:
+    """Carrega o prompt do sistema de um arquivo."""
+    full_path = os.path.join(project_root, file_path)
+    try:
+        with open(full_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.error(f"System prompt file not found: {full_path}")
+        console.print(f"[bold red][Error][/] System prompt file not found at '{full_path}'. Using a minimal fallback.")
+        return "You are a helpful assistant."
+    except Exception as e:
+        logger.exception(f"Error reading system prompt file {full_path}:")
+        console.print(f"[bold red][Error][/] Could not read system prompt file: {e}. Using minimal fallback.")
+        return "You are a helpful assistant."
 
-Sempre responda neste exato formato, e somente nele:
+def _parse_arguments():
+    """Parseia os argumentos da linha de comando."""
+    parser = argparse.ArgumentParser(description='Assistente CLI A³X (ReAct)')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-c', '--command', help='Comando único para executar')
+    group.add_argument('-i', '--input-file', help='Arquivo para ler comandos sequencialmente (um por linha)')
+    # Added interactive mode argument
+    group.add_argument('--interactive', action='store_true', help='Inicia o modo interativo')
+    parser.add_argument('--task', help='Tarefa única a ser executada pelo agente (prioridade sobre -c, -i, --interactive)')
+    parser.add_argument("--stream-direct", help="Prompt direto para o LLM em modo streaming")
+    return parser.parse_args()
 
-Thought: <raciocínio sobre o próximo passo>
-Action: <nome_da_ferramenta_disponível>
-Action Input: <objeto JSON com os parâmetros da ferramenta>
+def _initialize_agent(system_prompt: str) -> Optional[ReactAgent]:
+    """Inicializa e retorna uma instância do ReactAgent."""
+    logger.info("Initializing ReactAgent...")
+    try:
+        # Validação da URL do LLM removida (assumindo que não é mais necessária se não usar HTTP)
+        # llm_api_url = LLAMA_SERVER_URL
+        # if not llm_api_url or not llm_api_url.startswith("http"):
+        #     raise ValueError(f"Invalid LLAMA_SERVER_URL found: {llm_api_url}")
 
-✅ Exemplo para ler um arquivo:
-
-Thought: Para ler o conteúdo do arquivo solicitado, devo usar a ferramenta 'read_file'.
-Action: read_file
-Action Input: {"file_name": "caminho/do/arquivo.txt"}
-
-✅ Exemplo para listar arquivos:
-
-Thought: Preciso ver os arquivos no diretório 'src'. Usarei a ferramenta 'list_files'.
-Action: list_files
-Action Input: {"directory": "src"}
-
-Nunca explique o que está fazendo fora do bloco "Thought:". Nunca adicione justificativas ou mensagens fora do formato.
-
-Se não for possível agir ou a tarefa estiver concluída, retorne uma Action chamada 'final_answer' com a resposta final no campo 'answer'.
-
-Esse formato será interpretado por outro sistema e precisa estar 100% correto.
-
-## REGRAS ABSOLUTAS E FERRAMENTAS DISPONÍVEIS:
-
-1.  **USE APENAS AS SEGUINTES FERRAMENTAS:**
-    *   `list_files`: Lista nomes de arquivos/diretórios (parâmetro opcional: `directory`).
-    *   `read_file`: Lê o conteúdo de um arquivo de texto (parâmetro: `file_name` ou `file_path`).
-    *   `create_file`: Cria/sobrescreve um arquivo (parâmetros: `action='create'`, `file_name`, `content`).
-    *   `append_to_file`: Adiciona ao final de um arquivo (parâmetros: `action='append'`, `file_name`, `content`).
-    *   `delete_file`: Deleta um arquivo (parâmetros: `file_path`, `confirm=True`).
-    *   `execute_code`: Executa código Python (parâmetro: `code`).
-    *   `modify_code`: Modifica código existente (parâmetros: `modification`, `code_to_modify`).
-    *   `generate_code`: Gera novo código (parâmetros: `description`).
-    *   `text_to_speech`: Converte texto em fala (parâmetros: `text`, `voice_model_path`, opcional `output_dir`, `filename`).
-    *   `final_answer`: Finaliza e dá a resposta (parâmetro: `answer`).
-
-2.  **NUNCA INVENTE FERRAMENTAS:** Não use `ls`, `cd`, `cat`, `env`, `analyze_config`, `search_web` (desativada) ou qualquer outra ferramenta que não esteja EXPLICITAMENTE listada acima.
-3.  **SEJA LITERAL:** Use os nomes exatos das ferramentas e seus parâmetros conforme listado.
-4.  **PENSE PASSO A PASSO:** No bloco `Thought:`, explique seu raciocínio para escolher a próxima ferramenta e seus parâmetros.
-
-"""
+        # Assume que ReactAgent não precisa mais de llm_url se for interagir diretamente
+        # Ajustar a inicialização do ReactAgent conforme necessário
+        agent = ReactAgent(system_prompt=system_prompt)
+        logger.info("Agent ready.")
+        return agent
+    except Exception as agent_init_err:
+        logger.exception("Fatal error initializing ReactAgent:")
+        console.print(f"[bold red][Fatal Error][/] Could not initialize the agent: {agent_init_err}")
+        return None
 
 def change_to_project_root():
     """Garante que o script seja executado a partir do diretório raiz do projeto."""
@@ -100,10 +99,11 @@ def change_to_project_root():
         sys.exit(1)
 
 async def handle_agent_interaction(agent: ReactAgent, command: str, conversation_history: list):
-    """Gerencia a interação com o agente, exibindo passos intermediários com Rich (A SER IMPLEMENTADO)."""
+    """Gerencia a interação com o agente, exibindo passos intermediários com Rich."""
     logger.info(f"Processing command: '{command}'")
     console.print(Panel(f"[bold magenta]>[/bold magenta] {command}", title="User Input", border_style="magenta"))
-    conversation_history.append({"role": "user", "content": command})
+    # Não adicionamos mais o input raw ao history aqui, o agente cuida disso internamente
+    # conversation_history.append({"role": "user", "content": command})
 
     final_response = ""
     agent_outcome = None
@@ -124,7 +124,7 @@ Input: {action_input}""", title="🎬 Action", border_style="cyan", title_align=
                 obs_data = step_output['content']
                 status = obs_data.get("status", "unknown")
                 message = obs_data.get("data", {}).get("message", str(obs_data)) # Fallback para string
-                
+
                 border_style = "grey50"
                 title = "👀 Observation"
                 if status == "success":
@@ -161,11 +161,12 @@ Input: {action_input}""", title="🎬 Action", border_style="cyan", title_align=
         console.print(Panel(f"""[bold red]Erro do Agente:[/]
 {final_response}""", title="Agent Error", border_style="red"))
 
-    conversation_history.append({
-        "role": "assistant",
-        "content": final_response, # Armazena apenas a resposta final no histórico por simplicidade
-        "agent_outcome": agent_outcome
-    })
+    # Não adicionamos assistant response ao history aqui, agente cuida disso
+    # conversation_history.append({
+    #     "role": "assistant",
+    #     "content": final_response, # Armazena apenas a resposta final no histórico por simplicidade
+    #     "agent_outcome": agent_outcome
+    # })
     # ... (limitar histórico se necessário) ...
 
 async def stream_direct_llm(prompt: str):
@@ -174,6 +175,7 @@ async def stream_direct_llm(prompt: str):
     console.print(Panel("--- Streaming LLM Response ---", border_style="blue"))
     messages = [{"role": "user", "content": prompt}]
     try:
+        # Assume call_llm handles initialization/connection implicitly now
         async for chunk in call_llm(messages, stream=True):
             console.print(chunk, end="")
         console.print() # Final newline
@@ -181,116 +183,84 @@ async def stream_direct_llm(prompt: str):
         logger.exception("Error during direct LLM stream:")
         console.print(f"\n[bold red][Error Streaming][/] {stream_err}")
 
+async def _run_interactive_mode(agent: ReactAgent):
+    """Executa o loop de interação com o usuário."""
+    console.print("[bold green]Modo Interativo A³X.[/] Digite 'sair', 'exit' ou 'quit' para terminar.")
+    conversation_history = [] # Reset history for interactive session
+    while True:
+        try:
+            command = console.input("[bold magenta]>[/bold magenta] ")
+            if command.lower() in ['sair', 'exit', 'quit']:
+                break
+            if not command:
+                continue
+            await handle_agent_interaction(agent, command, conversation_history)
+        except KeyboardInterrupt:
+            console.print("\nSaindo...")
+            break
+        except EOFError: # Handle Ctrl+D
+            console.print("\nSaindo...")
+            break
+
+async def _process_input_file(agent: ReactAgent, file_path: str):
+    """Processa comandos de um arquivo de entrada."""
+    logger.info(f"Reading commands from: {file_path}")
+    conversation_history = [] # Reset history
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                command = line.strip()
+                if command and not command.startswith('#'): # Ignora linhas vazias e comentários
+                    await handle_agent_interaction(agent, command, conversation_history)
+                    console.rule() # Separador entre comandos do arquivo
+    except FileNotFoundError:
+        logger.error(f"Input file not found: {file_path}")
+        console.print(f"[bold red]Erro:[/bold red] Arquivo de entrada não encontrado: '{file_path}'")
+    except Exception as file_err:
+        logger.exception(f"Error processing input file {file_path}:")
+        console.print(f"[bold red]Erro:[/bold red] Falha ao processar arquivo de entrada: {file_err}")
+
 def run_cli():
     """Função principal que configura e executa a interface de linha de comando."""
     load_dotenv() # Carrega .env
     change_to_project_root() # Garante que estamos no diretório certo
 
-    parser = argparse.ArgumentParser(description='Assistente CLI A³X (ReAct)')
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('-c', '--command', help='Comando único para executar')
-    group.add_argument('-i', '--input-file', help='Arquivo para ler comandos sequencialmente (um por linha)')
-    parser.add_argument('--task', help='Tarefa única a ser executada pelo agente (prioridade sobre -c e -i)')
-    parser.add_argument("--stream-direct", help="Prompt direto para o LLM em modo streaming")
+    args = _parse_arguments()
 
-    args = parser.parse_args()
-
-    conversation_history = []
+    # conversation_history = [] # History is managed within interaction loops now
 
     # Inicializa DB
     logger.info("Initializing database...")
     initialize_database()
 
-    # Instanciação do Agente (apenas se necessário)
-    agent = None
-    if not args.stream_direct:
-        logger.info("Initializing ReactAgent...")
-        try:
-            # Valida URL do LLM
-            llm_api_url = LLAMA_SERVER_URL
-            if not llm_api_url or not llm_api_url.startswith("http"):
-                raise ValueError(f"Invalid LLAMA_SERVER_URL found: {llm_api_url}")
-
-            # TODO: Carregar o prompt de um arquivo ou config central
-
-            agent = ReactAgent(llm_url=llm_api_url, system_prompt=DEFAULT_SYSTEM_PROMPT)
-            logger.info("Agent ready.")
-        except Exception as agent_init_err:
-             logger.exception("Fatal error initializing ReactAgent:")
-             console.print(f"[bold red][Fatal Error][/] Could not initialize the agent: {agent_init_err}")
-             exit(1)
-
-    # Lógica de Execução Principal
+    # Stream direto não precisa do agente
     if args.stream_direct:
-        asyncio.run(stream_direct_llm(args.stream_direct)) # No agent, no LD_PATH needed
+        asyncio.run(stream_direct_llm(args.stream_direct))
+        return
 
-    elif args.task:
+    # Carrega prompt do sistema e inicializa o agente para os outros modos
+    system_prompt = _load_system_prompt()
+    agent = _initialize_agent(system_prompt)
+
+    if not agent:
+        logger.error("Agent initialization failed. Exiting.")
+        sys.exit(1) # Sai se o agente não puder ser inicializado
+
+    # Lógica de Execução Principal refatorada
+    if args.task:
         logger.info(f"Executing single task: {args.task}")
-        if agent:
-            asyncio.run(handle_agent_interaction(agent, args.task, conversation_history))
-        else:
-            logger.error("Agent not initialized, cannot run task.")
-            console.print("[bold red]Erro:[/bold red] Agente não inicializado.")
-
+        asyncio.run(handle_agent_interaction(agent, args.task, [])) # Pass empty history
     elif args.command:
         logger.info(f"Executing single command: {args.command}")
-        if agent:
-            asyncio.run(handle_agent_interaction(agent, args.command, conversation_history))
-        else:
-             logger.error("Agent not initialized, cannot run task.")
-             console.print("[bold red]Erro:[/bold red] Agente não inicializado.")
-
+        asyncio.run(handle_agent_interaction(agent, args.command, [])) # Pass empty history
     elif args.input_file:
-        if not agent:
-            logger.error("Agent not initialized, cannot process input file.")
-            console.print("[bold red]Erro:[/bold red] Agente não inicializado.")
-            return # Sai da função run_cli
-
-        try:
-            logger.info(f"Reading commands from: {args.input_file}")
-            with open(args.input_file, 'r', encoding='utf-8') as f:
-                commands = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-            logger.info(f"Found {len(commands)} commands to process.")
-            console.print(Panel(f"Processing [bold]{len(commands)}[/] commands from '{args.input_file}'", border_style="blue"))
-
-            for line_num, command in enumerate(commands, 1):
-                logger.info(f"--- Processing command from line {line_num} ---")
-                console.print(f"\n[cyan]--- Command from Line {line_num} ---[/]")
-                asyncio.run(handle_agent_interaction(agent, command, conversation_history))
-                time.sleep(1) # Pausa opcional
-            logger.info("Finished processing input file.")
-            console.print("\n[blue][Info][/] End of input file.")
-        except FileNotFoundError:
-            logger.error(f"Input file not found: {args.input_file}")
-            console.print(f"[bold red][Fatal Error][/] Input file not found: {args.input_file}")
-        except Exception as file_proc_err:
-            logger.exception(f"Error processing input file '{args.input_file}':")
-            console.print(f"\n[bold red][Fatal Error][/] An error occurred while processing the file '{args.input_file}': {file_proc_err}")
-
+        asyncio.run(_process_input_file(agent, args.input_file))
+    elif args.interactive:
+        asyncio.run(_run_interactive_mode(agent))
     else:
-        # Modo interativo
-        if not agent:
-             logger.error("Agent not initialized, cannot start interactive mode.")
-             console.print("[bold red]Erro:[/bold red] Agente não inicializado.")
-             return # Sai da função run_cli
+        # Default to interactive mode if no other mode is specified
+        asyncio.run(_run_interactive_mode(agent))
 
-        console.print(Panel("[bold green]Assistente CLI A³X (ReAct)[/] iniciado. Digite '[cyan]sair[/]' para encerrar.", title="Welcome", border_style="green"))
-        while True:
-            try:
-                command = console.input("\n[bold green]>[/] ").strip()
-                if command.lower() in ['sair', 'exit', 'quit']:
-                    logger.info("Exit command received. Shutting down.")
-                    console.print("[yellow]Encerrando assistente...[/]")
-                    break
-                if not command:
-                    continue
-                asyncio.run(handle_agent_interaction(agent, command, conversation_history))
-            except KeyboardInterrupt:
-                logger.info("KeyboardInterrupt received. Shutting down.")
-                console.print("\n[yellow]Encerrando assistente...[/]")
-                break
-            except Exception as loop_err:
-                logger.exception("Unexpected error in main interactive loop:")
-                console.print(f"\n[bold red][Unexpected Error][/] {loop_err}")
-
-# Note: O ponto de entrada principal (`if __name__ == "__main__":`) ficará em assistant_cli.py
+# Ponto de entrada do script
+if __name__ == "__main__":
+    run_cli()
