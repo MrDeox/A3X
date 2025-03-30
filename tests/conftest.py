@@ -127,11 +127,13 @@ def agent_instance(mocker, LLM_JSON_RESPONSE_HELLO_FINAL):
     # Mock o schema onde ele agora reside
     mocker.patch('core.llm_interface.REACT_SCHEMA', {"type": "object"}) # Patch no novo local
 
-    # Mock a chamada LLM real dentro do agente
-    # Mock _call_llm directly on the class for instance creation
-    mock_llm_call = mocker.patch('core.agent.ReactAgent._call_llm', return_value=LLM_JSON_RESPONSE_HELLO_FINAL)
+    # <<< UPDATED: Mock the *new* LLM interface function >>>
+    # Note: This mock might need to be async depending on how it's called
+    # Let's start with a simple return value
+    # The target is where call_llm is *used*, which is now directly in agent.py
+    mock_llm_call = mocker.patch('core.agent.call_llm', return_value=LLM_JSON_RESPONSE_HELLO_FINAL)
 
-    # Instancia o agente (agora usa o _call_llm mockado)
+    # Instancia o agente (agora usa o call_llm mockado)
     agent = ReactAgent(llm_url="mock_url", system_prompt="mock_prompt")
 
     # Retorna o agente e o mock da chamada LLM para o teste poder configurar/verificar

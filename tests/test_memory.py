@@ -3,7 +3,9 @@ import pytest
 import sqlite3
 import struct
 import numpy as np
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, call, patch, AsyncMock
+from unittest import mock
+import json
 
 # Importar as funções a serem testadas
 from skills.memory import skill_save_memory, skill_recall_memory
@@ -44,7 +46,8 @@ def mock_db_connection(mocker):
 
 # --- Testes para skill_save_memory --- 
 
-def test_save_memory_success(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_save_memory_success(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo de sucesso de save_memory, incluindo inserção VSS."""
     mock_conn, mock_cursor = mock_db_connection
     mock_get_embedding_recall = mock_embedding_functions # Mock returned is recall's
@@ -79,19 +82,23 @@ def test_save_memory_success(mock_db_connection, mock_embedding_functions):
         mock_get_embedding_save.assert_called_once()
         assert "Test content" in mock_get_embedding_save.call_args[0][0]
         # Verificar chamadas ao cursor (INSERT principal, checar VSS, INSERT VSS)
-        assert mock_cursor.execute.call_count >= 3
-        # Verificar a primeira chamada (INSERT OR IGNORE na semantic_memory)
-        call1_args = mock_cursor.execute.call_args_list[0]
-        assert "INSERT OR IGNORE INTO semantic_memory" in call1_args[0][0]
-        assert call1_args[0][1] == ("Test content", MOCK_EMBEDDING_BLOB, '{"source": "test"}')
-        # Verificar a última chamada (INSERT OR IGNORE no vss_semantic_memory)
-        call_last_args = mock_cursor.execute.call_args_list[-1]
-        assert "INSERT OR IGNORE INTO vss_semantic_memory" in call_last_args[0][0]
-        assert call_last_args[0][1] == (123, MOCK_EMBEDDING_BLOB)
+        assert mock_cursor.execute.call_count == 3 # INSERT semantic, CHECK vss, INSERT vss
+        mock_cursor.execute.assert_any_call(
+            mock.ANY, 
+            ("Test content", MOCK_EMBEDDING_BLOB, '{"source": "test"}')
+        ) # Check main INSERT call args
+        mock_cursor.execute.assert_any_call(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vss_semantic_memory'"
+        ) # Check VSS table existence check
+        mock_cursor.execute.assert_any_call(
+            mock.ANY, 
+            (123, MOCK_EMBEDDING_BLOB)
+        ) # Check VSS INSERT call args
         mock_conn.commit.assert_called_once()
         mock_conn.close.assert_called_once()
 
-def test_save_memory_duplicate_content(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_save_memory_duplicate_content(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo quando o conteúdo já existe (IGNORE), mas VSS é atualizado."""
     mock_conn, mock_cursor = mock_db_connection
     mock_get_embedding_recall = mock_embedding_functions # Mock returned is recall's
@@ -131,14 +138,27 @@ def test_save_memory_duplicate_content(mock_db_connection, mock_embedding_functi
     assert result["data"]["vss_updated"] is True # Mesmo duplicado, VSS foi atualizado/verificado
     # Verificar chamadas (INSERT IGNORE principal, SELECT ID, checar VSS, INSERT IGNORE VSS)
     # A ordem exata pode variar um pouco dependendo da lógica exata no código
-    assert mock_cursor.execute.call_count >= 4 
-    # Verificar chamada SELECT ID
-    select_call = next(c for c in mock_cursor.execute.call_args_list if "SELECT id FROM semantic_memory" in c[0][0])
-    assert select_call[0][1] == ("Duplicate content",)
+    assert mock_cursor.execute.call_count == 4 # INSERT semantic(IGNORE), SELECT ID, CHECK vss, INSERT vss
+    mock_cursor.execute.assert_any_call(
+        mock.ANY, 
+        ("Duplicate content", MOCK_EMBEDDING_BLOB, None)
+    ) # Check main INSERT call args
+    mock_cursor.execute.assert_any_call(
+        "SELECT id FROM semantic_memory WHERE content = ?", 
+        ("Duplicate content",)
+    ) # Check SELECT ID call
+    mock_cursor.execute.assert_any_call(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='vss_semantic_memory'"
+    ) # Check VSS table existence check
+    mock_cursor.execute.assert_any_call(
+        mock.ANY, 
+        (456, MOCK_EMBEDDING_BLOB)
+    ) # Check VSS INSERT call args
     mock_conn.commit.assert_called_once()
     mock_conn.close.assert_called_once()
 
-def test_save_memory_missing_content(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_save_memory_missing_content(mock_db_connection, mock_embedding_functions):
     """Testa falha se 'content' estiver ausente."""
     action_input = {"metadata": {"source": "test"}} # Sem content
     result = skill_save_memory(action_input)
@@ -146,7 +166,8 @@ def test_save_memory_missing_content(mock_db_connection, mock_embedding_function
     assert result["action"] == "save_memory_failed"
     assert "Parâmetro 'content' obrigatório ausente" in result["data"]["message"]
 
-def test_save_memory_embedding_error(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_save_memory_embedding_error(mock_db_connection, mock_embedding_functions):
     """Testa falha se get_embedding falhar."""
     # Mock the specific function that will be called
     with patch('skills.memory.save.get_embedding') as mock_get_embedding_save:
@@ -157,7 +178,8 @@ def test_save_memory_embedding_error(mock_db_connection, mock_embedding_function
         assert result["action"] == "save_memory_failed"
         assert "Erro inesperado ao gerar embedding" in result["data"]["message"]
 
-def test_save_memory_db_error(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_save_memory_db_error(mock_db_connection, mock_embedding_functions):
     """Testa falha se ocorrer erro no DB."""
     mock_conn, mock_cursor = mock_db_connection
     mock_cursor.execute.side_effect = sqlite3.Error("DB write error")
@@ -171,7 +193,8 @@ def test_save_memory_db_error(mock_db_connection, mock_embedding_functions):
 
 # --- Testes para skill_recall_memory --- 
 
-def test_recall_memory_success(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_recall_memory_success(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo de sucesso de recall_memory."""
     mock_conn, mock_cursor = mock_db_connection
     mock_get_embedding_recall = mock_embedding_functions # Fixture returns recall mock
@@ -209,7 +232,8 @@ def test_recall_memory_success(mock_db_connection, mock_embedding_functions):
     assert vss_call[0][1] == (MOCK_EMBEDDING_BLOB, 2) # Query embedding e max_results
     mock_conn.close.assert_called_once()
 
-def test_recall_memory_no_results(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_recall_memory_no_results(mock_db_connection, mock_embedding_functions):
     """Testa o fluxo quando a busca não retorna resultados."""
     mock_conn, mock_cursor = mock_db_connection
     mock_get_embedding_recall = mock_embedding_functions # Fixture returns recall mock
@@ -231,7 +255,8 @@ def test_recall_memory_no_results(mock_db_connection, mock_embedding_functions):
     assert "Nenhuma informação relevante encontrada" in result["data"]["message"]
     mock_conn.close.assert_called_once()
 
-def test_recall_memory_vss_not_exists(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_recall_memory_vss_not_exists(mock_db_connection, mock_embedding_functions):
     """Testa falha se a tabela VSS não existir."""
     mock_conn, mock_cursor = mock_db_connection
     mock_cursor.fetchone.return_value = None # Simula vss_table_exists = False
@@ -244,7 +269,8 @@ def test_recall_memory_vss_not_exists(mock_db_connection, mock_embedding_functio
     assert "Índice de busca semântica não está disponível" in result["data"]["message"]
     mock_conn.close.assert_called_once() # Conexão é fechada mesmo com erro
 
-def test_recall_memory_db_empty(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_recall_memory_db_empty(mock_db_connection, mock_embedding_functions):
     """Testa o caso onde a tabela semantic_memory está vazia."""
     mock_conn, mock_cursor = mock_db_connection
 
@@ -263,7 +289,8 @@ def test_recall_memory_db_empty(mock_db_connection, mock_embedding_functions):
     assert "Memória semântica está vazia" in result["data"]["message"]
     mock_conn.close.assert_called_once()
 
-def test_recall_memory_missing_query(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_recall_memory_missing_query(mock_db_connection, mock_embedding_functions):
     """Testa falha se 'query' estiver ausente."""
     action_input = {"max_results": 5} # Sem query
     result = skill_recall_memory(action_input)
@@ -271,7 +298,8 @@ def test_recall_memory_missing_query(mock_db_connection, mock_embedding_function
     assert result["action"] == "recall_memory_failed"
     assert "Parâmetro 'query' obrigatório ausente" in result["data"]["message"]
 
-def test_recall_memory_embedding_error(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_recall_memory_embedding_error(mock_db_connection, mock_embedding_functions):
     """Testa falha se get_embedding para a query falhar."""
     mock_get_embedding_recall = mock_embedding_functions
     mock_get_embedding_recall.side_effect = Exception("Query embedding failed")
@@ -281,7 +309,8 @@ def test_recall_memory_embedding_error(mock_db_connection, mock_embedding_functi
     assert result["action"] == "recall_memory_failed"
     assert "Erro inesperado ao gerar query embedding" in result["data"]["message"]
 
-def test_recall_memory_db_error(mock_db_connection, mock_embedding_functions):
+@pytest.mark.asyncio
+async def test_recall_memory_db_error(mock_db_connection, mock_embedding_functions):
     """Testa falha se ocorrer erro no DB durante a busca."""
     mock_conn, mock_cursor = mock_db_connection
     # Simular VSS existe e não vazia
