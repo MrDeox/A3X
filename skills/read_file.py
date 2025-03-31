@@ -1,10 +1,14 @@
 # skills/read_file.py
 import logging
+import traceback
+import os # Para juntar paths
+from typing import Dict, Any
 from pathlib import Path
-import traceback # Keep for unexpected errors
+# from core.validators import validate_path # REMOVED - assuming validation logic is inline
+from core.tools import skill
 
-# <<< IMPORT VALIDATOR >>>
-from core.validators import validate_workspace_path
+# Corrected absolute import using alias
+from core.config import PROJECT_ROOT as WORKSPACE_ROOT
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -43,7 +47,7 @@ def _read_file_content(resolved_path: Path, filepath_original: str, warning_msg:
             "data": return_data
         }
     except FileNotFoundError: # Should be caught by decorator, but for safety
-        return {"status": "error", "action": "read_file_failed", "data": {"message": f"Arquivo não encontrado: '{filepath_original}'"}}
+        return {"status": "error", "action": "read_file_failed", "data": {"message": f"Arquivo não encontrado: '{filepath_original}' (inesperado após validação)."}}
     except PermissionError:
         logger.error(f"Erro de permissão ao ler arquivo: {filepath_original}", exc_info=True)
         return {"status": "error", "action": "read_file_failed", "data": {"message": f"Permissão negada para ler o arquivo: '{filepath_original}'"}}
@@ -53,83 +57,101 @@ def _read_file_content(resolved_path: Path, filepath_original: str, warning_msg:
         logger.exception(f"Erro inesperado ao ler arquivo '{filepath_original}':")
         return {"status": "error", "action": "read_file_failed", "data": {"message": f"Erro inesperado ao ler arquivo '{filepath_original}': {e}"}}
 
-# --- Skill Function ---
-# <<< ADDED Decorator >>>
-@validate_workspace_path(
-    # Try resolving common names first, then specific
-    arg_name='file_name', # Primary argument name expected by the skill
-    # Fallback aliases if arg_name not found directly in action_input:
-    # aliases=['file_path'], # Decorator now handles aliases internally
-    check_existence=True, # File must exist
-    target_type='file', # Must be a file
-    allow_hidden=False, # Do not allow reading hidden files
-    action_name_on_error="path_validation_failed"
+# --- Skill Function com Validação Interna ---
+@skill(
+    name="read_file",
+    description="Reads the entire content of a specified text file within the workspace (up to 1MB). Supported extensions: .txt, .py, .md, .json, .env, .csv, .log.",
+    parameters={"file_path": (str, ...)} # Parâmetro obrigatório
 )
-def skill_read_file(action_input: dict, resolved_path: Path = None, original_path_str: str = None, agent_memory: dict = None, agent_history: list | None = None) -> dict:
+def read_file(file_path: str, agent_memory: dict | None = None, agent_history: list | None = None) -> dict:
     """
     Lê e retorna TODO o conteúdo de um arquivo de texto especificado (limite 1MB).
     Formatos suportados: .txt, .py, .md, .json, .env, .csv, .log
-    Relies on @validate_workspace_path decorator for path handling.
+    Realiza validação de path e tipo antes da leitura.
 
     Args:
-        action_input (dict): Original action input dictionary.
-        resolved_path (Path, injected): Validated absolute Path object.
-        original_path_str (str, injected): Original path string requested.
+        file_path (str): Caminho relativo do arquivo dentro do workspace.
         agent_memory (dict, optional): Agent's memory (not used). Defaults to None.
         agent_history (list | None, optional): Histórico da conversa (não usado). Defaults to None.
 
     Returns:
-        dict: Dicionário padronizado com o resultado da operação:
-              {"status": "success/error", "action": "file_read/read_file_failed",
-               "data": {"message": "...", "filepath": "...", "content": "...", "warning": "..."(optional)}}
+        dict: Dicionário padronizado com o resultado da operação.
     """
-    logger.debug(f"Skill 'read_file' executada para: '{original_path_str}' (resolved: {resolved_path})")
+    logger.debug(f"Skill 'read_file' solicitada para: '{file_path}'")
 
-    # <<< REMOVED manual path resolution and checks (done by decorator) >>>
-    # filepath = action_input.get("file_name") or action_input.get("file_path")
-    # if not filepath: ...
-    # resolved_path = _resolve_path(filepath)
-    # if not resolved_path: ...
+    # --- Validação de Path (Reimplementada do antigo decorador) ---
+    if not isinstance(file_path, str) or not file_path:
+        return {"status": "error", "action": "path_validation_failed", "data": {"message": "Nome do arquivo inválido ou não fornecido."}}
 
-    if not resolved_path: # Safeguard check
-         logger.error("Decorator failed to inject resolved_path into skill_read_file.")
-         return {"status": "error", "action": "read_file_failed", "data": {"message": "Internal error: Path validation failed unexpectedly."}}
+    # Normalizar e resolver o path relativo ao WORKSPACE_ROOT
+    try:
+        # Evitar paths absolutos ou que tentem sair do workspace
+        if os.path.isabs(file_path) or ".." in file_path:
+             raise ValueError("Path inválido: não use paths absolutos ou '..'. Use paths relativos dentro do workspace.")
+
+        abs_path = Path(WORKSPACE_ROOT) / file_path
+        resolved_path = abs_path.resolve()
+
+        # Verificar se o path resolvido ainda está dentro do WORKSPACE_ROOT
+        if not str(resolved_path).startswith(str(Path(WORKSPACE_ROOT).resolve())):
+            raise ValueError("Path inválido: tentativa de acesso fora do workspace.")
+
+    except ValueError as e:
+        logger.warning(f"Validação falhou para '{file_path}': {e}")
+        return {"status": "error", "action": "path_validation_failed", "data": {"message": str(e)}}
+    except Exception as e: # Pega outros erros de path inesperados
+        logger.error(f"Erro inesperado ao resolver o path '{file_path}': {e}", exc_info=True)
+        return {"status": "error", "action": "path_validation_failed", "data": {"message": f"Erro interno ao processar o path: {e}"}}
+
+    # Verificar existência e tipo
+    if not resolved_path.exists():
+        return {"status": "error", "action": "path_validation_failed", "data": {"message": f"Arquivo não encontrado: '{file_path}'"}}
+
+    if not resolved_path.is_file():
+         return {"status": "error", "action": "path_validation_failed", "data": {"message": f"O caminho fornecido não é um arquivo: '{file_path}'"}}
+
+    # Verificar arquivos ocultos (começam com .)
+    # if resolved_path.name.startswith('.'):
+    #     return {"status": "error", "action": "path_validation_failed", "data": {"message": f"Acesso a arquivos ocultos não permitido: '{file_path}'"}}
+    # --- Fim da Validação de Path ---
+
+    logger.debug(f"Path validado: '{file_path}' -> '{resolved_path}'")
 
     # --- Checkers Adicionais (aplicados ao resolved_path validado) ---
-    # 1. Verifica extensão suportada
     TEXT_EXTENSIONS = {".txt", ".py", ".md", ".json", ".env", ".csv", ".log"}
     file_ext = resolved_path.suffix.lower()
 
     if file_ext not in TEXT_EXTENSIONS:
-        logger.warning(f"Tentativa de leitura de extensão não suportada: {file_ext} em '{original_path_str}'")
+        logger.warning(f"Tentativa de leitura de extensão não suportada: {file_ext} em '{file_path}'")
         return {
             "status": "error",
             "action": "read_file_failed_unsupported_ext",
             "data": {"message": f"Extensão '{file_ext}' não suportada. Use arquivos de texto: {', '.join(TEXT_EXTENSIONS)}"}
         }
 
-    # 2. Limita tamanho do arquivo (1MB)
     MAX_SIZE = 1 * 1024 * 1024  # 1MB
     try:
         file_size = resolved_path.stat().st_size
         if file_size > MAX_SIZE:
-            logger.warning(f"Tentativa de leitura de arquivo muito grande: {file_size} bytes em '{original_path_str}'")
+            logger.warning(f"Tentativa de leitura de arquivo muito grande: {file_size} bytes em '{file_path}'")
             return {
                 "status": "error",
                 "action": "read_file_failed_too_large",
                 "data": {"message": f"Arquivo muito grande ({file_size / (1024*1024):.2f} MB). Limite: {MAX_SIZE / (1024*1024):.0f} MB."}
             }
-    except FileNotFoundError: # Should be caught by decorator, but safety first
-         return {"status": "error", "action": "read_file_failed", "data": {"message": f"Erro ao verificar tamanho: Arquivo não encontrado em '{original_path_str}' (inesperado)."}}
+    except FileNotFoundError: # Segurança extra
+         return {"status": "error", "action": "read_file_failed", "data": {"message": f"Erro ao verificar tamanho: Arquivo não encontrado em '{file_path}' (inesperado)."}}
     except OSError as e:
-        logger.error(f"Erro OSError ao verificar tamanho de '{original_path_str}': {e}", exc_info=True)
+        logger.error(f"Erro OSError ao verificar tamanho de '{file_path}': {e}", exc_info=True)
         return {"status": "error", "action": "read_file_failed_stat_error", "data": {"message": f"Erro ao verificar tamanho do arquivo: {e}"}}
 
-    # 3. Warning para extensões "arriscadas" (opcional)
     WARNING_EXTS = {".json", ".env", ".csv"}
     warning_msg = f"Atenção: '{file_ext}' pode conter dados estruturados ou sensíveis. Leia com cuidado." if file_ext in WARNING_EXTS else None
     # --- Fim Checkers ---
 
-    # Chama a função interna passando o warning e o path original para mensagens
-    return _read_file_content(resolved_path, original_path_str, warning_msg)
+    # Chama a função interna, passando o path original para logs/mensagens
+    return _read_file_content(resolved_path, file_path, warning_msg)
+
+# Remover função antiga se existir (a original era skill_read_file)
+# del skill_read_file
 

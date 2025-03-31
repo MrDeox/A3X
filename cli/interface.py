@@ -7,6 +7,7 @@ import time
 import logging
 from dotenv import load_dotenv
 from typing import Optional
+import json
 
 from rich.console import Console
 from rich.panel import Panel
@@ -28,7 +29,8 @@ except ImportError as e:
 
 # <<< ADDED Import from new display module >>>
 try:
-    from cli.display import handle_agent_interaction, stream_direct_llm
+    # Use relative import within the same package
+    from .display import handle_agent_interaction, stream_direct_llm
 except ImportError as e:
     print(f"[CLI Interface FATAL] Failed to import display module: {e}. Ensure cli/display.py exists.")
     sys.exit(1)
@@ -174,11 +176,89 @@ def run_cli():
 
     # Lógica de Execução Principal refatorada
     if args.task:
-        logger.info(f"Executing single task: {args.task}")
-        asyncio.run(handle_agent_interaction(agent, args.task, [])) # Pass empty history
+        if args.task.strip().endswith(".json") and os.path.exists(args.task):
+            logger.info(f"Loading structured task from JSON: {args.task}")
+            try:
+                with open(args.task, "r", encoding="utf-8") as f:
+                    task = json.load(f)
+
+                # Execução direta de skills
+                skill_name = task.get("skill")
+                action_name = task.get("action")
+                params = task.get("params", {})
+
+                if skill_name == "auto_publisher":
+                    try:
+                        from skills.auto_publisher import AutoPublisherSkill
+                        skill = AutoPublisherSkill()
+
+                        if action_name == "generate_and_publish":
+                            topic = params.get("topic", "Untitled")
+                            fmt = params.get("format", "markdown")
+                            target = params.get("publish_target", "github")
+
+                            try:
+                                logger.info(f"Generating content for topic: {topic}")
+                                content = skill.generate_content(topic)
+                                logger.info(f"Content generated (length: {len(content)}). Exporting...")
+                                filepath = skill.export_content(content, filename_prefix=topic.replace(" ", "_").lower(), format=fmt)
+                                logger.info(f"Content exported to: {filepath}")
+
+                                if target == "github":
+                                    link = skill.publish_to_github(filepath)
+                                elif target == "gumroad":
+                                     link = skill.publish_to_gumroad(filepath)
+                                else:
+                                     link = "[ERROR] Unknown publish target specified."
+                                     logger.error(f"Unknown publish target: {target}")
+
+
+                                print(f"--- AutoPublisher Task Complete ---")
+                                print(f"Topic: {topic}")
+                                print(f"Output File: {filepath}")
+                                print(f"Simulated Publish Target: {target}")
+                                print(f"Simulated Link: {link}")
+                                print(f"---------------------------------")
+
+                            except Exception as skill_exec_err:
+                                logger.exception(f"Error during AutoPublisherSkill execution:")
+                                print(f"[ERROR] Failed to execute auto_publisher skill: {skill_exec_err}")
+
+                        else:
+                            logger.error(f"Action '{action_name}' not supported for skill '{skill_name}'.")
+                            print(f"[ERROR] Action '{action_name}' not supported for skill '{skill_name}'.")
+
+                    except ImportError:
+                         logger.error("Could not import AutoPublisherSkill. Make sure skills/auto_publisher.py exists.")
+                         print("[ERROR] Could not find the AutoPublisher skill module.")
+                    except Exception as skill_init_err:
+                         logger.exception("Error initializing AutoPublisherSkill:")
+                         print(f"[ERROR] Failed to initialize AutoPublisher skill: {skill_init_err}")
+
+                else:
+                    logger.error(f"Direct execution for skill '{skill_name}' specified in {args.task} is not implemented.")
+                    print(f"[ERROR] Skill '{skill_name}' not recognized for direct execution.")
+
+            except json.JSONDecodeError:
+                 logger.error(f"Invalid JSON file: {args.task}")
+                 print(f"[ERROR] Could not parse JSON file: {args.task}")
+            except FileNotFoundError:
+                 # This case should ideally be caught by os.path.exists, but added for safety
+                 logger.error(f"Task file not found (after initial check): {args.task}")
+                 print(f"[ERROR] Task file not found: {args.task}")
+            except Exception as task_load_err:
+                 logger.exception(f"Error processing task file {args.task}:")
+                 print(f"[ERROR] Failed to load or process task file: {task_load_err}")
+
+        else:
+            # Comportamento antigo: passa como texto pro ReAct
+            logger.info(f"Executing freeform task via ReAct loop: {args.task}")
+            asyncio.run(handle_agent_interaction(agent, args.task, [])) # Pass empty history
+
     elif args.command:
-        logger.info(f"Executing single command: {args.command}")
+        logger.info(f"Executing single command via ReAct loop: {args.command}")
         asyncio.run(handle_agent_interaction(agent, args.command, [])) # Pass empty history
+
     elif args.input_file:
         asyncio.run(_process_input_file(agent, args.input_file))
     elif args.interactive:

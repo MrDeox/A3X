@@ -1,20 +1,23 @@
 import logging
 import json
 import inspect # <<< ADDED import >>>
+import asyncio # <<< ADDED import for await >>>
 from typing import Dict, Any
 
 # <<< Import TOOLS for validation >>>
-from core.tools import TOOLS
+# from core.tools import TOOLS # REMOVED - TOOLS does not exist
 
-# <<< MODIFIED Signature: Added agent_memory >>>
-def execute_tool(tool_name: str, action_input: Dict[str, Any], tools_dict: dict, agent_logger: logging.Logger, agent_memory: Dict[str, Any]) -> Dict[str, Any]:
+# <<< MODIFIED Signature: Added agent_memory AND made async >>>
+async def execute_tool(tool_name: str, action_input: Dict[str, Any], tools_dict: dict, agent_logger: logging.Logger, agent_memory: Dict[str, Any]) -> Dict[str, Any]:
     """Executa a ferramenta/skill selecionada com validação prévia e passagem correta de argumentos."""
     log_prefix = f"[Tool Executor]"
     agent_logger.info(f"{log_prefix} Attempting tool: '{tool_name}', Input: {action_input}") # Log intent
 
     # --- Validação Rigorosa --- 
-    if tool_name not in TOOLS: # Use the imported TOOLS constant
-        available_tools = list(TOOLS.keys())
+    # if tool_name not in TOOLS: # Use the imported TOOLS constant # OLD
+    if tool_name not in tools_dict: # NEW - Use the passed tools_dict for validation
+        # available_tools = list(TOOLS.keys()) # OLD
+        available_tools = list(tools_dict.keys()) # NEW - Use the passed tools_dict
         error_message = f"Ferramenta '{tool_name}' não existe. Disponíveis: {available_tools}"
         agent_logger.error(f"{log_prefix} {error_message}")
         return {
@@ -30,21 +33,27 @@ def execute_tool(tool_name: str, action_input: Dict[str, Any], tools_dict: dict,
     tool_function = tool["function"]
 
     try:
-        # <<< MODIFIED: Inspect signature and call appropriately >>>
+        # <<< MODIFIED: Inspect signature and call appropriately, check for async >>>
         sig = inspect.signature(tool_function)
         params = sig.parameters
+        is_async = inspect.iscoroutinefunction(tool_function)
         
         call_args = action_input # Arguments from the LLM action input
+        result = None
         
         # Check if the skill function expects agent_memory
         if 'agent_memory' in params:
-            agent_logger.debug(f"{log_prefix} Passing agent_memory to skill '{tool_name}'.")
-            # Unpack action_input and add agent_memory
-            result = tool_function(**call_args, agent_memory=agent_memory)
+            agent_logger.debug(f"{log_prefix} Passing agent_memory to skill '{tool_name}'. Async: {is_async}")
+            if is_async:
+                result = await tool_function(**call_args, agent_memory=agent_memory)
+            else:
+                result = tool_function(**call_args, agent_memory=agent_memory)
         else:
-            agent_logger.debug(f"{log_prefix} Skill '{tool_name}' does not take agent_memory. Calling with action_input args only.")
-            # Only unpack action_input
-            result = tool_function(**call_args)
+            agent_logger.debug(f"{log_prefix} Skill '{tool_name}' does not take agent_memory. Calling with action_input args only. Async: {is_async}")
+            if is_async:
+                result = await tool_function(**call_args)
+            else:
+                result = tool_function(**call_args)
         # <<< END MODIFICATION >>>
 
         if not isinstance(result, dict):

@@ -6,7 +6,7 @@ from typing import Dict, Any, List, AsyncGenerator, Optional
 
 # Local imports
 from core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, LLAMA_DEFAULT_HEADERS, MAX_META_DEPTH, MAX_TOKENS_FALLBACK, CONTEXT_SIZE
-from core.tools import TOOLS, get_tool_descriptions
+from core.tools import get_tool_descriptions, get_skill_registry
 from core.db_utils import save_agent_state, load_agent_state
 from core.prompt_builder import build_react_prompt
 from core.agent_parser import parse_llm_response
@@ -48,7 +48,7 @@ class ReactAgent:
         """Inicializa o Agente ReAct."""
         self.llm_url = llm_url
         self.system_prompt = system_prompt
-        self.tools = TOOLS  # Carrega as ferramentas
+        self.tools = get_skill_registry()
         self._history = [] # Histórico de Thought, Action, Observation
         self._memory = load_agent_state(AGENT_STATE_ID) # Carrega estado/memória inicial
         self.max_iterations = MAX_REACT_ITERATIONS
@@ -121,9 +121,9 @@ class ReactAgent:
         agent_logger.info(f"{log_prefix} Executing Action: {action_name} with input: {action_input}")
         try:
             # <<< CORRECTED CALL: Pass arguments in the correct order >>>
-            tool_result = execute_tool(
-                tool_name=action_name, 
-                action_input=action_input, 
+            tool_result = await execute_tool(
+                tool_name=action_name,
+                action_input=action_input,
                 tools_dict=self.tools, # Pass self.tools
                 agent_logger=agent_logger, # Pass the module logger
                 agent_memory=self._memory # Pass agent memory
