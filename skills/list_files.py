@@ -1,21 +1,13 @@
 # skills/list_files.py
 import logging
 from pathlib import Path
+import os
+from typing import List, Dict, Any
+from core.tools import skill
+# from core.validators import validate_path # REMOVED - validation logic is inline
 
-# Import the new validator
-from core.validators import validate_workspace_path
-# Import WORKSPACE_PATH only for constructing relative paths in the output, if needed
-# Or rely on the fact that items are already relative if iterdir() is used on a path within WORKSPACE_PATH
-# Try importing WORKSPACE_PATH directly (adjust name if needed, e.g., PROJECT_ROOT)
-try:
-    from core.config import PROJECT_ROOT as WORKSPACE_PATH
-    if isinstance(WORKSPACE_PATH, str):
-         WORKSPACE_PATH = Path(WORKSPACE_PATH).resolve()
-    logging.debug(f"list_files using WORKSPACE_PATH from core.config: {WORKSPACE_PATH}")
-except ImportError:
-    logging.error("CRITICAL: Could not import WORKSPACE_PATH from core.config in list_files.py.", exc_info=True)
-    WORKSPACE_PATH = None # Indicate failure
-
+# Corrected absolute import using alias
+from core.config import PROJECT_ROOT as WORKSPACE_ROOT
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -23,131 +15,157 @@ logger = logging.getLogger(__name__)
 # Define constants
 MAX_ITEMS = 1000 # Limit for number of items listed
 
-# --- Skill Function ---
-
-# Apply the decorator to validate the 'directory' argument
-@validate_workspace_path(
-    arg_name='directory', # The keyword argument holding the path
-    check_existence=True, # The directory must exist
-    target_type='dir', # It must be a directory
-    allow_hidden=False, # Do not allow listing hidden paths explicitly
-    action_name_on_error="list_files_failed", # Action name for error reporting
-    default_value="." # Default to current directory
+# --- Skill Function com Validação Interna ---
+@skill(
+    name="list_files",
+    description="Lists non-hidden files and directories within a specified workspace directory (defaults to workspace root). Optionally filters by extension.",
+    parameters={
+        "directory": (str, "."), # Parâmetro opcional, default '.' (raiz do workspace)
+        "extension": (str | None, None), # Parâmetro opcional para filtrar (e.g., '.py', '.txt')
+        "agent_history": (list | None, None) # Added missing parameter
+    }
 )
-def skill_list_files(action_input: dict, resolved_path: Path = None, original_path_str: str = None, agent_memory: dict = None, agent_history: list | None = None) -> dict:
+def list_files(directory: str = ".", extension: str | None = None, agent_memory: dict | None = None, agent_history: list | None = None) -> dict:
     """
     Lists non-hidden files and directories within a specified workspace directory.
     Optionally filters by a specific file extension.
 
-    Relies on the @validate_workspace_path decorator to handle path validation,
-    workspace checks, existence checks, and type checks for the directory.
-
     Args:
-        action_input (dict): The original dictionary passed to the skill, potentially
-                             containing 'directory' or an alias.
-        resolved_path (Path, injected): The validated, absolute Path object for the
-                                       directory, injected by the decorator.
-        extension (str, optional): If provided (e.g., via action_input['extension']),
-                                   filters the results to include only files with this extension.
-                                   Must include the leading dot (e.g., '.py').
-        original_path_str (str, injected): The original path string requested,
-                                           injected by the decorator.
-        agent_memory (dict, optional): Agent's memory (not used).
-        agent_history (list | None, optional): Conversation history (not used).
-
+        directory (str, optional): Path relative to the workspace root. Defaults to "." (root).
+        extension (str | None, optional): If provided, filters results to files with this extension
+                                          (e.g., '.py', '.txt'). Defaults to None.
+        agent_memory (dict, optional): Agent's memory (not used). Defaults to None.
+        agent_history (list | None, optional): Conversation history (not used). Defaults to None.
 
     Returns:
-        dict: Standardized dictionary:
+        dict: Standardized dictionary with the result:
               {"status": "success/error", "action": "directory_listed/list_files_failed",
-               "data": {"message": "...", "directory": "...", "items": [...]}}
+               "data": {"message": "...", "directory_requested": "...",
+                         "directory_resolved": "...", "items": [...], "item_count": ...}}
     """
-    # The decorator handles 'directory'. We need to manually get 'extension'.
-    # <<< MODIFIED: Check for 'file_filter' and 'file_name_pattern' as well >>>
-    possible_keys = ['extension', 'file_filter', 'file_name_pattern', 'filter']
-    extension = None
-    if isinstance(action_input, dict):
-        for key in possible_keys:
-            if key in action_input:
-                extension = action_input[key]
-                break # Use the first one found
+    logger.debug(f"Skill 'list_files' requested for directory: '{directory}', filter: '{extension}'")
 
-    # extension = action_input.get('extension') or action_input.get('file_filter') if isinstance(action_input, dict) else None
-    if extension and not extension.startswith('.'):
-        # Handle glob patterns like '*.py'
-        if '*.' in extension:
-            extension = extension.replace('*.', '.') # Normalize to just the extension
+    # --- Validação de Path (Adaptada do antigo decorador) ---
+    if not isinstance(directory, str) or not directory:
+        logger.warning(f"Directory parameter received invalid type or empty string: {type(directory)}. Using default '.'")
+        directory = "." # Usar default se inválido/vazio
+
+    # Normalizar e resolver o path relativo ao WORKSPACE_ROOT
+    try:
+        workspace_resolved_path = Path(WORKSPACE_ROOT).resolve() # Resolve workspace path uma vez
+
+        # Evitar paths absolutos ou que tentem sair do workspace
+        # Check both string and Path object decomposition for '..'
+        if os.path.isabs(directory) or ".." in directory or ".." in Path(directory).parts:
+             raise ValueError("Path inválido: não use paths absolutos ou '..'. Use paths relativos dentro do workspace.")
+
+        abs_path = workspace_resolved_path / directory
+        resolved_path = abs_path.resolve()
+
+        # Verificar se o path resolvido ainda está dentro do WORKSPACE_ROOT
+        if not str(resolved_path).startswith(str(workspace_resolved_path)):
+             # Check for symlinks pointing outside (if allowed, this check might need adjustment)
+             # For now, strictly enforce containment.
+             # is_symlink check might be needed depending on security policy for symlinks
+            raise ValueError("Path inválido: tentativa de acesso fora do workspace.")
+
+
+    except ValueError as e:
+        logger.warning(f"Validação de path falhou para '{directory}': {e}")
+        return {"status": "error", "action": "list_files_failed", "data": {"message": f"Path validation failed for '{directory}': {e}"}}
+    except Exception as e:
+        logger.error(f"Erro inesperado ao resolver o path '{directory}': {e}", exc_info=True)
+        return {"status": "error", "action": "list_files_failed", "data": {"message": f"Erro interno ao processar o path '{directory}': {e}"}}
+
+    # Verificar existência e tipo
+    if not resolved_path.exists():
+        return {"status": "error", "action": "list_files_failed", "data": {"message": f"Directory not found: '{directory}'"}}
+
+    if not resolved_path.is_dir():
+         return {"status": "error", "action": "list_files_failed", "data": {"message": f"The specified path is not a directory: '{directory}'"}}
+
+    # --- Fim da Validação de Path ---
+
+    logger.debug(f"Path validated: '{directory}' -> '{resolved_path}'")
+
+    # --- Validação e Preparação do Filtro de Extensão ---
+    filter_active = False
+    normalized_extension = None
+    if extension:
+        if not isinstance(extension, str):
+            logger.warning(f"Invalid extension type: {type(extension)}. Filter ignored.")
         elif not extension.startswith('.'):
-            extension = "." + extension # Ensure leading dot for simple extensions
-    if extension == '.': # Ignore if just a dot
-        extension = None
+            if '*.' in extension:
+                normalized_extension = extension.replace('*.', '.').lower()
+            elif extension: # Se não vazio e sem ponto/asterisco
+                normalized_extension = '.' + extension.lower()
+        elif len(extension) > 1: # Ignora se for apenas '.' mas permite '.py' etc
+             normalized_extension = extension.lower()
 
-    # The decorator has already validated 'directory' from action_input, resolved it to 'resolved_path',
-    # checked it exists, is a directory, and is within the workspace.
-    # It also provides the original string via 'original_path_str'.
-    # We can directly use 'resolved_path'.
+        if normalized_extension:
+            filter_active = True
+            logger.debug(f"Extension filter active: '{normalized_extension}'")
+        else:
+             if extension: # Log only if extension was provided but deemed invalid
+                logger.debug(f"Invalid or empty extension filter ('{extension}'), ignoring filter.")
+             extension = None # Garante que extension seja None se inválido
 
-    if not resolved_path:
-         # Should technically be caught by decorator, but as a safeguard:
-         logger.error("Decorator failed to inject resolved_path into skill_list_files.")
-         return {"status": "error", "action": "list_files_failed", "data": {"message": "Internal error: Path validation failed unexpectedly."}}
-
-    if WORKSPACE_PATH is None:
-         logger.error("WORKSPACE_PATH is not available in skill_list_files.")
-         return {"status": "error", "action": "list_files_failed", "data": {"message": "Internal configuration error: WORKSPACE_PATH not loaded."}}
-
-    # Use original_path_str for logging/reporting if available, otherwise fallback
-    path_repr = original_path_str if original_path_str else str(resolved_path)
-
-    logger.debug(f"Executing skill_list_files for validated path: {resolved_path} (original input: '{path_repr}')")
+    # --- Fim da Validação do Filtro ---
 
     try:
         items = []
         count = 0
-        # Use iterdir on the validated, resolved path
-        filter_active = bool(extension)
-        logger.debug(f"Listing directory: {resolved_path}. Extension filter: '{extension}' (Active: {filter_active})")
 
         for item in resolved_path.iterdir():
             if count >= MAX_ITEMS:
                  logger.warning(f"Item limit ({MAX_ITEMS}) reached while listing '{resolved_path}'. List truncated.")
                  break
-            # Filter hidden files/directories (starting with '.')
-            # The decorator already prevents targeting hidden dirs directly,
-            # but we still need to filter contents *within* the target dir.
-            if not item.name.startswith('.'):
-                try:
-                    # Apply extension filter if active AND item is a file
-                    if filter_active and item.is_file() and item.suffix.lower() != extension.lower():
-                        continue # Skip this item if extension doesn't match
 
-                    # Make path relative to WORKSPACE_PATH for consistent output
-                    relative_path = str(item.relative_to(WORKSPACE_PATH))
-                except ValueError:
-                     # Should not happen if resolved_path is within WORKSPACE_PATH,
-                     # but handle as fallback just in case (e.g., strange mounts/links)
-                     relative_path = item.name
-                     logger.warning(f"Could not make path relative to workspace: {item}. Using name only.")
+            # Filtra itens ocultos (começando com '.')
+            if item.name.startswith('.'):
+                continue
 
-                # Append '/' to directories for clarity in the output list
-                if item.is_dir():
-                    items.append(relative_path + "/")
-                else:
-                    items.append(relative_path)
-                count += 1
+            # Aplica filtro de extensão se ativo E item for arquivo
+            if filter_active and item.is_file() and item.suffix.lower() != normalized_extension:
+                continue
 
-        filter_message = f" matching extension '{extension}'" if filter_active else ""
+            # Tenta tornar o path relativo ao WORKSPACE_ROOT para saída
+            try:
+                # Use the already resolved workspace path
+                relative_path = str(item.relative_to(workspace_resolved_path))
+            except ValueError:
+                 relative_path = item.name # Fallback
+                 logger.warning(f"Could not make path relative to workspace: {item}. Using name only.")
+
+            # Adiciona '/' para diretórios
+            if item.is_dir():
+                items.append(relative_path + "/")
+            else:
+                items.append(relative_path)
+            count += 1
+
+        filter_message = f" matching extension '{normalized_extension}'" if filter_active else ""
         num_items = len(items)
-        message = f"{num_items} non-hidden item(s){filter_message} found in '{path_repr}'."
+        # Use 'directory' (o input original) na mensagem
+        message = f"{num_items} non-hidden item(s){filter_message} found in '{directory}'."
         if count >= MAX_ITEMS:
             message += f" (Result truncated at {MAX_ITEMS} items)"
+
+        # Calcula o path relativo resolvido para a saída
+        try:
+            resolved_relative_path = str(resolved_path.relative_to(workspace_resolved_path))
+        except ValueError:
+            resolved_relative_path = str(resolved_path) # Fallback se algo der errado
+            logger.warning(f"Could not make resolved path relative: {resolved_path}")
+
 
         return {
             "status": "success",
             "action": "directory_listed",
             "data": {
-                "directory": path_repr, # Report the original requested path
-                "resolved_directory": str(resolved_path.relative_to(WORKSPACE_PATH)), # Relative resolved path
-                "items": sorted(items), # Return the full (but potentially truncated) sorted list
+                "directory_requested": directory, # O path como solicitado
+                "directory_resolved": resolved_relative_path, # Path relativo resolvido
+                "items": sorted(items),
                 "item_count": num_items,
                 "message": message
             }
@@ -155,7 +173,13 @@ def skill_list_files(action_input: dict, resolved_path: Path = None, original_pa
 
     except PermissionError:
         logger.error(f"Permission error listing directory: {resolved_path}", exc_info=True)
-        return {"status": "error", "action": "list_files_failed", "data": {"message": f"Permission denied to list directory: '{path_repr}'"}}
+        return {"status": "error", "action": "list_files_failed", "data": {"message": f"Permission denied to list directory: '{directory}'"}}
     except Exception as e:
         logger.exception(f"Unexpected error listing directory '{resolved_path}':")
-        return {"status": "error", "action": "list_files_failed", "data": {"message": f"Unexpected error listing directory '{path_repr}': {e}"}}
+        return {"status": "error", "action": "list_files_failed", "data": {"message": f"Unexpected error listing directory '{directory}': {e}"}}
+
+# Remover função antiga se existir (a original era skill_list_files)
+# try:
+#     del skill_list_files
+# except NameError:
+#     pass # Ignora se já foi removida ou renomeada

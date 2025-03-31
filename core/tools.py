@@ -4,156 +4,185 @@ import os
 import sys
 import traceback
 import logging
+import importlib
+import inspect
+from typing import Dict, Any, Callable, Optional
+from pydantic import BaseModel, create_model, ValidationError # Import Pydantic
+from datetime import datetime # Utilizada em gumroad_skill para simulação
 
-# Ajuste para importar skills do diretório pai
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-sys.path.insert(0, project_root)
+# <<< START PROJECT ROOT PATH CORRECTION >>>
+# Calculate the project root (two levels up from core/tools.py)
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(_current_file_dir) # /home/arthur/Projects/A3X
 
-# --- Explicit Skill Imports --- 
-# Initialize TOOLS dictionary first
-TOOLS = {}
+# Add project root to sys.path if not already present
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Clean up temporary variables
+del _current_file_dir
+# Keep 'project_root' as it might be useful elsewhere in this module, like in load_skills
+# <<< END PROJECT ROOT PATH CORRECTION >>>
 
 logger = logging.getLogger(__name__)
 
-try:
-    from skills.manage_files import skill_manage_files
-    TOOLS['manage_files'] = {
-        "function": skill_manage_files,
-        "description": "Creates, overwrites, or appends to files. Args: action ('create' or 'append'), file_name (path relative to workspace), content (string).",
-        "parameters": {
-            "action": "'create' or 'append'",
-            "file_name": "Relative path to the file within the workspace",
-            "content": "The text content to write or append"
+# --- Novo Registro de Skills e Decorador ---
+SKILL_REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+class SkillInputSchema(BaseModel):
+    """Classe base para schemas de input de skill, pode ser estendida se necessário."""
+    pass
+
+def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
+    """
+    Decorador para registrar uma função como uma skill disponível para o agente.
+
+    Args:
+        name: O nome único da skill (usado pelo LLM).
+        description: Uma descrição clara do que a skill faz.
+        parameters: Um dicionário onde as chaves são os nomes dos parâmetros
+                    e os valores são tuplas (tipo_python, default_value).
+                    Use ... (Ellipsis) como default_value para parâmetros obrigatórios.
+    """
+    def decorator(func: Callable):
+        logger.debug(f"Registering skill: {name}")
+
+        # Validar assinatura da função contra parâmetros declarados
+        sig = inspect.signature(func)
+        func_params = sig.parameters
+        declared_param_names = set(parameters.keys())
+        func_param_names = set(func_params.keys())
+
+        # Verificar se a função aceita 'agent_memory' (opcional)
+        takes_memory = 'agent_memory' in func_param_names
+        if takes_memory:
+             func_param_names.remove('agent_memory') # Não incluir na validação de schema
+
+        # ADDED: Check for 'agent_history' as well
+        takes_history = 'agent_history' in func_param_names
+        if takes_history:
+            func_param_names.remove('agent_history') # Do not include in schema validation
+
+        # Verificar se todos os parâmetros declarados estão na assinatura da função
+        if not declared_param_names.issubset(func_param_names):
+             missing_in_func = declared_param_names - func_param_names
+             raise TypeError(f"Skill '{name}': Parameters {missing_in_func} declared in decorator but not found in function signature.")
+
+        # Verificar se a função não tem parâmetros extras (exceto agent_memory)
+        extra_in_func = func_param_names - declared_param_names
+        if extra_in_func:
+             raise TypeError(f"Skill '{name}': Parameters {extra_in_func} found in function signature but not declared in decorator.")
+
+        # Criar schema Pydantic dinamicamente
+        pydantic_fields = {}
+        for param_name, (param_type, default_value) in parameters.items():
+            pydantic_fields[param_name] = (param_type, default_value)
+
+        # Nome do schema dinâmico (para melhor debug/docs)
+        schema_name = f"{name.capitalize().replace('_','')}InputSchema"
+        try:
+             # Usar Ellipsis diretamente para campos obrigatórios
+             dynamic_schema = create_model(schema_name, **pydantic_fields, __base__=SkillInputSchema)
+        except Exception as e:
+             logger.error(f"Failed to create Pydantic schema for skill '{name}'. Error: {e}")
+             raise TypeError(f"Invalid Pydantic schema definition for skill '{name}'.") from e
+
+        # Registrar a skill
+        SKILL_REGISTRY[name] = {
+            "function": func,
+            "description": description,
+            "parameters": parameters, # Mantém a definição original para referência
+            "schema": dynamic_schema, # Schema Pydantic para validação
+            "takes_memory": takes_memory # Indica se a skill usa memória
         }
-    }
-except ImportError:
-    logger.error("Failed to import skill: manage_files", exc_info=True)
+        logger.info(f"Successfully registered skill: {name}")
+        return func
+    return decorator
 
-try:
-    from skills.read_file import skill_read_file
-    TOOLS['read_file'] = {
-        "function": skill_read_file,
-        "description": "Reads the entire content of a specified text file. Args: file_path (relative or absolute)",
-        "parameters": {"file_path": "Path to the file"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: read_file", exc_info=True)
+def load_skills(skill_directory: str = "skills"):
+    """
+    Importa dinamicamente o PACOTE de skills para garantir que __init__.py
+    seja executado e registre as skills nele importadas.
+    """
+    logger.info(f"Attempting to load skills package: {skill_directory}")
+    # DEBUG: Print project_root and sys.path before import attempt
+    # print(f"DEBUG: project_root in load_skills: {project_root}") # REMOVED DEBUGGING
+    # print(f"DEBUG: sys.path BEFORE import in load_skills: {sys.path}") # REMOVED DEBUGGING
+    count_before = len(SKILL_REGISTRY)
 
-try:
-    from skills.list_files import skill_list_files
-    TOOLS['list_files'] = {
-        "function": skill_list_files,
-        "description": "Lists files and directories in a specified path relative to the workspace root (default: root). Args: directory (optional, relative path)",
-        "parameters": {"directory": "(Optional) Relative path from workspace root"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: list_files", exc_info=True)
+    try:
+        # Importa o pacote skills; seu __init__.py deve importar os módulos individuais.
+        importlib.import_module(skill_directory)
+        count_after = len(SKILL_REGISTRY)
+        newly_registered = count_after - count_before
+        logger.info(f"Finished loading skills package '{skill_directory}'. Newly registered skills: {newly_registered}. Total registry size: {count_after}")
+    except ModuleNotFoundError:
+         logger.error(f"Could not find skills package '{skill_directory}'. Check PYTHONPATH and directory structure.", exc_info=True)
+    except Exception as e:
+        logger.error(f"Failed to import or process skills package '{skill_directory}': {e}", exc_info=True)
 
-try:
-    from skills.delete_file import skill_delete_file
-    TOOLS['delete_file'] = {
-        "function": skill_delete_file,
-        "description": "Deletes a specified file. Requires confirmation. Args: file_path (relative or absolute), confirm (boolean, must be true)",
-        "parameters": {"file_path": "Path to the file", "confirm": "Must be true to delete"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: delete_file", exc_info=True)
 
-try:
-    from skills.generate_code import skill_generate_code
-    TOOLS['generate_code'] = {
-        "function": skill_generate_code,
-        "description": "Generates code based on a description. Args: purpose (description), language (optional, default python), context (optional)",
-        "parameters": {"purpose": "Description of the code's function", "language": "(Optional) Programming language", "context": "(Optional) Existing code context"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: generate_code", exc_info=True)
+# --- Funções para acessar informações das Skills ---
 
-try:
-    from skills.execute_code import skill_execute_code
-    TOOLS['execute_code'] = {
-        "function": skill_execute_code,
-        "description": "Executes Python code. Args: code (string)",
-        "parameters": {"code": "The Python code to execute"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: execute_code", exc_info=True)
-
-try:
-    from skills.modify_code import skill_modify_code
-    TOOLS['modify_code'] = {
-        "function": skill_modify_code,
-        "description": "Modifies existing code based on instructions. Args: modification (instructions), code_to_modify (original code)",
-        "parameters": {"modification": "Instructions for change", "code_to_modify": "The original code string"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: modify_code", exc_info=True)
-
-try:
-    from skills.ocr_image import skill_ocr_image
-    TOOLS['ocr_image'] = {
-        "function": skill_ocr_image,
-        "description": "Extracts text from an image using Tesseract OCR. Args: image_path, lang (optional, default 'eng')",
-        "parameters": {"image_path": "Path to the image file", "lang": "(Optional) Language code(s) for Tesseract (e.g., eng, por, eng+por)"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: ocr_image", exc_info=True)
-
-try:
-    from skills.classify_sentiment import skill_classify_sentiment
-    TOOLS['classify_sentiment'] = {
-        "function": skill_classify_sentiment,
-        "description": "Classifies the sentiment of a text (1-5 stars). Args: text",
-        "parameters": {"text": "The text to classify"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: classify_sentiment", exc_info=True)
-
-try:
-    from skills.final_answer import skill_final_answer
-    TOOLS['final_answer'] = {
-        "function": skill_final_answer,
-        "description": "Provides the final answer to the user's request. Args: answer (string)",
-        "parameters": {"answer": "The final answer text"}
-    }
-except ImportError:
-    logger.error("Failed to import skill: final_answer", exc_info=True)
-
-# Example: Add memory skills if needed and handle import errors
-# try:
-#     from skills.memory import skill_save_memory, skill_recall_memory
-#     TOOLS['save_memory'] = {
-#         "function": skill_save_memory,
-#         "description": "Saves information to long-term memory. Args: content (string), metadata (optional dict)",
-#         "parameters": {"content": "Information to save", "metadata": "(Optional) Dictionary of metadata"}
-#     }
-#     TOOLS['recall_memory'] = {
-#         "function": skill_recall_memory,
-#         "description": "Recalls relevant information from long-term memory based on a query. Args: query (string), top_k (optional int)",
-#         "parameters": {"query": "Search query", "top_k": "(Optional) Number of results to return"}
-#     }
-# except ImportError:
-#     logger.error("Failed to import memory skills", exc_info=True)
-
-# --- End Explicit Skill Imports ---
-
-def get_tool(tool_name: str) -> dict | None:
-    """Retorna a descrição e função de uma ferramenta específica."""
-    return TOOLS.get(tool_name)
+def get_skill_registry() -> Dict[str, Dict[str, Any]]:
+    """Retorna o registro completo das skills carregadas."""
+    # Garante que as skills foram carregadas pelo menos uma vez
+    # Chamada explícita de load_skills é preferível no ponto de entrada da aplicação (ex: Agent.__init__)
+    # para controlar quando o carregamento ocorre. Remover o carregamento automático daqui.
+    # if not SKILL_REGISTRY:
+    #     logger.warning("Skill registry is empty. Attempting to load skills now.")
+    #     load_skills()
+    return SKILL_REGISTRY
 
 def get_tool_descriptions() -> str:
-    """Retorna uma string formatada com as descrições de todas as ferramentas."""
-    descriptions = []
-    for name, tool_info in TOOLS.items():
-        # Formatar parâmetros para melhor clareza no prompt
-        params_str_list = []
-        if tool_info.get("parameters"):
-             for param_name, param_desc in tool_info["parameters"].items():
-                 params_str_list.append(f"  - {param_name}: {param_desc}")
-             params_str = "\n".join(params_str_list)
-             descriptions.append(f"- {name}:\n  Description: {tool_info['description']}\n  Parameters:\n{params_str}")
-        else:
-            descriptions.append(f"- {name}:\n  Description: {tool_info['description']}\n  Parameters: None")
+    """Retorna uma string formatada com as descrições de todas as ferramentas registradas."""
+    registry = get_skill_registry() # Pega o registro atual
+    if not registry:
+         # Tenta carregar se estiver vazio (pode ser útil em alguns cenários de teste/uso direto)
+         logger.warning("Tool description requested but registry is empty. Attempting to load skills.")
+         load_skills()
+         registry = get_skill_registry() # Tenta novamente
+         if not registry:
+              logger.error("Skill registry still empty after attempting load. No tools available.")
+              return "No tools available."
 
-    return "\n".join(descriptions) 
+
+    descriptions = []
+    for name, skill_info in registry.items():
+        # Formatar parâmetros usando a definição original para clareza no prompt
+        params_str_list = []
+        if skill_info.get("parameters"):
+            for param_name, (param_type, default_value) in skill_info["parameters"].items():
+                type_name = getattr(param_type, '__name__', str(param_type))
+                desc = f"  - {param_name} (type: {type_name}"
+                if default_value is not ...: # Se não for obrigatório (Ellipsis)
+                     desc += f", default: {repr(default_value)})"
+                else:
+                     desc += ", required)"
+                params_str_list.append(desc)
+            params_str = "\n".join(params_str_list) # Usar \n para newline literal na string final
+            descriptions.append(f"- {name}:\n  Description: {skill_info['description']}\n  Parameters:\n{params_str}")
+        else:
+            descriptions.append(f"- {name}:\n  Description: {skill_info['description']}\n  Parameters: None")
+
+    return "\n".join(descriptions)
+
+def get_tool(tool_name: str) -> Optional[Dict[str, Any]]:
+     """Retorna a informação registrada para uma ferramenta específica (skill)."""
+     registry = get_skill_registry() # Garante que o registro está acessível
+     # Tenta carregar se vazio e a ferramenta não for encontrada
+     if tool_name not in registry and not SKILL_REGISTRY:
+         logger.warning(f"Tool '{tool_name}' not found in empty registry. Attempting to load skills.")
+         load_skills()
+         registry = get_skill_registry() # Tenta novamente
+
+     tool_info = registry.get(tool_name)
+     if not tool_info:
+         logger.warning(f"Tool '{tool_name}' not found in registry even after attempting load.")
+     return tool_info
+
+# É crucial chamar load_skills() no ponto de entrada principal da aplicação
+# (provavelmente na inicialização do Agent) para garantir que todas as
+# skills sejam registradas antes de serem necessárias.
+# Exemplo: remover a chamada automática daqui
+# load_skills() 

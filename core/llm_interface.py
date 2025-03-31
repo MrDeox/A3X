@@ -7,6 +7,9 @@ import sys
 import traceback
 from typing import List, Dict, Optional, AsyncGenerator
 
+# Initialize logger for this module *before* first use
+llm_logger = logging.getLogger(__name__)
+
 # Local imports (assuming config is accessible from core)
 # <<< MODIFIED: Handle potential ImportError or missing LLAMA_SERVER_URL >>>
 try:
@@ -20,9 +23,6 @@ except ImportError:
 
 # Define a default URL within the module
 _DEFAULT_LLM_URL = "http://127.0.0.1:8080/v1/chat/completions"
-
-# Initialize logger for this module
-llm_logger = logging.getLogger(__name__)
 
 # <<< ADD REACT_SCHEMA Definition for testing >>>
 REACT_SCHEMA = {

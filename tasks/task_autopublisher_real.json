@@ -1,0 +1,9 @@
+{
+  "skill": "auto_publisher",
+  "action": "generate_and_publish",
+  "params": {
+    "topic": "Como usar IA local para turbinar sua produtividade",
+    "format": "markdown",
+    "publish_target": "gumroad"
+  }
+}

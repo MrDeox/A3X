@@ -1,0 +1,9 @@
+{
+  "skill": "auto_publisher",
+  "action": "generate_and_publish",
+  "params": {
+    "topic": "How to boost productivity using local AI agents",
+    "format": "markdown",
+    "publish_target": "github"  // ou "gumroad"
+  }
+}

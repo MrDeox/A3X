@@ -1,35 +1,41 @@
 # skills/final_answer.py
 import logging
+from core.tools import skill # Importar o decorador
 
 logger = logging.getLogger(__name__)
 
-def skill_final_answer(action_input: dict) -> dict:
+@skill(
+    name="final_answer",
+    description="Provides the final answer to the user's request when the objective is complete.",
+    parameters={"answer": (str, ...)} # Parâmetro 'answer' é uma string obrigatória
+)
+def final_answer(answer: str) -> dict:
     """
     Processa a ação final do agente.
 
     Args:
-        action_input (dict): Dicionário contendo a resposta final.
-            Exemplo:
-                {"action": "final_answer", "answer": "A tarefa foi concluída."}
+        answer (str): A resposta final a ser fornecida.
 
     Returns:
         dict: Dicionário padronizado indicando sucesso e a resposta final.
               {"status": "success", "action": "final_answer_provided",
                "data": {"final_answer": "..."}}
     """
-    logger.debug(f"Recebido action_input para final_answer: {action_input}")
+    logger.debug(f"Executing final_answer with answer: {answer[:100]}...")
 
-    final_answer_text = action_input.get("answer", "N/A - Resposta final não fornecida no Action Input.")
+    # A validação de tipo já é feita pelo Pydantic através do schema no decorador
+    # Não precisamos mais de action_input.get ou isinstance
 
-    if not isinstance(final_answer_text, str):
-         logger.warning(f"Formato inesperado para 'answer' em final_answer: {type(final_answer_text)}. Convertendo para string.")
-         final_answer_text = str(final_answer_text)
+    final_answer_text = answer # Usar o parâmetro diretamente
 
-    logger.info(f"Final Answer processado: {final_answer_text[:100]}...")
+    logger.info(f"Final Answer processed: {final_answer_text[:100]}...")
 
     return {
         "status": "success",
-        "action": "final_answer_provided",
+        "action": "final_answer_provided", # Indica que a resposta foi processada
         "data": {"final_answer": final_answer_text}
     }
+
+# Remover a função antiga se existir (opcional, mas limpa o código)
+# del skill_final_answer
 

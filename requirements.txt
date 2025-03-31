@@ -14,4 +14,4 @@ torch
 pytesseract
 ultralytics
 sentence-transformers
-argostranslate==1.9.6
+pydantic
