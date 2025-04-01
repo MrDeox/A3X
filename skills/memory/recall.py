@@ -1,14 +1,14 @@
 import sqlite3
-import json
-import struct # Para converter vetor float em bytes
+import struct  # Para converter vetor float em bytes
 import logging
 from typing import Dict, Any
 
 # Importar utils
 from core.db_utils import get_db_connection
-from core.embeddings import get_embedding, EMBEDDING_DIM # Importa dimensão também
+from core.embeddings import get_embedding, EMBEDDING_DIM  # Importa dimensão também
 
-logger = logging.getLogger(__name__) # Usar logger específico do módulo
+logger = logging.getLogger(__name__)  # Usar logger específico do módulo
+
 
 def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -34,11 +34,17 @@ def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
             logger.info(f"  Found query using case-insensitive key: '{key}'")
             break
 
-    max_results = action_input.get("max_results", 3) # Default 3 se não fornecido
+    max_results = action_input.get("max_results", 3)  # Default 3 se não fornecido
 
     if not query:
-        logger.error("  Falha ao recuperar memória: Parâmetro 'query' obrigatório ausente.")
-        return {"status": "error", "action": "recall_memory_failed", "data": {"message": "Parâmetro 'query' obrigatório ausente."}}
+        logger.error(
+            "  Falha ao recuperar memória: Parâmetro 'query' obrigatório ausente."
+        )
+        return {
+            "status": "error",
+            "action": "recall_memory_failed",
+            "data": {"message": "Parâmetro 'query' obrigatório ausente."},
+        }
 
     # Validação básica de max_results
     try:
@@ -46,9 +52,9 @@ def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
         if max_results <= 0:
             logger.warning("  'max_results' inválido, usando default 3.")
             max_results = 3
-        elif max_results > 20: # Limitar para não sobrecarregar
-             logger.warning("  'max_results' muito alto, limitando a 20.")
-             max_results = 20
+        elif max_results > 20:  # Limitar para não sobrecarregar
+            logger.warning("  'max_results' muito alto, limitando a 20.")
+            max_results = 20
         logger.info(f"  Max results definido como: {max_results}")
     except ValueError:
         logger.warning("  'max_results' não é um inteiro válido, usando default 3.")
@@ -56,8 +62,8 @@ def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
 
     # 1. Gerar Embedding para a Query
     logger.info(f"  Gerando embedding para a query: '{query}'")
-    query_embedding_blob = None # Inicializa para o except
-    current_embedding_dim = EMBEDDING_DIM # Usar dimensão importada
+    query_embedding_blob = None  # Inicializa para o except
+    current_embedding_dim = EMBEDDING_DIM  # Usar dimensão importada
     try:
         query_embedding_np = get_embedding(query)
         if query_embedding_np is None:
@@ -66,58 +72,80 @@ def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
         if current_embedding_dim is None:
             # Tenta forçar o carregamento
             from core.embeddings import _load_model_internal
+
             _load_model_internal()
-            from core.embeddings import EMBEDDING_DIM as current_embedding_dim # Tenta de novo
+            from core.embeddings import (
+                EMBEDDING_DIM as current_embedding_dim,
+            )  # Tenta de novo
+
             if current_embedding_dim is None:
-                 raise ValueError("EMBEDDING_DIM não está definida em core.embeddings para recall.")
+                raise ValueError(
+                    "EMBEDDING_DIM não está definida em core.embeddings para recall."
+                )
 
         # Converter para BLOB
-        format_string = f'<{current_embedding_dim}f' # Usa a dimensão obtida
+        format_string = f"<{current_embedding_dim}f"  # Usa a dimensão obtida
         query_embedding_blob = struct.pack(format_string, *query_embedding_np)
-        logger.debug(f"  Embedding da query gerado e convertido para BLOB ({len(query_embedding_blob)} bytes, Dim: {current_embedding_dim}).")
+        logger.debug(
+            f"  Embedding da query gerado e convertido para BLOB ({len(query_embedding_blob)} bytes, Dim: {current_embedding_dim})."
+        )
 
     except (ImportError, ValueError, struct.error) as emb_err:
         logger.exception(f"  Erro ao gerar/empacotar embedding para a query '{query}':")
-        return {"status": "error", "action": "recall_memory_failed", "data": {"message": f"Erro ao preparar query embedding: {emb_err}"}}
+        return {
+            "status": "error",
+            "action": "recall_memory_failed",
+            "data": {"message": f"Erro ao preparar query embedding: {emb_err}"},
+        }
     except Exception as e:
-        logger.exception(f"  Erro inesperado ao gerar embedding para a query '{query}':")
-        return {"status": "error", "action": "recall_memory_failed", "data": {"message": f"Erro inesperado ao gerar query embedding: {e}"}}
+        logger.exception(
+            f"  Erro inesperado ao gerar embedding para a query '{query}':"
+        )
+        return {
+            "status": "error",
+            "action": "recall_memory_failed",
+            "data": {"message": f"Erro inesperado ao gerar query embedding: {e}"},
+        }
 
     # 2. Buscar no Banco de Dados usando VSS
-    conn = None # Inicializa conn como None
+    conn = None  # Inicializa conn como None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         # Verificar se a tabela VSS existe
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vss_semantic_memory'")
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vss_semantic_memory'"
+        )
         vss_table_exists = cursor.fetchone()
 
         if not vss_table_exists:
-             logger.warning("  Índice VSS 'vss_semantic_memory' não encontrado. A busca semântica não pode ser realizada.")
-             return { # Retorna erro, mas finally será executado
-                  "status": "error",
-                  "action": "recall_memory_failed",
-                  "data": {"message": "Índice de busca semântica não está disponível."}
-             }
+            logger.warning(
+                "  Índice VSS 'vss_semantic_memory' não encontrado. A busca semântica não pode ser realizada."
+            )
+            return {  # Retorna erro, mas finally será executado
+                "status": "error",
+                "action": "recall_memory_failed",
+                "data": {"message": "Índice de busca semântica não está disponível."},
+            }
 
         # Verificar se a tabela principal está vazia
         cursor.execute("SELECT COUNT(*) FROM semantic_memory")
         memory_count = cursor.fetchone()[0]
         if memory_count == 0:
-             logger.info("  Tabela 'semantic_memory' está vazia. Pulando busca VSS.")
-             return { # Retorna sucesso, mas finally será executado
+            logger.info("  Tabela 'semantic_memory' está vazia. Pulando busca VSS.")
+            return {  # Retorna sucesso, mas finally será executado
                 "status": "success",
                 "action": "memory_recalled",
                 "data": {
                     "message": "Memória semântica está vazia. Nada a ser recuperado.",
-                    "results": []
-                }
+                    "results": [],
+                },
             }
 
         logger.info(f"  Buscando no índice VSS por {max_results} resultados...")
         cursor.execute(
-            f"""
+            """
             SELECT
                 sm.rowid,      -- Índice 0
                 sm.content,    -- Índice 1
@@ -130,10 +158,10 @@ def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
             )
             ORDER BY vss.distance ASC;
             """,
-            (query_embedding_blob, max_results) # Parâmetros para vss_search_params
+            (query_embedding_blob, max_results),  # Parâmetros para vss_search_params
         )
 
-        results = cursor.fetchall() # Fetchall retorna uma lista de tuplas
+        results = cursor.fetchall()  # Fetchall retorna uma lista de tuplas
 
         # 3. Formatar e retornar os resultados
         if results:
@@ -144,43 +172,48 @@ def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
                     result_id = row[0]
                     result_content = row[1]
                     result_distance = row[2]
-                    formatted_results.append({
-                        "id": result_id,
-                        "content": result_content,
-                        "distance": round(result_distance, 4)
-                    })
+                    formatted_results.append(
+                        {
+                            "id": result_id,
+                            "content": result_content,
+                            "distance": round(result_distance, 4),
+                        }
+                    )
                 log_msg = f"[Skill: Recall Memory (ReAct)] Encontrados e formatados {len(results)} resultados relevantes."
                 logger.info(log_msg)
 
             except IndexError as e:
-                 logger.error(f"[Skill: Recall Memory ERROR] IndexError ao acessar coluna no resultado: {e}. Linha: {row}", exc_info=True)
-                 return {
+                logger.error(
+                    f"[Skill: Recall Memory ERROR] IndexError ao acessar coluna no resultado: {e}. Linha: {row}",
+                    exc_info=True,
+                )
+                return {
                     "status": "success",
                     "action": "memory_recalled",
                     "data": {
                         "message": f"Erro ao formatar resultados da memória: {e}",
-                        "results": []
-                    }
-                 }
+                        "results": [],
+                    },
+                }
             except Exception as e:
-                 logger.error(f"[Skill: Recall Memory ERROR] Erro inesperado ao formatar resultados: {e}. Linha: {row}", exc_info=True)
-                 return {
+                logger.error(
+                    f"[Skill: Recall Memory ERROR] Erro inesperado ao formatar resultados: {e}. Linha: {row}",
+                    exc_info=True,
+                )
+                return {
                     "status": "success",
                     "action": "memory_recalled",
                     "data": {
                         "message": f"Erro inesperado ao formatar resultados: {e}",
-                        "results": []
-                    }
-                 }
+                        "results": [],
+                    },
+                }
 
             # Se o loop for concluído com sucesso:
             return {
                 "status": "success",
                 "action": "memory_recalled",
-                "data": {
-                    "message": log_msg,
-                    "results": formatted_results
-                }
+                "data": {"message": log_msg, "results": formatted_results},
             }
         else:
             log_msg = f"[Skill: Recall Memory (ReAct)] Nenhuma informação relevante encontrada na memória para a consulta: '{query}'"
@@ -188,23 +221,43 @@ def skill_recall_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 "status": "success",
                 "action": "memory_recalled",
-                "data": {
-                    "message": log_msg,
-                    "results": []
-                }
+                "data": {"message": log_msg, "results": []},
             }
 
     except sqlite3.OperationalError as e:
-        logger.error(f"[Skill: Recall Memory (ReAct)] Erro operacional de banco de dados ao buscar memória: {e}", exc_info=True)
+        logger.error(
+            f"[Skill: Recall Memory (ReAct)] Erro operacional de banco de dados ao buscar memória: {e}",
+            exc_info=True,
+        )
         if "no such table: vss_semantic_memory" in str(e):
-             logger.error("[Skill: Recall Memory (ReAct)] A tabela VSS 'vss_semantic_memory' parece não existir ou não foi criada corretamente.")
-             return {"status": "error", "action": "recall_memory_failed", "data": {"message": "Erro de banco de dados: Tabela de busca vetorial não encontrada."}}
-        return {"status": "error", "action": "recall_memory_failed", "data": {"message": f"Erro operacional de banco de dados: {e}"}}
+            logger.error(
+                "[Skill: Recall Memory (ReAct)] A tabela VSS 'vss_semantic_memory' parece não existir ou não foi criada corretamente."
+            )
+            return {
+                "status": "error",
+                "action": "recall_memory_failed",
+                "data": {
+                    "message": "Erro de banco de dados: Tabela de busca vetorial não encontrada."
+                },
+            }
+        return {
+            "status": "error",
+            "action": "recall_memory_failed",
+            "data": {"message": f"Erro operacional de banco de dados: {e}"},
+        }
     except Exception as e:
-        logger.error(f"[Skill: Recall Memory (ReAct)] Erro inesperado ao buscar memória: {e}")
+        logger.error(
+            f"[Skill: Recall Memory (ReAct)] Erro inesperado ao buscar memória: {e}"
+        )
         logger.exception(e)
-        return {"status": "error", "action": "recall_memory_failed", "data": {"message": f"Erro inesperado ao buscar memória: {e}"}}
+        return {
+            "status": "error",
+            "action": "recall_memory_failed",
+            "data": {"message": f"Erro inesperado ao buscar memória: {e}"},
+        }
     finally:
         if conn:
             conn.close()
-            logger.debug("[Skill: Recall Memory (ReAct)] Conexão com o banco de dados fechada no finally.")
+            logger.debug(
+                "[Skill: Recall Memory (ReAct)] Conexão com o banco de dados fechada no finally."
+            )

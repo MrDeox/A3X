@@ -1,5 +1,6 @@
 import sys
 import os
+import pytest
 
 # --- Add project root to sys.path ---
 # Ensure core modules can be found when importing skills
@@ -8,15 +9,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
     # print(f"[test_web_search_skill.py] Added project root to sys.path: {project_root}") # Optional debug print
 
-import pytest
-import json
-
-
 # Importar a skill *depois* de ajustar o sys.path
-from skills.web_search_skill import web_search
+from skills.web_search import web_search
 
 # Marcar todos os testes neste arquivo para serem executados com pytest
 pytestmark = pytest.mark.asyncio
+
 
 async def test_web_search_skill_returns_results():
     """Verifica se a skill web_search retorna resultados para uma query simples."""
@@ -39,7 +37,7 @@ async def test_web_search_skill_returns_results():
             # Verificar se results é uma lista (se houver resultados)
             assert isinstance(result_dict["results"], list)
             if result_dict["results"]:
-                assert len(result_dict["results"]) > 0 # Espera pelo menos um resultado
+                assert len(result_dict["results"]) > 0  # Espera pelo menos um resultado
                 # We might get different results, so just check keys exist
                 assert "title" in result_dict["results"][0]
                 assert "url" in result_dict["results"][0]
@@ -48,17 +46,20 @@ async def test_web_search_skill_returns_results():
         elif result_dict["status"] == "error":
             assert "message" in result_dict
             # Permitir que o teste passe se houver um erro (ex: problema de rede temporário)
-            print(f"Warning: Web search skill returned an error: {result_dict['message']}")
+            print(
+                f"Warning: Web search skill returned an error: {result_dict['message']}"
+            )
         else:
             pytest.fail(f"Unexpected status in result: {result_dict.get('status')}")
 
     except AssertionError as e:
-         pytest.fail(f"Assertion failed: {e} - Result Data: {result_dict}")
+        pytest.fail(f"Assertion failed: {e} - Result Data: {result_dict}")
     except Exception as e:
         pytest.fail(f"An unexpected error occurred during test execution: {e}")
 
 
-# Para rodar este teste: execute 'pytest tests/test_web_search_skill.py' no terminal 
+# Para rodar este teste: execute 'pytest tests/test_web_search_skill.py' no terminal
+
 
 @pytest.mark.asyncio
 async def test_web_search_skill_no_results():
@@ -73,15 +74,18 @@ async def test_web_search_skill_no_results():
 
     assert result_dict is not None
     assert isinstance(result_dict, dict)
-    assert result_dict["status"] == "success" # Skill succeeds even if search has few/no results
+    assert (
+        result_dict["status"] == "success"
+    )  # Skill succeeds even if search has few/no results
     assert "results" in result_dict
     assert isinstance(result_dict["results"], list)
     # Allow non-zero results, as DDG might still find *something*
     print(f"Number of results found for unlikely query: {len(result_dict['results'])}")
+
 
 # Teste para erro de API (se pudermos simular um)
 # @pytest.mark.asyncio
 # async def test_web_search_skill_api_error():
 #     # Mock 'requests.post' or the internal HTTP client used by the search tool
 #     # to raise an exception (e.g., ConnectionError, Timeout)
-#     pass 
+#     pass

@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
 def create_skill_response(
     status: str,
     action: str,
@@ -32,16 +33,21 @@ def create_skill_response(
         response["data"] = data
     if message is not None:
         response["message"] = message
-    if error_details is not None and status == 'error':
+    if error_details is not None and status == "error":
         response["error_details"] = error_details
 
     # Log the response being created
-    if status == 'error':
-        logger.error(f"Skill Response (Error): Action='{action}', Message='{message}', Details='{error_details}'")
+    if status == "error":
+        logger.error(
+            f"Skill Response (Error): Action='{action}', Message='{message}', Details='{error_details}'"
+        )
     else:
-        logger.debug(f"Skill Response (Success): Action='{action}', Message='{message}'") # Log success as debug
+        logger.debug(
+            f"Skill Response (Success): Action='{action}', Message='{message}'"
+        )  # Log success as debug
 
     return response
+
 
 # Potential future additions:
 # - WORKSPACE_ROOT variable if needed globally by skills

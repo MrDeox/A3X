@@ -6,105 +6,184 @@ from typing import Dict, Any
 
 # Use configurações centralizadas
 from core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
+from core.tools import skill  # Import skill decorator
 
 # Configure logger para esta skill
 logger = logging.getLogger(__name__)
 
-def skill_generate_code(action_input: Dict[str, Any]) -> Dict[str, Any]:
+
+# Renamed function and added @skill decorator
+@skill(
+    name="generate_code",  # Use the more standard name
+    description="Generates code using the LLM based on a description and context.",
+    parameters={
+        "purpose": (str, ...),
+        "language": (str, "python"),
+        "construct_type": (str, "function"),
+        "context": (str | None, None),
+    },
+)
+def generate_code(
+    purpose: str,
+    language: str = "python",
+    construct_type: str = "function",
+    context: str | None = None,
+) -> Dict[str, Any]:
     """
-    Gera código usando o LLM com base em uma descrição (purpose).
+    Generates code using the LLM with chat-style prompting and improved code extraction.
 
     Args:
-        action_input (Dict[str, Any]): Dicionário contendo:
-            - purpose (str): Descrição do que o código deve fazer (obrigatório).
-            - language (str, optional): Linguagem de programação. Padrão: 'python'.
-            - construct_type (str, optional): Tipo de construção (ex: function, class). Padrão: 'function'.
-            - context (str, optional): Contexto adicional ou código existente para referência.
+        purpose (str): Description of what the code should do.
+        language (str, optional): Programming language. Defaults to 'python'.
+        construct_type (str, optional): Type of construct (e.g., function, class). Defaults to 'function'.
+        context (str | None, optional): Additional context or existing code. Defaults to None.
 
     Returns:
-        Dict[str, Any]: Dicionário com status, action, e data (contendo o código gerado).
+        Dict[str, Any]: Standardized dictionary with status, action, and data (code).
     """
-    logger.info(f"Executando skill_generate_code com input: {action_input}")
+    logger.info(f"Executing skill 'generate_code' for language '{language}'")
+    logger.debug(
+        f"Purpose: {purpose}, Construct: {construct_type}, Context provided: {context is not None}"
+    )
 
-    # Extrair parâmetros
-    purpose = action_input.get("purpose")
-    language = action_input.get("language", "python")
-    construct_type = action_input.get("construct_type", "function")
-    context = action_input.get("context") # Novo parâmetro opcional para contexto
-
-    # Validar parâmetros obrigatórios
+    # Basic validation (purpose is mandatory)
     if not purpose:
-        logger.error("Parâmetro obrigatório 'purpose' não fornecido.")
+        logger.error("Parameter 'purpose' is mandatory for generate_code.")
         return {
             "status": "error",
             "action": "code_generation_failed",
-            "data": {"message": "Erro: O propósito do código (purpose) não foi especificado."}
+            "data": {"message": "Error: Code purpose (purpose) was not specified."},
         }
 
     try:
-        # Construir o prompt para o LLM de geração de código
-        prompt_lines = [
-            f"Gere um código conciso e funcional em {language} que sirva para: {purpose}.",
-            f"O código deve ser uma {construct_type}."
+        # --- NEW CHAT COMPLETIONS LLM CALL LOGIC ---
+        logger.debug("Building chat prompt for code generation...")
+
+        # System prompt for the generation skill
+        system_prompt = f"You are an expert {language} programming assistant. Your task is to generate concise and functional code."
+        # User prompt with the specific purpose and context
+        user_prompt_lines = [
+            f"Generate ONLY the {language} code for the following task: {purpose}."
         ]
+        if construct_type:
+            user_prompt_lines.append(f"The code should be a {construct_type}.")
         if context:
-            prompt_lines.append(f"\nConsidere o seguinte contexto ou código existente:\n```\n{context}\n```")
+            user_prompt_lines.append(
+                f"Consider the following context or existing code:\n```\n{context}\n```"
+            )
+        user_prompt_lines.append(
+            "Respond ONLY with the raw code block (e.g., within ```<lang>...``` or just the code itself), without any explanation before or after."
+        )
+        user_prompt = "\n".join(user_prompt_lines)
 
-        prompt_lines.append("\nRetorne APENAS o bloco de código bruto na linguagem solicitada, sem nenhuma explicação, introdução, ou formatação extra como ```markdown. APENAS O CÓDIGO.")
-        prompt = "\n".join(prompt_lines)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
 
-        logger.debug(f"Prompt para LLM de geração de código:\n{prompt}")
+        # Use configured URL and Headers
+        chat_url = LLAMA_SERVER_URL
+        headers = LLAMA_DEFAULT_HEADERS
 
-        # Preparar payload para o LLM (pode ser diferente do ReAct)
-        # Usamos /v1/completions aqui? Ou /v1/chat/completions ainda serve?
-        # Vamos manter /v1/chat/completions por simplicidade, mas talvez ajustar parâmetros.
+        # Ensure URL points to chat completions (best effort)
+        if not chat_url.endswith("/chat/completions"):
+            logger.warning(
+                f"Configured LLM URL '{chat_url}' might not be for chat completions. Trying to adjust..."
+            )
+            if chat_url.endswith("/v1") or chat_url.endswith("/v1/"):
+                chat_url = chat_url.rstrip("/") + "/chat/completions"
+            else:
+                # Assume it's a base URL, append standard path
+                chat_url = chat_url.rstrip("/") + "/v1/chat/completions"
+            logger.info(f"Adjusted URL for chat: {chat_url}")
+
         payload = {
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.4, # Temperatura mais baixa para código mais determinístico
-            "max_tokens": 1024, # Permitir código mais longo
+            "messages": messages,
+            "temperature": 0.2,  # Low temperature for code
+            "max_tokens": 2048,  # Increased limit
             "stream": False,
-            # "stop": [...] # Pode ser útil definir stops para evitar explicações
         }
 
-        # Enviar para o LLM
-        # Nota: Usando LLAMA_DEFAULT_HEADERS que pode conter Auth se configurado
-        response = requests.post(
-            LLAMA_SERVER_URL, # Assume que a URL base é a mesma
-            headers=LLAMA_DEFAULT_HEADERS,
-            json=payload,
-            timeout=120 # Timeout para geração de código
+        logger.debug(f"Sending code generation request to: {chat_url}")
+        response = requests.post(chat_url, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        response_data = response.json()
+
+        generated_content = (
+            response_data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+        logger.debug(
+            f"Raw LLM Response Content:\n---\n{generated_content[:500]}...\n---"
         )
 
-        response.raise_for_status() # Levanta erro para status >= 400
+        # --- Improved Code Extraction Logic ---
+        code = generated_content
+        extracted_via_markdown = False
 
-        # Extrair o código da resposta (assumindo formato chat/completions)
-        response_data = response.json()
-        code = "" # Inicializa code
-        if 'choices' in response_data and response_data['choices']:
-             message = response_data['choices'][0].get('message', {})
-             raw_code = message.get('content', '').strip()
-             if raw_code: # Procede somente se raw_code não for vazio
-                 # Tenta remover ```<lang>...``` se o LLM ainda os adicionar
-                 temp_code = re.sub(r"^```(?:[a-zA-Z]+)?\n?", "", raw_code, flags=re.MULTILINE)
-                 code = re.sub(r"\n?```$", "", temp_code, flags=re.MULTILINE).strip()
-                 logger.debug(f"Código após limpeza de markdown: {code[:100]}...")
-             else:
-                 logger.warning("Campo 'content' da resposta LLM está vazio.")
-                 code = "" # Garante que code é vazio se content for vazio
-        else:
-             logger.error(f"Resposta inesperada do LLM (sem 'choices' válidos): {response_data}")
-             raise ValueError("Formato de resposta inesperado do LLM para geração de código.")
+        # 1. Try extracting from markdown block
+        lang_pattern = (
+            language if language else r"\w+"
+        )  # Use specific lang or generic if not provided
+        code_match = re.search(
+            rf"```{lang_pattern}\s*([\s\S]*?)\s*```|```\s*([\s\S]*?)\s*```",
+            code,
+            re.DOTALL,
+        )
+        if code_match:
+            extracted_code = next(
+                (group for group in code_match.groups() if group is not None), None
+            )
+            if extracted_code is not None:
+                code = extracted_code.strip()
+                extracted_via_markdown = True
+                logger.info("Code extracted from markdown block.")
 
-        # Verifica se o código final está vazio APÓS o processamento
+        # 2. Fallback cleanup if not extracted via markdown
+        if (
+            not extracted_via_markdown and code
+        ):  # Only clean if not empty and not from markdown
+            logger.debug(
+                "Markdown block not found or empty, attempting fallback cleanup."
+            )
+            # Remove common leading/trailing explanations
+            patterns_to_remove_prefix = [
+                r"(?im)^\s*(?:aqui está o código|o código é|código solicitado|claro(?:,|,) aqui está|você pode usar|gerando código|defina a função|função python|função javascript|código python|código javascript|// Tarefa:.*?|// Código python:|// Código javascript:)\s*\n?",
+                r"^\s*```(?:\w+)?\s*\n",
+            ]
+            patterns_to_remove_suffix = [
+                r"(?m)\n\s*(?:#.*|\/\/.*|Explicação:.*|Nota:.*|```)\s*$"
+            ]
+            cleaned_code = code
+            for pattern in patterns_to_remove_prefix:
+                cleaned_code = re.sub(pattern, "", cleaned_code, count=1)
+            for pattern in patterns_to_remove_suffix:
+                cleaned_code = re.sub(pattern, "", cleaned_code)
+
+            if cleaned_code.strip() != code:
+                logger.info("Fallback cleanup removed potential explanatory text.")
+                code = cleaned_code.strip()
+            else:
+                logger.debug("Fallback cleanup did not change the content.")
+                code = code.strip()
+        elif not code:
+            logger.warning("LLM returned empty content initially.")
+
+        # Final check if code is empty after processing
         if not code:
-             logger.warning("LLM retornou código vazio ou a limpeza resultou em vazio.")
-             return {
+            logger.error("Code generation resulted in empty code after processing.")
+            return {
                 "status": "error",
                 "action": "code_generation_failed",
-                "data": {"message": "LLM retornou uma resposta vazia ou inválida ao gerar o código."}
-             }
+                "data": {
+                    "message": f"LLM response did not contain valid code after extraction/cleanup. Raw response: '{generated_content[:200]}...'"
+                },
+            }
 
-        logger.info(f"Código gerado com sucesso em {language}.")
+        logger.info(f"Code generated successfully in {language}.")
+        logger.debug(f"Generated Code Snippet:\n---\n{code[:500]}...\n---")
         return {
             "status": "success",
             "action": "code_generated",
@@ -112,21 +191,49 @@ def skill_generate_code(action_input: Dict[str, Any]) -> Dict[str, Any]:
                 "code": code,
                 "language": language,
                 "construct_type": construct_type,
-                "message": f"Código gerado com sucesso em {language}."
-            }
+                "message": f"Code generated successfully in {language}.",
+            },
         }
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Erro de rede ao chamar LLM para gerar código: {e}")
+    # --- Keep Existing Exception Handling ---
+    except requests.exceptions.Timeout:
+        logger.error("LLM timed out during code generation (>120s).")
         return {
             "status": "error",
             "action": "code_generation_failed",
-            "data": {"message": f"Erro de comunicação com o servidor LLM: {e}"}
+            "data": {"message": "Timeout: LLM took too long to generate code."},
+        }
+    except requests.exceptions.RequestException as e:
+        error_details = str(e)
+        if e.response is not None:
+            error_details += f" | Status Code: {e.response.status_code} | Response: {e.response.text[:200]}..."
+        logger.error(
+            f"HTTP Error communicating with LLM for code generation: {error_details}"
+        )
+        return {
+            "status": "error",
+            "action": "code_generation_failed",
+            "data": {"message": f"LLM Communication Error: {error_details}"},
+        }
+    except json.JSONDecodeError as e:
+        raw_resp_text = "N/A"
+        # Ensure response object exists before accessing .text
+        if "response" in locals() and hasattr(response, "text"):
+            raw_resp_text = response.text[:200]
+        logger.error(
+            f"Failed to decode JSON response from LLM: {e}. Response text (start): '{raw_resp_text}'"
+        )
+        return {
+            "status": "error",
+            "action": "code_generation_failed",
+            "data": {
+                "message": f"Invalid JSON response from LLM: {e}. Response start: '{raw_resp_text}'"
+            },
         }
     except Exception as e:
-        logger.exception("Erro inesperado ao gerar código:") # Log com traceback
+        logger.exception("Unexpected error during code generation:")
         return {
             "status": "error",
             "action": "code_generation_failed",
-            "data": {"message": f"Erro inesperado durante a geração de código: {str(e)}"}
-        } 
+            "data": {"message": f"Unexpected error during code generation: {str(e)}"},
+        }

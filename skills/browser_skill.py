@@ -1,9 +1,8 @@
-import asyncio
-from playwright.async_api import Page # Import Page for type hint
 import logging
 from typing import Dict, Any, Optional
 
 from core.tools import skill
+
 # <<< ADDED Imports for BrowserManager >>>
 from core.browser_manager import get_browser_manager, BrowserManagerError
 
@@ -14,12 +13,13 @@ logger = logging.getLogger(__name__)
 # _current_page: Optional[Page] = None
 # async def _close_existing_browser(): ...
 
+
 @skill(
     name="open_url",
     description="Opens the specified URL in a new browser instance (closes any previous one). Stores the page for subsequent actions.",
     parameters={
-        "url": (str, ...), # Ellipsis means the parameter is required
-    }
+        "url": (str, ...),  # Ellipsis means the parameter is required
+    },
 )
 async def open_url(url: str) -> Dict[str, Any]:
     """
@@ -29,30 +29,38 @@ async def open_url(url: str) -> Dict[str, Any]:
     manager = get_browser_manager()
 
     try:
-        page = await manager.open_page(url) # Handles closing old page/browser logic
+        page = await manager.open_page(url)  # Handles closing old page/browser logic
         page_title = await page.title()
         success_message = f"Successfully navigated to '{url}'. Title: '{page_title}'. Browser ready for next actions."
         logger.info(success_message)
-        return {"status": "success", "data": {"message": success_message, "title": page_title}}
+        return {
+            "status": "success",
+            "data": {"message": success_message, "title": page_title},
+        }
 
     except BrowserManagerError as e:
         # Errors during browser/page opening are handled by manager
-        logger.error(f"BrowserManagerError opening URL '{url}': {e}", exc_info=False) # Log concise error
+        logger.error(
+            f"BrowserManagerError opening URL '{url}': {e}", exc_info=False
+        )  # Log concise error
         return {"status": "error", "data": {"message": str(e)}}
     except Exception as e:
         # Catch any other unexpected errors
-        error_message = f"Unexpected error opening URL '{url}': {type(e).__name__} - {e}"
+        error_message = (
+            f"Unexpected error opening URL '{url}': {type(e).__name__} - {e}"
+        )
         logger.error(error_message, exc_info=True)
         # Attempt cleanup via manager in case of unexpected error
         await manager.close_browser()
         return {"status": "error", "data": {"message": error_message}}
+
 
 @skill(
     name="click_element",
     description="Clicks an element on the currently open web page specified by a CSS selector.",
     parameters={
         "selector": (str, ...),
-    }
+    },
 )
 async def click_element(selector: str) -> Dict[str, Any]:
     """
@@ -64,7 +72,12 @@ async def click_element(selector: str) -> Dict[str, Any]:
     try:
         page = await manager.get_current_page()
         if not page:
-            return {"status": "error", "data": {"message": "No page currently open or accessible. Use 'open_url' first."}}
+            return {
+                "status": "error",
+                "data": {
+                    "message": "No page currently open or accessible. Use 'open_url' first."
+                },
+            }
 
         # Increased timeout slightly for clicking
         await page.locator(selector).click(timeout=15000)
@@ -73,12 +86,15 @@ async def click_element(selector: str) -> Dict[str, Any]:
         return {"status": "success", "data": {"message": success_message}}
     except BrowserManagerError as e:
         logger.error(f"BrowserManagerError checking for page: {e}", exc_info=False)
-        return {"status": "error", "data": {"message": str(e)}}        
+        return {"status": "error", "data": {"message": str(e)}}
     except Exception as e:
         # Errors from Playwright (e.g., selector not found, timeout)
         error_message = f"Error clicking element '{selector}': {type(e).__name__} - {e}"
-        logger.error(error_message, exc_info=True) # Log full traceback for playwright errors
+        logger.error(
+            error_message, exc_info=True
+        )  # Log full traceback for playwright errors
         return {"status": "error", "data": {"message": error_message}}
+
 
 @skill(
     name="fill_form_field",
@@ -86,7 +102,7 @@ async def click_element(selector: str) -> Dict[str, Any]:
     parameters={
         "selector": (str, ...),
         "value": (str, ...),
-    }
+    },
 )
 async def fill_form_field(selector: str, value: str) -> Dict[str, Any]:
     """
@@ -98,7 +114,12 @@ async def fill_form_field(selector: str, value: str) -> Dict[str, Any]:
     try:
         page = await manager.get_current_page()
         if not page:
-            return {"status": "error", "data": {"message": "No page currently open or accessible. Use 'open_url' first."}}
+            return {
+                "status": "error",
+                "data": {
+                    "message": "No page currently open or accessible. Use 'open_url' first."
+                },
+            }
 
         # Use fill for inputs, timeout might be needed
         await page.locator(selector).fill(value, timeout=15000)
@@ -113,12 +134,13 @@ async def fill_form_field(selector: str, value: str) -> Dict[str, Any]:
         logger.error(error_message, exc_info=True)
         return {"status": "error", "data": {"message": error_message}}
 
+
 @skill(
     name="get_page_content",
     description="Retrieves the HTML content of the currently open page, optionally filtered by a CSS selector.",
     parameters={
-        "selector": (Optional[str], None), # Optional parameter, defaults to None
-    }
+        "selector": (Optional[str], None),  # Optional parameter, defaults to None
+    },
 )
 async def get_page_content(selector: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -130,17 +152,28 @@ async def get_page_content(selector: Optional[str] = None) -> Dict[str, Any]:
     try:
         page = await manager.get_current_page()
         if not page:
-            return {"status": "error", "data": {"message": "No page currently open or accessible. Use 'open_url' first."}}
+            return {
+                "status": "error",
+                "data": {
+                    "message": "No page currently open or accessible. Use 'open_url' first."
+                },
+            }
 
         html_content = ""
         if selector:
             html_content = await page.locator(selector).first.inner_html(timeout=10000)
-            logger.info(f"Retrieved inner HTML for selector '{selector}'. Length: {len(html_content)}")
+            logger.info(
+                f"Retrieved inner HTML for selector '{selector}'. Length: {len(html_content)}"
+            )
         else:
             html_content = await page.content()
-            logger.info(f"Retrieved full page HTML content. Length: {len(html_content)}")
+            logger.info(
+                f"Retrieved full page HTML content. Length: {len(html_content)}"
+            )
 
-        log_content_preview = html_content[:500].replace('\n', ' ') + ('...' if len(html_content) > 500 else '')
+        log_content_preview = html_content[:500].replace("\n", " ") + (
+            "..." if len(html_content) > 500 else ""
+        )
         logger.debug(f"Content Preview: {log_content_preview}")
 
         return {"status": "success", "data": {"html_content": html_content}}
@@ -156,7 +189,7 @@ async def get_page_content(selector: Optional[str] = None) -> Dict[str, Any]:
 @skill(
     name="close_browser",
     description="Closes the currently open browser instance managed by the browser skill.",
-    parameters={}
+    parameters={},
 )
 async def close_browser() -> Dict[str, Any]:
     """
@@ -167,14 +200,19 @@ async def close_browser() -> Dict[str, Any]:
     try:
         await manager.close_browser()
         logger.info("BrowserManager close_browser called successfully.")
-        return {"status": "success", "data": {"message": "Browser closed successfully or was not open."}}
+        return {
+            "status": "success",
+            "data": {"message": "Browser closed successfully or was not open."},
+        }
     except BrowserManagerError as e:
         logger.error(f"BrowserManagerError during close_browser: {e}", exc_info=False)
         # Even if manager reports error, likely best effort was made.
-        return {"status": "warning", "data": {"message": f"Error reported during browser close: {e}"}}
+        return {
+            "status": "warning",
+            "data": {"message": f"Error reported during browser close: {e}"},
+        }
     except Exception as e:
         # Catch any other unexpected errors
         error_message = f"Unexpected error closing browser: {type(e).__name__} - {e}"
         logger.error(error_message, exc_info=True)
         return {"status": "error", "data": {"message": error_message}}
-
