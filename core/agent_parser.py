@@ -51,18 +51,25 @@ def parse_llm_response(response: str, agent_logger: logging.Logger) -> Tuple[Opt
                     elif action_input_str.startswith("```"):
                          action_input_str = action_input_str.removeprefix("```").removesuffix("```").strip()
 
-                    action_input = json.loads(action_input_str)
+                    # Use raw_decode to parse only the initial JSON object
+                    decoder = json.JSONDecoder()
+                    action_input, end_pos = decoder.raw_decode(action_input_str)
+                    agent_logger.debug(f"[Agent Parse DEBUG] raw_decode parsed JSON up to position {end_pos}. Parsed object: {action_input}")
+                    # Optional: Log if there was trailing data
+                    if end_pos < len(action_input_str.strip()):
+                         trailing_data = action_input_str[end_pos:].strip()
+                         agent_logger.warning(f"[Agent Parse WARN] Trailing data found after JSON in Action Input: '{trailing_data[:100]}...'")
+
                     if not isinstance(action_input, dict):
                         agent_logger.warning(f"[Agent Parse WARN] Action Input parsed but is not a dictionary ({type(action_input)}): {action_input}. Using empty dict.")
                         action_input = {}
                     else:
-                         agent_logger.debug(f"[Agent Parse DEBUG] Action Input parsed successfully.")
+                         agent_logger.debug(f"[Agent Parse DEBUG] Action Input parsed successfully (using raw_decode).")
 
                 except json.JSONDecodeError as e:
-                    agent_logger.error(f"[Agent Parse ERROR] Failed to decode Action Input string as JSON: {e}\nString was: '{action_input_str}'")
-                    # Decide how to handle: return error, return empty dict, or try recovery?
-                    # For now, let's return the action but with an empty input dict to potentially allow continuation.
-                    action_input = {"_parse_error": f"Failed to decode JSON: {e}"} # Include error info
+                    # This error might still happen if the *start* of the string is not valid JSON
+                    agent_logger.error(f"[Agent Parse ERROR] Failed to decode Action Input string with raw_decode (invalid JSON start?): {e}\nString was: '{action_input_str}'")
+                    action_input = {"_parse_error": f"Failed to decode JSON with raw_decode: {e}"} # Include error info
             else:
                  agent_logger.debug("[Agent Parse DEBUG] Action Input section found but was empty.")
                  action_input = {} # Explicitly empty if string is empty

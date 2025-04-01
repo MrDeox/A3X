@@ -1,229 +1,217 @@
-import logging
 import asyncio
-from playwright.async_api import async_playwright, Playwright, Browser, Page
+from playwright.async_api import async_playwright, Page, Browser
+import logging
+from typing import Dict, Any, Optional
+
 from core.tools import skill
-from core.skills_utils import create_skill_response
 
 logger = logging.getLogger(__name__)
 
-# --- Global State for Browser Instance ---
-# We need to manage a single browser instance across skill calls
-# Note: This simple global state might have issues with concurrency later.
-# A more robust solution might involve a dedicated browser manager class.
-_playwright_instance: Playwright | None = None
-_browser_instance: Browser | None = None
-_page_instance: Page | None = None
+# --- State Management (Simple Global Variables - Not Thread Safe!) ---
+# Stores the currently active browser and page instance
+_current_browser: Optional[Browser] = None
+_current_page: Optional[Page] = None
+# --------------------------------------------------------------------
 
-async def _get_page() -> Page:
-    """Ensures Playwright is initialized and returns the current page instance."""
-    global _playwright_instance, _browser_instance, _page_instance
-    if _page_instance:
-        return _page_instance
-
-    logger.info("Initializing Playwright and launching browser...")
-    try:
-        _playwright_instance = await async_playwright().start()
-        # Using chromium, could be parameterized later
-        _browser_instance = await _playwright_instance.chromium.launch(headless=True) # Run headless for server environments
-        _page_instance = await _browser_instance.new_page()
-        logger.info("Playwright browser launched successfully.")
-        return _page_instance
-    except Exception as e:
-        logger.error(f"Failed to initialize Playwright or launch browser: {e}", exc_info=True)
-        raise RuntimeError(f"Playwright initialization failed: {e}") from e
-
-async def _close_browser_resources():
-    """Closes the browser and Playwright resources."""
-    global _playwright_instance, _browser_instance, _page_instance
-    logger.info("Closing Playwright browser resources...")
-    if _page_instance:
+async def _close_existing_browser():
+    """Internal function to close the browser if it's open."""
+    global _current_browser, _current_page
+    if _current_browser:
+        logger.info("Closing existing browser instance.")
         try:
-            await _page_instance.close()
+            await _current_browser.close()
         except Exception as e:
-            logger.warning(f"Error closing page: {e}")
-        _page_instance = None
-    if _browser_instance:
-        try:
-            await _browser_instance.close()
-        except Exception as e:
-            logger.warning(f"Error closing browser: {e}")
-        _browser_instance = None
-    if _playwright_instance:
-        try:
-            await _playwright_instance.stop()
-        except Exception as e:
-            logger.warning(f"Error stopping Playwright: {e}")
-        _playwright_instance = None
-    logger.info("Playwright resources closed.")
-
-# --- Browser Control Skills ---
+            logger.warning(f"Error closing existing browser: {e}")
+        _current_browser = None
+        _current_page = None
 
 @skill(
-    name="browser_open_url",
-    description="Opens a specified URL in the browser.",
-    parameters={"url": (str, ...)} # URL is required
-)
-async def open_url(url: str, agent_history: list | None = None) -> dict:
-    """Opens a URL in the Playwright browser instance."""
-    logger.info(f"Executing skill: browser_open_url with URL: {url}")
-    try:
-        page = await _get_page()
-        await page.goto(url, wait_until='domcontentloaded') # Wait for DOM to be ready
-        logger.info(f"Successfully navigated to URL: {url}")
-        # Return snippet of content or just success confirmation?
-        # For now, just success. LLM can request content separately.
-        return create_skill_response(
-            status="success",
-            message=f"Successfully opened URL: {url}",
-            data={"current_url": page.url}
-        )
-    except Exception as e:
-        logger.error(f"Error opening URL {url}: {e}", exc_info=True)
-        return create_skill_response(
-            status="error",
-            message=f"Failed to open URL {url}.",
-            error_details=str(e)
-        )
-
-@skill(
-    name="browser_get_page_content",
-    description="Retrieves the full HTML content of the current page.",
-    parameters={}
-)
-async def get_page_content(agent_history: list | None = None) -> dict:
-    """Gets the full HTML content of the current page."""
-    logger.info("Executing skill: browser_get_page_content")
-    try:
-        page = await _get_page()
-        content = await page.content()
-        logger.info(f"Successfully retrieved page content (length: {len(content)}).")
-        # Warning: Content can be very large. Consider truncation or specific element targeting.
-        return create_skill_response(
-            status="success",
-            message="Successfully retrieved page content.",
-            data={"html_content": content}
-        )
-    except Exception as e:
-        logger.error(f"Error getting page content: {e}", exc_info=True)
-        return create_skill_response(
-            status="error",
-            message="Failed to retrieve page content.",
-            error_details=str(e)
-        )
-
-@skill(
-    name="browser_click",
-    description="Clicks on an element specified by a CSS selector.",
-    parameters={"selector": (str, ...)} # Selector is required
-)
-async def click(selector: str, agent_history: list | None = None) -> dict:
-    """Clicks on an element identified by a CSS selector."""
-    logger.info(f"Executing skill: browser_click with selector: {selector}")
-    try:
-        page = await _get_page()
-        # Add reasonable timeout
-        await page.click(selector, timeout=5000) # 5 second timeout
-        logger.info(f"Successfully clicked element with selector: {selector}")
-        # Maybe wait for navigation or check URL after click? Depends on LLM plan.
-        return create_skill_response(
-            status="success",
-            message=f"Successfully clicked element: {selector}",
-            data={"current_url": page.url}
-        )
-    except Exception as e:
-        logger.error(f"Error clicking selector {selector}: {e}", exc_info=True)
-        # Provide more specific error if possible (e.g., timeout, element not found)
-        error_message = f"Failed to click selector '{selector}'."
-        if "Timeout" in str(e):
-            error_message += " Timeout exceeded."
-        elif "strict mode violation" in str(e):
-             error_message += " Selector likely matched multiple elements or element not visible/enabled."
-        else:
-             error_message += " Element might not exist or be interactable."
-
-        return create_skill_response(
-            status="error",
-            message=error_message,
-            error_details=str(e)
-        )
-
-@skill(
-    name="browser_fill_form",
-    description="Fills a form field specified by a CSS selector with the given text.",
+    name="open_url",
+    description="Opens the specified URL in a new browser instance (closes any previous one). Stores the page for subsequent actions.",
     parameters={
-        "selector": (str, ...), # Selector is required
-        "text": (str, ...)      # Text is required
+        "url": (str, ...), # Ellipsis means the parameter is required
     }
 )
-async def fill_form(selector: str, text: str, agent_history: list | None = None) -> dict:
-    """Fills a form field identified by a CSS selector."""
-    logger.info(f"Executing skill: browser_fill_form with selector: {selector}")
+async def open_url(url: str) -> Dict[str, Any]:
+    """
+    Opens the specified URL in a new headless browser instance. Closes any previously opened browser by this skill.
+    Stores the page reference for use by other browser skills like click_element, fill_form_field, etc.
+
+    Args:
+        url (str): The URL to open. Must be a complete URL (e.g., 'https://www.google.com').
+
+    Returns:
+        Dict[str, Any]: A dictionary containing status ('success' or 'error') and data (e.g., page title or error message).
+    """
+    global _current_browser, _current_page
+    logger.info(f"Attempting to open URL: {url}")
+
+    # Close any existing browser before opening a new one
+    await _close_existing_browser()
+
     try:
-        page = await _get_page()
-        # Add reasonable timeout
-        await page.fill(selector, text, timeout=5000) # 5 second timeout
-        logger.info(f"Successfully filled form field {selector}")
-        return create_skill_response(
-            status="success",
-            message=f"Successfully filled field '{selector}'.",
-            data={}
-        )
+        p = await async_playwright().start()
+        # Using Chromium, headless=True by default now in Playwright, but being explicit
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+
+        logger.info(f"Navigating to URL: {url}")
+        await page.goto(url, timeout=60000, wait_until='domcontentloaded') # 60 seconds timeout
+
+        page_title = await page.title()
+
+        # Store browser and page globally
+        _current_browser = browser
+        _current_page = page
+
+        success_message = f"Successfully navigated to '{url}'. Title: '{page_title}'. Browser ready for next actions."
+        logger.info(success_message)
+        return {"status": "success", "data": {"message": success_message, "title": page_title}}
+
     except Exception as e:
-        logger.error(f"Error filling form field {selector}: {e}", exc_info=True)
-        # Provide more specific error if possible
-        error_message = f"Failed to fill field '{selector}'."
-        if "Timeout" in str(e):
-            error_message += " Timeout exceeded."
-        elif "strict mode violation" in str(e):
-             error_message += " Selector likely matched multiple elements or element not visible/enabled."
-        else:
-             error_message += " Element might not exist or be interactable."
-        return create_skill_response(
-            status="error",
-            message=error_message,
-            error_details=str(e)
-        )
+        error_message = f"Error opening URL '{url}': {type(e).__name__} - {e}"
+        logger.error(error_message, exc_info=True)
+        await _close_existing_browser() # Ensure cleanup on error
+        return {"status": "error", "data": {"message": error_message}}
 
 @skill(
-    name="browser_get_text",
-    description="Retrieves the text content of an element specified by a CSS selector.",
-     parameters={"selector": (str, ...)} # Selector is required
+    name="click_element",
+    description="Clicks an element on the currently open web page specified by a CSS selector.",
+    parameters={
+        "selector": (str, ...),
+    }
 )
-async def get_text(selector: str, agent_history: list | None = None) -> dict:
-    """Gets the text content of an element identified by a CSS selector."""
-    logger.info(f"Executing skill: browser_get_text with selector: {selector}")
+async def click_element(selector: str) -> Dict[str, Any]:
+    """
+    Clicks an element specified by a CSS selector on the page previously opened by 'open_url'.
+
+    Args:
+        selector (str): The CSS selector to identify the element to click.
+
+    Returns:
+        Dict[str, Any]: Dictionary with status ('success' or 'error') and a message.
+    """
+    global _current_page
+    logger.info(f"Attempting to click element with selector: {selector}")
+
+    if not _current_page:
+        return {"status": "error", "data": {"message": "No page currently open. Use 'open_url' first."}}
+
     try:
-        page = await _get_page()
-        # Add reasonable timeout
-        text_content = await page.text_content(selector, timeout=5000) # 5 second timeout
-        if text_content is None:
-             text_content = "" # Return empty string if element has no text or doesn't exist
-        logger.info(f"Successfully retrieved text from selector: {selector}")
-        return create_skill_response(
-            status="success",
-            message="Successfully retrieved text content.",
-            data={"text_content": text_content}
-        )
+        # Increased timeout slightly for clicking
+        await _current_page.locator(selector).click(timeout=15000)
+        success_message = f"Successfully clicked element with selector: {selector}"
+        logger.info(success_message)
+        return {"status": "success", "data": {"message": success_message}}
     except Exception as e:
-        logger.error(f"Error getting text from selector {selector}: {e}", exc_info=True)
-        error_message = f"Failed to get text from selector '{selector}'."
-        if "Timeout" in str(e):
-            error_message += " Timeout exceeded."
-        elif "strict mode violation" in str(e):
-             error_message += " Selector likely matched multiple elements."
+        error_message = f"Error clicking element '{selector}': {type(e).__name__} - {e}"
+        logger.error(error_message)
+        # Do not close browser here, let the agent decide
+        return {"status": "error", "data": {"message": error_message}}
+
+@skill(
+    name="fill_form_field",
+    description="Fills a form field on the currently open web page, identified by a CSS selector, with the specified value.",
+    parameters={
+        "selector": (str, ...),
+        "value": (str, ...),
+    }
+)
+async def fill_form_field(selector: str, value: str) -> Dict[str, Any]:
+    """
+    Fills a form field (e.g., input, textarea) specified by a CSS selector with the given value on the page opened by 'open_url'.
+
+    Args:
+        selector (str): The CSS selector for the form field.
+        value (str): The text value to fill into the field.
+
+    Returns:
+        Dict[str, Any]: Dictionary with status ('success' or 'error') and a message.
+    """
+    global _current_page
+    logger.info(f"Attempting to fill field '{selector}' with value: '{value[:50]}...'") # Log truncated value
+
+    if not _current_page:
+        return {"status": "error", "data": {"message": "No page currently open. Use 'open_url' first."}}
+
+    try:
+        # Use fill for inputs, timeout might be needed
+        await _current_page.locator(selector).fill(value, timeout=15000)
+        success_message = f"Successfully filled field '{selector}'."
+        logger.info(success_message)
+        return {"status": "success", "data": {"message": success_message}}
+    except Exception as e:
+        error_message = f"Error filling field '{selector}': {type(e).__name__} - {e}"
+        logger.error(error_message)
+        return {"status": "error", "data": {"message": error_message}}
+
+@skill(
+    name="get_page_content",
+    description="Retrieves the HTML content of the currently open page, optionally filtered by a CSS selector.",
+    parameters={
+        "selector": (Optional[str], None), # Optional parameter, defaults to None
+    }
+)
+async def get_page_content(selector: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Gets the HTML content of the current page opened by 'open_url'.
+    If a selector is provided, gets the inner HTML of the element(s) matching the selector.
+    Otherwise, returns the full page HTML source.
+
+    Args:
+        selector (Optional[str]): CSS selector to get HTML for a specific part of the page. Defaults to None (full page).
+
+    Returns:
+        Dict[str, Any]: Dictionary with status ('success' or 'error') and the requested HTML content in data['html_content'] or an error message.
+    """
+    global _current_page
+    logger.info(f"Attempting to get page content. Selector: {selector}")
+
+    if not _current_page:
+        return {"status": "error", "data": {"message": "No page currently open. Use 'open_url' first."}}
+
+    try:
+        html_content = ""
+        if selector:
+            # Get inner HTML of the first matching element
+            # Consider how to handle multiple matches if needed later
+            html_content = await _current_page.locator(selector).first.inner_html(timeout=10000)
+            logger.info(f"Retrieved inner HTML for selector '{selector}'. Length: {len(html_content)}")
         else:
-             error_message += " Element might not exist."
-        return create_skill_response(
-            status="error",
-            message=error_message,
-            error_details=str(e)
-        )
+            html_content = await _current_page.content()
+            logger.info(f"Retrieved full page HTML content. Length: {len(html_content)}")
 
-# TODO: Add a skill or mechanism to properly close the browser when the agent session ends.
-# A simple approach could be registering an exit handler, but might need integration
-# with the agent's lifecycle management.
-# For now, resources might leak if the agent process is killed abruptly.
+        # Basic truncation for logging, return full content in response
+        log_content_preview = html_content[:500].replace('\n', ' ') + ('...' if len(html_content) > 500 else '')
+        logger.debug(f"Content Preview: {log_content_preview}")
 
-# Example of how to potentially register cleanup (might need adjustment based on main app structure)
-# import atexit
-# atexit.register(lambda: asyncio.run(_close_browser_resources()))
+        # Return potentially large content. The agent/LLM needs to handle it.
+        return {"status": "success", "data": {"html_content": html_content}}
+    except Exception as e:
+        error_message = f"Error getting page content (selector: {selector}): {type(e).__name__} - {e}"
+        logger.error(error_message)
+        return {"status": "error", "data": {"message": error_message}}
+
+
+@skill(
+    name="close_browser",
+    description="Closes the currently open browser instance managed by the browser skill.",
+    parameters={}
+)
+async def close_browser() -> Dict[str, Any]:
+    """
+    Closes the browser instance previously opened by 'open_url'.
+
+    Returns:
+        Dict[str, Any]: Dictionary indicating success or if no browser was open.
+    """
+    logger.info("Attempting to close browser.")
+    closed = await _close_existing_browser()
+    if _current_browser is None: # Check state after _close_existing_browser runs
+         logger.info("Browser closed successfully or was already closed.")
+         return {"status": "success", "data": {"message": "Browser closed successfully or was not open."}}
+    else:
+         # This case should ideally not happen if _close_existing_browser works
+         logger.warning("Browser state indicates it might not have closed properly.")
+         return {"status": "warning", "data": {"message": "Attempted to close browser, but state is inconsistent."}}
+
