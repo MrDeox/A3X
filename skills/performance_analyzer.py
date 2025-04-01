@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 # Define o nome da skill de forma consistente
 SKILL_NAME = "performance_analyzer"
 
+
 class PerformanceAnalyzerSkill:
     """
     Skill to analyze the performance of published products based on sales data.
@@ -27,14 +28,19 @@ class PerformanceAnalyzerSkill:
         """
         self.revenue_threshold_high = revenue_threshold_high
         self.sales_threshold_low = sales_threshold_low
-        logger.info(f"Initialized PerformanceAnalyzerSkill with thresholds: High Revenue >= ${revenue_threshold_high}, Low Sales <= {sales_threshold_low}")
+        logger.info(
+            f"Initialized PerformanceAnalyzerSkill with thresholds: High Revenue >= ${revenue_threshold_high}, Low Sales <= {sales_threshold_low}"
+        )
 
     @skill(
         name=SKILL_NAME,
         description="Analyzes sales data to provide directives for future content strategy.",
         parameters={
-            "sales_data": (List[Dict[str, Any]], "A list of sales data records, typically from SalesFetcherSkill.")
-        }
+            "sales_data": (
+                List[Dict[str, Any]],
+                "A list of sales data records, typically from SalesFetcherSkill.",
+            )
+        },
     )
     def execute(self, sales_data: List[Dict[str, Any]]) -> dict:
         """
@@ -60,32 +66,40 @@ class PerformanceAnalyzerSkill:
                 status="error",
                 action=f"{SKILL_NAME}_failed_no_data",
                 error_details="Input sales_data was empty or not a list.",
-                message="Cannot analyze performance without valid sales data."
+                message="Cannot analyze performance without valid sales data.",
             )
 
         # --- Basic Analysis Logic ---
         # Validate expected keys in the first record (assuming consistent structure)
         required_keys = {"title", "sales", "revenue"}
         if not required_keys.issubset(sales_data[0].keys()):
-             logger.error(f"Sales data records are missing required keys: {required_keys - set(sales_data[0].keys())}")
-             return create_skill_response(
-                 status="error",
-                 action=f"{SKILL_NAME}_failed_invalid_format",
-                 error_details=f"Sales data records missing required keys: {required_keys}",
-                 message="Invalid format for sales data records."
-             )
+            logger.error(
+                f"Sales data records are missing required keys: {required_keys - set(sales_data[0].keys())}"
+            )
+            return create_skill_response(
+                status="error",
+                action=f"{SKILL_NAME}_failed_invalid_format",
+                error_details=f"Sales data records missing required keys: {required_keys}",
+                message="Invalid format for sales data records.",
+            )
 
         # Sort by revenue (descending) to find the top performer
         try:
             # Filter out any potential non-numeric revenues before sorting
             valid_sales_data = [
-                record for record in sales_data
-                if isinstance(record.get("revenue"), (int, float)) and isinstance(record.get("sales"), int)
+                record
+                for record in sales_data
+                if isinstance(record.get("revenue"), (int, float))
+                and isinstance(record.get("sales"), int)
             ]
             if not valid_sales_data:
-                raise ValueError("No valid numeric sales/revenue data found after filtering.")
+                raise ValueError(
+                    "No valid numeric sales/revenue data found after filtering."
+                )
 
-            sorted_by_revenue = sorted(valid_sales_data, key=lambda x: x.get("revenue", 0.0), reverse=True)
+            sorted_by_revenue = sorted(
+                valid_sales_data, key=lambda x: x.get("revenue", 0.0), reverse=True
+            )
             top_performer = sorted_by_revenue[0]
 
             # Sort by sales (ascending) to find potential low performers
@@ -94,22 +108,44 @@ class PerformanceAnalyzerSkill:
             worst_performer = None
             for record in sorted_by_sales:
                 # Consider it "worst" if sales are low AND revenue isn't accidentally high (e.g., one sale of high price item)
-                if record.get("sales", 0) <= self.sales_threshold_low and record.get("revenue", 0) < self.revenue_threshold_high:
+                if (
+                    record.get("sales", 0) <= self.sales_threshold_low
+                    and record.get("revenue", 0) < self.revenue_threshold_high
+                ):
                     worst_performer = record
                     break
             # If no clear "worst" found by threshold, pick the absolute lowest seller
             if worst_performer is None and sorted_by_sales:
-                 worst_performer = sorted_by_sales[0]
+                worst_performer = sorted_by_sales[0]
 
         except KeyError as e:
-             logger.error(f"Missing key '{e}' in sales data during analysis.", exc_info=True)
-             return create_skill_response(status="error", action=f"{SKILL_NAME}_failed_processing", error_details=f"Missing key: {e}", message="Error processing sales data records.")
+            logger.error(
+                f"Missing key '{e}' in sales data during analysis.", exc_info=True
+            )
+            return create_skill_response(
+                status="error",
+                action=f"{SKILL_NAME}_failed_processing",
+                error_details=f"Missing key: {e}",
+                message="Error processing sales data records.",
+            )
         except ValueError as e:
-             logger.error(f"Error during data validation or sorting: {e}", exc_info=True)
-             return create_skill_response(status="error", action=f"{SKILL_NAME}_failed_processing", error_details=str(e), message=f"Error processing sales data: {e}")
+            logger.error(f"Error during data validation or sorting: {e}", exc_info=True)
+            return create_skill_response(
+                status="error",
+                action=f"{SKILL_NAME}_failed_processing",
+                error_details=str(e),
+                message=f"Error processing sales data: {e}",
+            )
         except Exception as e:
-            logger.error(f"Unexpected error during performance analysis: {e}", exc_info=True)
-            return create_skill_response(status="error", action=f"{SKILL_NAME}_failed_internal_error", error_details=str(e), message=f"Internal error during analysis: {e}")
+            logger.error(
+                f"Unexpected error during performance analysis: {e}", exc_info=True
+            )
+            return create_skill_response(
+                status="error",
+                action=f"{SKILL_NAME}_failed_internal_error",
+                error_details=str(e),
+                message=f"Internal error during analysis: {e}",
+            )
 
         # --- Generate Directives ---
         directives = []
@@ -118,24 +154,38 @@ class PerformanceAnalyzerSkill:
         if top_performer:
             top_title = top_performer.get("title", "Unknown Title")
             top_revenue = top_performer.get("revenue", 0.0)
-            analysis_summary += f"Top performer: '{top_title}' (Revenue: ${top_revenue:.2f}). "
+            analysis_summary += (
+                f"Top performer: '{top_title}' (Revenue: ${top_revenue:.2f}). "
+            )
             # Add directive only if revenue meets a certain threshold? Or always praise the top?
             if top_revenue >= self.revenue_threshold_high:
-                 directives.append(f"Create more content like '{top_title}' (High Revenue). Focus on this niche.")
+                directives.append(
+                    f"Create more content like '{top_title}' (High Revenue). Focus on this niche."
+                )
             else:
-                 directives.append(f"Continue exploring content like '{top_title}', as it's the current top performer.")
+                directives.append(
+                    f"Continue exploring content like '{top_title}', as it's the current top performer."
+                )
 
         # Add directive for worst performer only if it's different from the top performer and exists
         if worst_performer and worst_performer != top_performer:
             worst_title = worst_performer.get("title", "Unknown Title")
             worst_sales = worst_performer.get("sales", 0)
-            analysis_summary += f"Low performer: '{worst_title}' (Sales: {worst_sales})."
-            directives.append(f"Avoid content similar to '{worst_title}' (Low Sales/Revenue). Consider alternative topics.")
+            analysis_summary += (
+                f"Low performer: '{worst_title}' (Sales: {worst_sales})."
+            )
+            directives.append(
+                f"Avoid content similar to '{worst_title}' (Low Sales/Revenue). Consider alternative topics."
+            )
         elif worst_performer and worst_performer == top_performer:
-             analysis_summary += f"Only one product type analyzed or all performed similarly."
-             directives.append("Need more diverse product data for clearer directives.")
+            analysis_summary += (
+                "Only one product type analyzed or all performed similarly."
+            )
+            directives.append("Need more diverse product data for clearer directives.")
         else:
-             analysis_summary += "Could not identify a distinct low performer based on criteria."
+            analysis_summary += (
+                "Could not identify a distinct low performer based on criteria."
+            )
 
         logger.info(f"Analysis complete. Directives: {directives}")
 
@@ -146,10 +196,11 @@ class PerformanceAnalyzerSkill:
                 "directives": directives,
                 "analysis_summary": analysis_summary.strip(),
                 "top_performer": top_performer,
-                "worst_performer_candidate": worst_performer
+                "worst_performer_candidate": worst_performer,
             },
-            message="Performance analysis completed successfully."
+            message="Performance analysis completed successfully.",
         )
+
 
 # Example Usage (if run directly)
 # if __name__ == '__main__':

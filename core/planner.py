@@ -1,26 +1,27 @@
 import logging
 import json
-import asyncio # Import asyncio
-import re # Add re import, needed for json_find_gpt
-from typing import List, Dict, Optional, Any
+import asyncio  # Import asyncio
+import re  # Add re import, needed for json_find_gpt
+from typing import List, Optional
 
 # Assuming llm_interface and prompt_builder are accessible
 from .llm_interface import call_llm
 from .prompt_builder import build_planning_prompt
+
 # Assuming config is available for the test block
 try:
     from .config import LLAMA_SERVER_URL
 except ImportError:
-    LLAMA_SERVER_URL = None # Define as None if config can't be imported
+    LLAMA_SERVER_URL = None  # Define as None if config can't be imported
 
 # <<< ADD PLANNING_SCHEMA Definition >>>
 PLANNING_SCHEMA = {
     "type": "array",
     "items": {
         "type": "string",
-        "description": "A single, clear, concise step in the plan."
+        "description": "A single, clear, concise step in the plan.",
     },
-    "description": "A list of strings representing the sequential steps of the plan."
+    "description": "A list of strings representing the sequential steps of the plan.",
 }
 
 # Corrected PLANNER_SYSTEM_PROMPT declaration (standard triple quotes)
@@ -60,11 +61,12 @@ Output:
 - If the objective seems impossible or unclear with the given tools, output an empty JSON list `[]`.
 """
 
+
 async def generate_plan(
     objective: str,
     tool_descriptions: str,
     agent_logger: logging.Logger,
-    llm_url: Optional[str] = None # Allow passing LLM URL if needed
+    llm_url: Optional[str] = None,  # Allow passing LLM URL if needed
 ) -> Optional[List[str]]:
     """
     Generates a plan (list of steps) to achieve the objective using the LLM.
@@ -78,19 +80,25 @@ async def generate_plan(
     Returns:
         A list of strings representing the plan steps, or None if planning fails.
     """
-    agent_logger.info(f"[Planner] Generating plan for objective: '{objective[:100]}...'")
+    agent_logger.info(
+        f"[Planner] Generating plan for objective: '{objective[:100]}...'"
+    )
 
     # 1. Build the planning prompt
-    planning_prompt_messages = build_planning_prompt(objective, tool_descriptions, PLANNER_SYSTEM_PROMPT)
+    planning_prompt_messages = build_planning_prompt(
+        objective, tool_descriptions, PLANNER_SYSTEM_PROMPT
+    )
 
     # 2. Call the LLM
     try:
         # <<< MODIFIED: Consume async generator for non-streaming call >>>
         llm_response_raw = ""
         # Instead of async for, directly get the iterator and await the first item
-        llm_response_iterator = call_llm(planning_prompt_messages, llm_url=llm_url, stream=False)
+        llm_response_iterator = call_llm(
+            planning_prompt_messages, llm_url=llm_url, stream=False
+        )
         # Ensure we get an async iterator
-        if hasattr(llm_response_iterator, '__aiter__'):
+        if hasattr(llm_response_iterator, "__aiter__"):
             # <<< REVERTED: Use simple async for loop >>>
             async for chunk in llm_response_iterator:
                 llm_response_raw += chunk
@@ -110,7 +118,9 @@ async def generate_plan(
             #     llm_response_raw = "" # Treat as empty response
         else:
             # This case shouldn't happen if call_llm always returns an async generator/iterable
-            agent_logger.error("[Planner] LLM call (non-streaming) did not return an async iterable object.")
+            agent_logger.error(
+                "[Planner] LLM call (non-streaming) did not return an async iterable object."
+            )
             return None
 
         # llm_response_raw = await call_llm(planning_prompt_messages, llm_url=llm_url) # <<< OLD WAY
@@ -124,34 +134,51 @@ async def generate_plan(
     try:
         json_match = json_find_gpt(llm_response_raw)
         if not json_match:
-             agent_logger.error(f"[Planner] No JSON block found in LLM response: {llm_response_raw[:300]}...")
-             try:
-                 # Fallback: Check if the entire string might be JSON
-                 plan = json.loads(llm_response_raw)
-                 plan_str_for_logging = llm_response_raw # Log the whole thing if it parsed
-             except json.JSONDecodeError:
-                 agent_logger.error("[Planner] Fallback failed: Could not decode entire response as JSON either.")
-                 return None # Give up if no JSON found and direct parse fails
+            agent_logger.error(
+                f"[Planner] No JSON block found in LLM response: {llm_response_raw[:300]}..."
+            )
+            try:
+                # Fallback: Check if the entire string might be JSON
+                plan = json.loads(llm_response_raw)
+                plan_str_for_logging = (
+                    llm_response_raw  # Log the whole thing if it parsed
+                )
+            except json.JSONDecodeError:
+                agent_logger.error(
+                    "[Planner] Fallback failed: Could not decode entire response as JSON either."
+                )
+                return None  # Give up if no JSON found and direct parse fails
         else:
             plan_str = json_match.group(1)
-            plan_str_for_logging = plan_str # Log the extracted part
+            plan_str_for_logging = plan_str  # Log the extracted part
             plan = json.loads(plan_str)
 
         if isinstance(plan, list) and all(isinstance(step, str) for step in plan):
             if not plan:
-                 agent_logger.warning("[Planner] LLM returned an empty plan. Objective might be unachievable or trivial.")
-                 return []
-            agent_logger.info(f"[Planner] Plan generated successfully with {len(plan)} steps.")
+                agent_logger.warning(
+                    "[Planner] LLM returned an empty plan. Objective might be unachievable or trivial."
+                )
+                return []
+            agent_logger.info(
+                f"[Planner] Plan generated successfully with {len(plan)} steps."
+            )
             return plan
         else:
-            agent_logger.error(f"[Planner] Parsed JSON is not a list of strings: {plan}")
+            agent_logger.error(
+                f"[Planner] Parsed JSON is not a list of strings: {plan}"
+            )
             return None
     except json.JSONDecodeError as json_err:
-        agent_logger.error(f"[Planner] Failed to decode extracted JSON from LLM response: {json_err}. Extracted: '{plan_str_for_logging}'")
+        agent_logger.error(
+            f"[Planner] Failed to decode extracted JSON from LLM response: {json_err}. Extracted: '{plan_str_for_logging}'"
+        )
         return None
     except Exception as e:
-        agent_logger.exception(f"[Planner] Unexpected error parsing planning response: {e}")
+        agent_logger.exception(
+            f"[Planner] Unexpected error parsing planning response: {e}"
+        )
         return None
+
 
 def json_find_gpt(input_str: str):
     """
@@ -159,7 +186,9 @@ def json_find_gpt(input_str: str):
     Helper based on AutoGPT's parsing. Also handles if the whole string is JSON.
     """
     # Try finding ```json ``` block
-    im_json = re.search(r"```(?:json)?\s*\n(.*?)\n```", input_str, re.DOTALL | re.IGNORECASE)
+    im_json = re.search(
+        r"```(?:json)?\s*\n(.*?)\n```", input_str, re.DOTALL | re.IGNORECASE
+    )
 
     if im_json:
         return im_json
@@ -167,19 +196,27 @@ def json_find_gpt(input_str: str):
         # Fallback: Check if the entire string is valid JSON
         try:
             json.loads(input_str)
+
             # If parsing succeeds, wrap it to mimic the regex group structure
             class MockMatch:
                 _content = input_str
+
                 def group(self, num):
-                    if num == 1: return self._content
+                    if num == 1:
+                        return self._content
                     return None
+
             return MockMatch()
         except json.JSONDecodeError:
             return None
 
+
 # Example usage needs async context
 async def main_test():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     test_logger = logging.getLogger("test_planner")
     test_objective = "Get the capital of France and write it to 'capital.txt'"
     test_tools = """
@@ -189,11 +226,15 @@ async def main_test():
 """
 
     if not LLAMA_SERVER_URL:
-         print("Error: LLAMA_SERVER_URL not configured (likely missing core/config.py or env var). Cannot run test.")
-         return
+        print(
+            "Error: LLAMA_SERVER_URL not configured (likely missing core/config.py or env var). Cannot run test."
+        )
+        return
 
     print(f"Testing planner with objective: '{test_objective}'")
-    plan = await generate_plan(test_objective, test_tools, test_logger, llm_url=LLAMA_SERVER_URL)
+    plan = await generate_plan(
+        test_objective, test_tools, test_logger, llm_url=LLAMA_SERVER_URL
+    )
     print("--- Generated Plan ---")
     if plan is not None:
         print(json.dumps(plan, indent=2))
@@ -201,7 +242,8 @@ async def main_test():
         print("Failed to generate plan.")
     print("----------------------")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     try:
         # Check if running in an already running event loop
         loop = asyncio.get_running_loop()
@@ -214,9 +256,11 @@ if __name__ == '__main__':
         try:
             asyncio.run(main_test())
         except ImportError:
-             print("Could not import config. Ensure core/config.py exists or environment variables are set.")
+            print(
+                "Could not import config. Ensure core/config.py exists or environment variables are set."
+            )
         except Exception as e:
-             print(f"An error occurred during async test execution: {e}")
-             import traceback
-             traceback.print_exc()
+            print(f"An error occurred during async test execution: {e}")
+            import traceback
 
+            traceback.print_exc()

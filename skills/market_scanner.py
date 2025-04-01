@@ -8,10 +8,11 @@ logger = logging.getLogger(__name__)
 # Define o nome da skill de forma consistente
 SKILL_NAME = "market_scanner"
 
+
 @skill(
     name=SKILL_NAME,
     description="Scans for potentially profitable content niches based on current trends or predefined lists.",
-    parameters={} # Sem parâmetros de entrada por enquanto
+    parameters={},  # Sem parâmetros de entrada por enquanto
 )
 class MarketScannerSkill:
     """
@@ -42,7 +43,7 @@ class MarketScannerSkill:
             "Prompt Pack para criadores de conteúdo",
             "Template Notion para organização pessoal",
             "Guia de configuração de LLM local",
-            "Ebook: Primeiros passos com Agentes Autônomos"
+            "Ebook: Primeiros passos com Agentes Autônomos",
         ]
 
         logger.debug(f"Generated niche ideas: {niche_ideas}")
@@ -51,8 +52,9 @@ class MarketScannerSkill:
             status="success",
             action="scan_niches_completed",
             data={"niches": niche_ideas},
-            message="Niche ideas generated successfully."
+            message="Niche ideas generated successfully.",
         )
+
 
 # Exemplo de como chamar (fora da classe para clareza):
 # scanner = MarketScannerSkill()

@@ -1,8 +1,6 @@
 # Add project root to sys.path if needed (handled in conftest.py)
 
 # <<< MODIFIED: Import specific functions and WORKSPACE_ROOT >>>
-from skills.manage_files import create_file, append_to_file, WORKSPACE_ROOT
-from pathlib import Path
 import pytest
 from unittest.mock import patch
 
@@ -18,6 +16,7 @@ from unittest.mock import patch
 
 # Common fixtures for manage_files tests
 
+
 @pytest.fixture
 def mock_workspace(tmp_path):
     """Creates a temporary workspace directory."""
@@ -25,18 +24,22 @@ def mock_workspace(tmp_path):
     ws_path.mkdir()
     return ws_path
 
+
 @pytest.fixture
 def patch_workspace_root(mock_workspace):
     """Patches the WORKSPACE_ROOT constant to use the mock workspace."""
     # Assuming WORKSPACE_ROOT is correctly imported in skills.manage_files
-    with patch('skills.manage_files.WORKSPACE_ROOT', str(mock_workspace)):
+    with patch("skills.manage_files.WORKSPACE_ROOT", str(mock_workspace)):
         yield str(mock_workspace)
+
 
 # Example common test (can be expanded)
 def test_workspace_root_patching(patch_workspace_root):
     """Verify that the WORKSPACE_ROOT is correctly patched."""
     # Re-import within the test to get the patched value
     from skills.manage_files import WORKSPACE_ROOT as patched_root
+
     assert patched_root == patch_workspace_root
+
 
 # Add other common tests or helper functions if applicable

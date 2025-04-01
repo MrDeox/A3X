@@ -17,7 +17,12 @@ except ImportError:
 # Configure logger para esta skill
 logger = logging.getLogger(__name__)
 
-def skill_modify_code(action_input: Dict[str, Any], agent_memory: dict = None, agent_history: list | None = None) -> Dict[str, Any]:
+
+def skill_modify_code(
+    action_input: Dict[str, Any],
+    agent_memory: dict = None,
+    agent_history: list | None = None,
+) -> Dict[str, Any]:
     """
     Modifica um bloco de código existente usando o LLM com base em instruções.
 
@@ -32,7 +37,7 @@ def skill_modify_code(action_input: Dict[str, Any], agent_memory: dict = None, a
     Returns:
         Dict[str, Any]: Dicionário com status, action, e data (contendo código original e modificado).
     """
-    logger.info(f"Executando skill_modify_code...")
+    logger.info("Executando skill_modify_code...")
     logger.debug(f"Action Input: {action_input}")
 
     # Extrair parâmetros
@@ -46,14 +51,20 @@ def skill_modify_code(action_input: Dict[str, Any], agent_memory: dict = None, a
         return {
             "status": "error",
             "action": "modify_code_failed",
-            "data": {"message": "Erro: A instrução de modificação (modification) não foi especificada."}
+            "data": {
+                "message": "Erro: A instrução de modificação (modification) não foi especificada."
+            },
         }
-    if not original_code: # code_to_modify pode ser string vazia, mas não None ou ausente
+    if (
+        not original_code
+    ):  # code_to_modify pode ser string vazia, mas não None ou ausente
         logger.error("Parâmetro obrigatório 'code_to_modify' não fornecido.")
         return {
             "status": "error",
             "action": "modify_code_failed",
-            "data": {"message": "Erro: O código a ser modificado (code_to_modify) não foi fornecido."}
+            "data": {
+                "message": "Erro: O código a ser modificado (code_to_modify) não foi fornecido."
+            },
         }
 
     try:
@@ -73,8 +84,8 @@ Return ONLY the complete, modified code block in {language}, without any explana
         # Preparar payload para o LLM
         payload = {
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3, # Temperatura baixa para modificações precisas
-            "max_tokens": 2048, # Permitir modificações em códigos mais longos
+            "temperature": 0.3,  # Temperatura baixa para modificações precisas
+            "max_tokens": 2048,  # Permitir modificações em códigos mais longos
             "stream": False,
         }
 
@@ -84,36 +95,52 @@ Return ONLY the complete, modified code block in {language}, without any explana
             LLAMA_SERVER_URL,
             headers=LLAMA_DEFAULT_HEADERS,
             json=payload,
-            timeout=150 # Timeout um pouco maior para modificação
+            timeout=150,  # Timeout um pouco maior para modificação
         )
-        response.raise_for_status() # Levanta erro para status >= 400
+        response.raise_for_status()  # Levanta erro para status >= 400
 
         # Extrair o código modificado da resposta
         response_data = response.json()
-        modified_code = "" # Inicializa
-        if 'choices' in response_data and response_data['choices']:
-            message = response_data['choices'][0].get('message', {})
-            raw_modified_code = message.get('content', '').strip()
+        modified_code = ""  # Inicializa
+        if "choices" in response_data and response_data["choices"]:
+            message = response_data["choices"][0].get("message", {})
+            raw_modified_code = message.get("content", "").strip()
             if raw_modified_code:
                 # Limpeza de markdown (melhor esforço)
-                temp_code = re.sub(r"^```(?:[a-zA-Z]+)?\n?", "", raw_modified_code, flags=re.MULTILINE)
-                modified_code = re.sub(r"\n?```$", "", temp_code, flags=re.MULTILINE).strip()
-                logger.debug(f"Código modificado após limpeza: {modified_code[:100]}...")
+                temp_code = re.sub(
+                    r"^```(?:[a-zA-Z]+)?\n?", "", raw_modified_code, flags=re.MULTILINE
+                )
+                modified_code = re.sub(
+                    r"\n?```$", "", temp_code, flags=re.MULTILINE
+                ).strip()
+                logger.debug(
+                    f"Código modificado após limpeza: {modified_code[:100]}..."
+                )
             else:
-                logger.warning("Campo 'content' da resposta LLM está vazio ao modificar código.")
-                modified_code = "" # Garante que é vazio se content for vazio
+                logger.warning(
+                    "Campo 'content' da resposta LLM está vazio ao modificar código."
+                )
+                modified_code = ""  # Garante que é vazio se content for vazio
         else:
-            logger.error(f"Resposta inesperada do LLM ao modificar código: {response_data}")
-            raise ValueError("Formato de resposta inesperado do LLM para modificação de código.")
+            logger.error(
+                f"Resposta inesperada do LLM ao modificar código: {response_data}"
+            )
+            raise ValueError(
+                "Formato de resposta inesperado do LLM para modificação de código."
+            )
 
         # Verificar se o código retornado está vazio
         if not modified_code:
-            logger.warning("LLM retornou código modificado vazio ou limpeza resultou em vazio.")
+            logger.warning(
+                "LLM retornou código modificado vazio ou limpeza resultou em vazio."
+            )
             # Pode ser um erro ou o LLM deletou tudo? Retornar erro por segurança.
             return {
                 "status": "error",
                 "action": "modify_code_failed",
-                "data": {"message": "LLM retornou uma resposta vazia ou inválida ao modificar o código."}
+                "data": {
+                    "message": "LLM retornou uma resposta vazia ou inválida ao modificar o código."
+                },
             }
 
         # Verificar se o código realmente mudou (removendo espaços em branco para comparação)
@@ -124,10 +151,10 @@ Return ONLY the complete, modified code block in {language}, without any explana
                 "action": "code_modification_no_change",
                 "data": {
                     "original_code": original_code,
-                    "modified_code": modified_code, # Retorna o mesmo código
+                    "modified_code": modified_code,  # Retorna o mesmo código
                     "language": language,
-                    "message": "LLM não aplicou a modificação solicitada (código retornado é idêntico ao original)."
-                }
+                    "message": "LLM não aplicou a modificação solicitada (código retornado é idêntico ao original).",
+                },
             }
         else:
             logger.info(f"Código modificado com sucesso em {language}.")
@@ -138,8 +165,8 @@ Return ONLY the complete, modified code block in {language}, without any explana
                     "original_code": original_code,
                     "modified_code": modified_code,
                     "language": language,
-                    "message": "Código modificado com sucesso."
-                }
+                    "message": "Código modificado com sucesso.",
+                },
             }
 
     except requests.exceptions.RequestException as e:
@@ -147,19 +174,28 @@ Return ONLY the complete, modified code block in {language}, without any explana
         return {
             "status": "error",
             "action": "modify_code_failed",
-            "data": {"message": f"Erro de comunicação com o servidor LLM: {e}"}
+            "data": {"message": f"Erro de comunicação com o servidor LLM: {e}"},
         }
-    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e: # Captura erros de parsing e formato
-        logger.error(f"Erro ao processar resposta do LLM: {e}. Resposta: {response_data if 'response_data' in locals() else 'N/A'}")
+    except (
+        json.JSONDecodeError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as e:  # Captura erros de parsing e formato
+        logger.error(
+            f"Erro ao processar resposta do LLM: {e}. Resposta: {response_data if 'response_data' in locals() else 'N/A'}"
+        )
         return {
             "status": "error",
             "action": "modify_code_failed",
-            "data": {"message": f"Erro ao processar resposta do LLM: {str(e)}"}
+            "data": {"message": f"Erro ao processar resposta do LLM: {str(e)}"},
         }
     except Exception as e:
-        logger.exception("Erro inesperado ao modificar código:") # Log com traceback
+        logger.exception("Erro inesperado ao modificar código:")  # Log com traceback
         return {
             "status": "error",
             "action": "modify_code_failed",
-            "data": {"message": f"Erro inesperado durante a modificação de código: {str(e)}"}
+            "data": {
+                "message": f"Erro inesperado durante a modificação de código: {str(e)}"
+            },
         }

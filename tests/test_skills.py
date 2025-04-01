@@ -1,15 +1,15 @@
 import pytest
 import sys
 import os
-from unittest.mock import MagicMock
 
 # Adiciona o diretório raiz ao path para importar os módulos
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 try:
-    from skills.generate_code import skill_generate_code
+    # from skills.code_generation import generate_code # F401
+    pass # Keep try block structure
 except ImportError:
-    pytest.skip("Não foi possível importar skills.generate_code", allow_module_level=True)
+    pytest.skip("Não foi possível importar skills.code_generation", allow_module_level=True)
 
 # Simula uma resposta HTTP do servidor LLM contendo código e texto extra
 MOCK_LLM_CODE_RESPONSE = {
@@ -62,4 +62,4 @@ Mais texto extra.
 #     assert "Mais texto extra" not in result["data"]["code"], "Texto extra foi incluído indevidamente no resultado."
 #
 #     # Verifica se requests.post foi chamado uma vez
-#     mock_post.assert_called_once() 
+#     mock_post.assert_called_once()

@@ -2,7 +2,7 @@
 import logging
 from typing import Dict, Any
 from core.tools import skill
-from core.llm_interface import call_llm # <-- CORRECT IMPORT
+from core.llm_interface import call_llm  # <-- CORRECT IMPORT
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +19,14 @@ Se o passo parecer inviável ou propenso a erro, descreva o problema esperado.
 Resultado Simulado:
 """
 
+
 @skill(
     name="simulate_step",
     description="Simula mentalmente o resultado provável de um passo do plano com base no contexto atual.",
     parameters={
-        "step": (str, ...),      # Passo do plano a ser simulado (obrigatório)
-        "context": (Dict[str, Any], {}), # Contexto atual do agente (opcional)
-    }
+        "step": (str, ...),  # Passo do plano a ser simulado (obrigatório)
+        "context": (Dict[str, Any], {}),  # Contexto atual do agente (opcional)
+    },
 )
 async def simulate_step(step: str, context: Dict[str, Any] = {}) -> Dict[str, Any]:
     """
@@ -44,7 +45,9 @@ async def simulate_step(step: str, context: Dict[str, Any] = {}) -> Dict[str, An
     """
     logger.debug(f"Simulating step: '{step}' with context: {context}")
 
-    prompt = SIMULATE_STEP_PROMPT_TEMPLATE.format(step=step, context=context if context else "Nenhum contexto fornecido.")
+    prompt = SIMULATE_STEP_PROMPT_TEMPLATE.format(
+        step=step, context=context if context else "Nenhum contexto fornecido."
+    )
 
     try:
         # Correctly consume the async generator even for stream=False
@@ -53,20 +56,24 @@ async def simulate_step(step: str, context: Dict[str, Any] = {}) -> Dict[str, An
             llm_response_text += chunk
 
         if not llm_response_text or not isinstance(llm_response_text, str):
-             logger.error(f"Simulation LLM call returned invalid data type: {type(llm_response_text)}")
-             raise ValueError("LLM simulation response was empty or not a string.")
+            logger.error(
+                f"Simulation LLM call returned invalid data type: {type(llm_response_text)}"
+            )
+            raise ValueError("LLM simulation response was empty or not a string.")
 
         simulated_outcome = llm_response_text.strip()
-        logger.info(f"Simulation successful for step '{step}'. Outcome: {simulated_outcome}")
+        logger.info(
+            f"Simulation successful for step '{step}'. Outcome: {simulated_outcome}"
+        )
 
         # Placeholder for confidence assessment - could involve analyzing the LLM response text
-        confidence = "Média" # Default confidence for now
+        confidence = "Média"  # Default confidence for now
 
         return {
             "status": "success",
             "simulated_outcome": simulated_outcome,
             "confidence": confidence,
-            "error_message": None
+            "error_message": None,
         }
 
     except Exception as e:
@@ -75,8 +82,9 @@ async def simulate_step(step: str, context: Dict[str, Any] = {}) -> Dict[str, An
             "status": "error",
             "simulated_outcome": None,
             "confidence": "N/A",
-            "error_message": f"Failed to simulate step due to LLM error: {e}"
+            "error_message": f"Failed to simulate step due to LLM error: {e}",
         }
 
+
 # Ensure the skill is registered by importing it in skills/__init__.py if needed
-# (Assuming the current setup automatically loads modules in the skills directory) 
+# (Assuming the current setup automatically loads modules in the skills directory)

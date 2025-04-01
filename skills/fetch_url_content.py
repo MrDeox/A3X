@@ -1,7 +1,6 @@
 # skills/fetch_url_content.py
 import logging
 import requests
-import traceback
 from typing import Dict, Any
 from urllib.parse import urlparse
 
@@ -15,15 +14,17 @@ logger = logging.getLogger(__name__)
 # Timeout padrão para requisições HTTP (segundos)
 DEFAULT_REQUEST_TIMEOUT = 15
 
+
 def _is_valid_url(url: str) -> bool:
     """Verifica se a URL tem um esquema e netloc válidos e não é local."""
     try:
         parsed = urlparse(url)
         # Requer esquema (http/https) e localização de rede (domínio)
         # Proíbe explicitamente o esquema 'file'
-        return all([parsed.scheme in ['http', 'https'], parsed.netloc])
+        return all([parsed.scheme in ["http", "https"], parsed.netloc])
     except Exception:
         return False
+
 
 def skill_fetch_url_content(action_input: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -48,7 +49,7 @@ def skill_fetch_url_content(action_input: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": "error",
             "action": "fetch_failed",
-            "data": {"message": "Erro: O parâmetro 'url' não foi especificado."}
+            "data": {"message": "Erro: O parâmetro 'url' não foi especificado."},
         }
 
     if not isinstance(url, str) or not _is_valid_url(url):
@@ -56,7 +57,10 @@ def skill_fetch_url_content(action_input: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": "error",
             "action": "fetch_failed",
-            "data": {"url": url, "message": f"Erro: URL inválida ou não permitida: '{url}'. Use http ou https e inclua o domínio."}
+            "data": {
+                "url": url,
+                "message": f"Erro: URL inválida ou não permitida: '{url}'. Use http ou https e inclua o domínio.",
+            },
         }
 
     try:
@@ -64,26 +68,33 @@ def skill_fetch_url_content(action_input: Dict[str, Any]) -> Dict[str, Any]:
         if timeout_sec <= 0:
             raise ValueError("Timeout must be positive")
     except (ValueError, TypeError):
-        logger.warning(f"Timeout inválido fornecido: {timeout}. Usando default: {DEFAULT_REQUEST_TIMEOUT}s")
+        logger.warning(
+            f"Timeout inválido fornecido: {timeout}. Usando default: {DEFAULT_REQUEST_TIMEOUT}s"
+        )
         timeout_sec = DEFAULT_REQUEST_TIMEOUT
 
     # --- Lógica de Fetch e Parse (Placeholder) ---
     try:
         logger.info(f"Buscando conteúdo da URL: {url} com timeout {timeout_sec}s")
-        headers = { # Simular um navegador básico
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        headers = {  # Simular um navegador básico
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        response = requests.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
-        response.raise_for_status() # Levanta erro para status >= 400
+        response = requests.get(
+            url, headers=headers, timeout=timeout_sec, allow_redirects=True
+        )
+        response.raise_for_status()  # Levanta erro para status >= 400
 
         # Verificar tipo de conteúdo (aceitar apenas HTML por enquanto)
-        content_type = response.headers.get('content-type', '').lower()
-        if 'html' not in content_type:
+        content_type = response.headers.get("content-type", "").lower()
+        if "html" not in content_type:
             logger.warning(f"Conteúdo não é HTML ({content_type}) para URL: {url}")
             return {
                 "status": "error",
                 "action": "fetch_failed",
-                "data": {"url": url, "message": f"Erro: O conteúdo da URL não é HTML (tipo: {content_type})."}
+                "data": {
+                    "url": url,
+                    "message": f"Erro: O conteúdo da URL não é HTML (tipo: {content_type}).",
+                },
             }
 
         html_content = response.text
@@ -100,9 +111,9 @@ def skill_fetch_url_content(action_input: Dict[str, Any]) -> Dict[str, Any]:
             "action": "content_fetched",
             "data": {
                 "url": url,
-                "content": extracted_content, # Retornar o conteúdo extraído
-                "message": f"Conteúdo principal extraído com sucesso de '{url}'."
-            }
+                "content": extracted_content,  # Retornar o conteúdo extraído
+                "message": f"Conteúdo principal extraído com sucesso de '{url}'.",
+            },
         }
 
     except requests.exceptions.Timeout:
@@ -110,19 +121,25 @@ def skill_fetch_url_content(action_input: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": "error",
             "action": "fetch_failed",
-            "data": {"url": url, "message": f"Erro: Timeout ({timeout_sec}s) ao tentar acessar a URL."}
+            "data": {
+                "url": url,
+                "message": f"Erro: Timeout ({timeout_sec}s) ao tentar acessar a URL.",
+            },
         }
     except requests.exceptions.RequestException as e:
         logger.error(f"Erro de rede ao buscar URL '{url}': {e}")
         return {
             "status": "error",
             "action": "fetch_failed",
-            "data": {"url": url, "message": f"Erro de rede ao acessar a URL: {e}"}
+            "data": {"url": url, "message": f"Erro de rede ao acessar a URL: {e}"},
         }
     except Exception as e:
         logger.exception(f"Erro inesperado ao processar URL '{url}':")
         return {
             "status": "error",
             "action": "fetch_failed",
-            "data": {"url": url, "message": f"Erro inesperado durante o processamento da URL: {str(e)}"}
+            "data": {
+                "url": url,
+                "message": f"Erro inesperado durante o processamento da URL: {str(e)}",
+            },
         }
