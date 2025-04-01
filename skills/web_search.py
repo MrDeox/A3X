@@ -64,18 +64,15 @@ def search_stub(query: str, max_results: int = 3) -> list[dict]:
     name="web_search",
     description="Performs a web search using Tavily API to answer a query based on current information.",
     parameters={
-        "query": (str, ""),
-        "agent_history": (list | None, None)
+        "query": (str, "")
     }
 )
-def web_search(query: str, agent_memory: dict | None = None, agent_history: list | None = None) -> dict:
+def web_search(query: str) -> dict:
     """
     Performs a web search using the Tavily API and returns the results.
 
     Args:
         query (str): The search query.
-        agent_memory (dict, optional): Agent's memory (not used). Defaults to None.
-        agent_history (list | None, optional): Conversation history (not used). Defaults to None.
 
     Returns:
         dict: Standardized dictionary with the search results or error message.

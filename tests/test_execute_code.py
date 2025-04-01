@@ -3,7 +3,8 @@ import subprocess
 from unittest.mock import patch, MagicMock
 
 # Importar a função da skill
-from skills.execute_code import skill_execute_code, PYTHON_EXEC_TIMEOUT, _is_safe_ast
+from core.code_safety import is_safe_ast
+from skills.execute_code import skill_execute_code, PYTHON_EXEC_TIMEOUT
 
 # Configuração básica para os testes
 DEFAULT_LANGUAGE = "python"
@@ -26,9 +27,7 @@ def test_execute_python_success(mocker):
     expected_stdout = "Success!\nDone"
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE}
 
-    # Mock _is_safe_ast para retornar True
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe"))
-    # Mock subprocess.run para retornar sucesso
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe"))
     mock_run = mocker.patch('subprocess.run', return_value=create_mock_process(stdout=expected_stdout, returncode=0))
 
     result = skill_execute_code(action_input)
@@ -53,7 +52,7 @@ def test_execute_with_stderr_on_success(mocker):
     expected_stderr = "Warning"
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE}
 
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe"))
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe"))
     mock_run = mocker.patch('subprocess.run', return_value=create_mock_process(stdout=expected_stdout, stderr=expected_stderr, returncode=0))
 
     result = skill_execute_code(action_input)
@@ -79,7 +78,7 @@ def test_execute_python_syntax_error(mocker):
 '''
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE}
 
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe")) # AST não pega todos erros de sintaxe
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe")) # AST não pega todos erros de sintaxe
     mock_run = mocker.patch('subprocess.run', return_value=create_mock_process(stdout="", stderr=simulated_stderr, returncode=1))
 
     result = skill_execute_code(action_input)
@@ -103,7 +102,7 @@ def test_execute_python_runtime_error(mocker):
 """ # Exemplo
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE}
 
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe"))
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe"))
     mock_run = mocker.patch('subprocess.run', return_value=create_mock_process(stdout="", stderr=simulated_stderr, returncode=1))
 
     result = skill_execute_code(action_input)
@@ -125,7 +124,7 @@ def test_execute_timeout(mocker):
     timeout_value = 1 # Segundos para o teste
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE, "timeout": timeout_value}
 
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe"))
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe"))
     # Mock subprocess.run para levantar TimeoutExpired
     mock_run = mocker.patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd="firejail ...", timeout=timeout_value))
 
@@ -145,7 +144,7 @@ def test_execute_firejail_not_found(mocker):
     """Testa o cenário onde o comando firejail não é encontrado."""
     action_input = {"action": "execute", "code": DEFAULT_CODE, "language": DEFAULT_LANGUAGE}
 
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe"))
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe"))
     # Mock subprocess.run para levantar FileNotFoundError
     mock_run = mocker.patch('subprocess.run', side_effect=FileNotFoundError("[Errno 2] No such file or directory: 'firejail'"))
 
@@ -180,7 +179,7 @@ def test_execute_missing_code():
 def test_execute_invalid_timeout_type(mocker):
     """Testa a chamada com um tipo de timeout inválido."""
     action_input = {"action": "execute", "code": DEFAULT_CODE, "language": DEFAULT_LANGUAGE, "timeout": "dez"}
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe"))
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe"))
     mock_run = mocker.patch('subprocess.run', return_value=create_mock_process())
     result = skill_execute_code(action_input)
     # A execução deve prosseguir com o timeout padrão
@@ -191,7 +190,7 @@ def test_execute_invalid_timeout_type(mocker):
 def test_execute_negative_timeout(mocker):
     """Testa a chamada com um timeout negativo."""
     action_input = {"action": "execute", "code": DEFAULT_CODE, "language": DEFAULT_LANGUAGE, "timeout": -5}
-    mocker.patch('skills.execute_code._is_safe_ast', return_value=(True, "Safe"))
+    mocker.patch('skills.execute_code.is_safe_ast', return_value=(True, "Safe"))
     mock_run = mocker.patch('subprocess.run', return_value=create_mock_process())
     result = skill_execute_code(action_input)
     # A execução deve prosseguir com o timeout padrão
@@ -204,9 +203,8 @@ def test_execute_ast_unsafe_import(mocker):
     code = "import os\nprint(os.listdir('.'))"
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE}
 
-    # Mock _is_safe_ast para retornar False (simulado, a função real faria isso)
+    # <<< NO NEED TO MOCK: Use the real function imported from core.code_safety >>>
     # mocker.patch('skills.execute_code._is_safe_ast', return_value=(False, "Imports não são permitidos (Import)"))
-    # Não precisa mockar _is_safe_ast, usamos a função real
     mock_run = mocker.patch('subprocess.run') # Mock para garantir que não seja chamado
 
     result = skill_execute_code(action_input)
@@ -214,7 +212,7 @@ def test_execute_ast_unsafe_import(mocker):
     assert result['status'] == "error"
     assert result['action'] == "execution_failed"
     assert "Execução bloqueada por motivos de segurança (análise AST)" in result['data']['message']
-    # Check for the specific message detail from _is_safe_ast
+    # Check for the specific message detail from is_safe_ast (real function)
     assert "Nó AST não permitido: Import" in result['data']['message']
     mock_run.assert_not_called() # Garante que subprocess.run não foi invocado
 
@@ -223,13 +221,14 @@ def test_execute_ast_unsafe_attribute(mocker):
     code = "print(().__class__.__bases__)" # Exemplo de acesso perigoso
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE}
 
+    # <<< NO NEED TO MOCK: Use the real function >>>
     mock_run = mocker.patch('subprocess.run')
     result = skill_execute_code(action_input)
 
     assert result['status'] == "error"
     assert result['action'] == "execution_failed"
     assert "Execução bloqueada por motivos de segurança (análise AST)" in result['data']['message']
-    # Check for the specific message detail from _is_safe_ast
+    # Check for the specific message detail from is_safe_ast (real function)
     assert "Nó AST não permitido: Attribute" in result['data']['message']
     mock_run.assert_not_called()
 
@@ -238,6 +237,7 @@ def test_execute_ast_syntax_error(mocker):
     code = "print('Oops"
     action_input = {"action": "execute", "code": code, "language": DEFAULT_LANGUAGE}
 
+    # <<< NO NEED TO MOCK: Use the real function >>>
     mock_run = mocker.patch('subprocess.run')
     result = skill_execute_code(action_input)
 

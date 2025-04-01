@@ -5,25 +5,18 @@ import logging
 from datetime import datetime
 import re
 from pathlib import Path
+from typing import Dict, Any
 
 from core.tools import skill
-from core.skills_utils import create_skill_response, WORKSPACE_ROOT
+from core.skills_utils import create_skill_response
+from core.config import PROJECT_ROOT as WORKSPACE_ROOT
+from core.validators import validate_workspace_path
 
 logger = logging.getLogger(__name__)
 
 # Define o nome da skill de forma consistente
 SKILL_NAME = "publisher"
 
-@skill(
-    name=SKILL_NAME,
-    description="Publishes digital products (simulated) to platforms like Gumroad.",
-    parameters={
-        "filepath": (str, "Path to the file content to be published."),
-        "title": (str, "Title of the product."),
-        "price": (float, "Price of the product (e.g., 0.99)."),
-        "target": (str, "Target platform (currently only 'gumroad' simulation supported).")
-    }
-)
 class PublisherSkill:
     """
     Skill to handle publishing content to various platforms.
@@ -41,53 +34,34 @@ class PublisherSkill:
             # Skill can still proceed, but saving might fail later
             # Consider raising an error during init if directory is critical
 
-    def publish_to_gumroad(self, filepath: str, title: str, price: float) -> dict:
+    @validate_workspace_path(arg_name='filepath', check_existence=True, target_type='file')
+    def publish_to_gumroad(self, filepath: str, title: str, price: float, resolved_path: Path, original_path_str: str, **kwargs) -> dict:
         """
         Simulates publishing a product file to Gumroad.
+        Path validation handled by @validate_workspace_path.
 
         Creates a JSON file in `output/published/` containing metadata
         about the simulated publication.
 
         Args:
-            filepath (str): Relative path within the workspace to the product file.
+            filepath (str): Original relative path (passed by decorator as original_path_str).
             title (str): The title for the product.
             price (float): The price for the product.
+            resolved_path (Path): Injected by decorator - validated absolute Path object.
+            original_path_str (str): Injected by decorator - original path string.
+            **kwargs: Catches any other args passed by the decorator or caller.
 
         Returns:
             dict: A dictionary with the status and details of the simulation.
         """
+        # Use injected args
+        validated_filepath = original_path_str 
+        abs_filepath = resolved_path
+
         logger.info(f"Executing {SKILL_NAME} skill: publish_to_gumroad (simulation)")
-        logger.info(f"Attempting to publish file: '{filepath}' with title '{title}' for ${price:.2f}")
+        logger.info(f"Attempting to publish file: '{validated_filepath}' (resolved: {abs_filepath}) with title '{title}' for ${price:.2f}")
 
-        # --- Input Validation ---
-        # Validate filepath relative to WORKSPACE_ROOT
-        try:
-            if not isinstance(filepath, str) or not filepath:
-                raise ValueError("File path cannot be empty.")
-            if os.path.isabs(filepath) or ".." in filepath:
-                raise ValueError("Path must be relative within the workspace and cannot contain '..'.")
-
-            abs_filepath = (Path(WORKSPACE_ROOT) / filepath).resolve()
-
-            if not str(abs_filepath).startswith(str(Path(WORKSPACE_ROOT).resolve())):
-                raise ValueError("Path resolves outside the workspace.")
-
-            if not abs_filepath.is_file():
-                return create_skill_response(
-                    status="error",
-                    action=f"{SKILL_NAME}_failed_file_not_found",
-                    error_details=f"Input file not found at resolved path: {abs_filepath}",
-                    message=f"Error: The file specified ('{filepath}') does not exist or is not a file."
-                )
-            logger.debug(f"Validated input file path: {abs_filepath}")
-
-        except ValueError as e:
-             logger.warning(f"Path validation failed for '{filepath}': {e}")
-             return create_skill_response(status="error", action=f"{SKILL_NAME}_failed_invalid_path", error_details=str(e), message=f"Invalid file path: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error validating path '{filepath}': {e}", exc_info=True)
-            return create_skill_response(status="error", action=f"{SKILL_NAME}_failed_internal_error", error_details=str(e), message=f"Internal error validating path: {e}")
-
+        # --- Input Validation (Path validation removed, handled by decorator) ---
         # Validate title and price (basic)
         if not isinstance(title, str) or not title:
             return create_skill_response(status="error", action=f"{SKILL_NAME}_failed_invalid_param", error_details="Title cannot be empty.", message="Invalid product title provided.")
@@ -102,8 +76,7 @@ class PublisherSkill:
         output_filepath = self.output_dir / output_filename
 
         # Simulate Gumroad product URL
-        # Use a generic username if GITHUB_USERNAME isn't set/relevant
-        gumroad_user = os.getenv("GUMROAD_USERNAME", "yourusername") # Or a dedicated Gumroad user env var
+        gumroad_user = os.getenv("GUMROAD_USERNAME", "yourusername")
         slug = safe_title or f"product-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         simulated_url = f"https://{gumroad_user}.gumroad.com/l/{slug}"
 
@@ -111,7 +84,7 @@ class PublisherSkill:
             "simulation_timestamp": timestamp,
             "action": "publish_to_gumroad_simulation",
             "source_filepath": str(abs_filepath), # Store absolute path for clarity in log
-            "original_relative_path": filepath,
+            "original_relative_path": validated_filepath,
             "product_title": title,
             "product_price": price,
             "target_platform": "gumroad",
@@ -157,15 +130,31 @@ class PublisherSkill:
     # def publish_to_etsy(self, ...):
     #     pass
 
-    # The main execution method could dispatch based on 'target'
-    def execute(self, filepath: str, title: str, price: float, target: str = "gumroad", agent_history: list | None = None) -> dict:
+    @skill(
+        name=SKILL_NAME,
+        description="Publishes digital products (simulated) to platforms like Gumroad.",
+        parameters={
+            # Parameters defined here are for the entry point 'execute' method.
+            # The decorator's path validation happens in the dispatched method.
+            "filepath": (str, ...), # User provides this
+            "title": (str, "Title of the product."),
+            "price": (float, 0.99), # Example default
+            "target": (str, "gumroad")
+        }
+    )
+    def execute(self, filepath: str, title: str, price: float, target: str = "gumroad") -> dict:
         """
         Main entry point for the PublisherSkill.
         Dispatches the publishing task to the appropriate method based on the target.
+        Path validation is handled by the dispatched method's decorator.
         """
         logger.info(f"PublisherSkill execute called for target: {target}")
         if target.lower() == "gumroad":
-            return self.publish_to_gumroad(filepath, title, price)
+            # Pass filepath directly; the decorator on publish_to_gumroad will handle it.
+            # It expects 'filepath' as the key for the path string.
+            # Since publish_to_gumroad accepts **kwargs, injected parameters will pass through.
+            # No need to explicitly pass **kwargs from here if execute doesn't receive extra ones.
+            return self.publish_to_gumroad(filepath=filepath, title=title, price=price)
         else:
             logger.warning(f"Unsupported publishing target: '{target}'")
             return create_skill_response(

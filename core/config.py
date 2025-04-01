@@ -15,6 +15,9 @@ load_dotenv(os.path.join(project_root, '.env')) # Load from project root
 # URL do servidor LLAMA (Ollama, LM Studio, etc.)
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions") # Default if not set
 
+# <<< ADDED: Define LLM Provider >>>
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "llama.cpp") # Default to llama.cpp
+
 # Chave da API Tavily (se usar busca web com Tavily)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", None)
 

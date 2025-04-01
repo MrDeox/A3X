@@ -1,61 +1,42 @@
-import pytest
-from unittest.mock import patch, mock_open, MagicMock
+# Add project root to sys.path if needed (handled in conftest.py)
+
+# <<< MODIFIED: Import specific functions and WORKSPACE_ROOT >>>
+from skills.manage_files import create_file, append_to_file, WORKSPACE_ROOT
 from pathlib import Path
+import pytest
+from unittest.mock import patch
 
-# Import the skill function and WORKSPACE_ROOT
-from skills.manage_files import skill_manage_files, WORKSPACE_ROOT
+# <<< REMOVED OBSOLETE TESTS >>>
+# def test_invalid_action():
+#     ...
+# def test_missing_action():
+#     ...
+# def test_delete_action_disabled():
+#     ...
+# def test_missing_filepath_for_delete():
+#     ...
 
-# Define a consistent mock workspace root for tests
-MOCK_WORKSPACE_ROOT = Path("/home/arthur/Projects/A3X").resolve()
+# Common fixtures for manage_files tests
 
-# Helper to create expected resolved paths
-def mock_resolve(path_str):
-    p = Path(path_str)
-    if p.is_absolute():
-        return p.resolve()
-    return (MOCK_WORKSPACE_ROOT / p).resolve()
+@pytest.fixture
+def mock_workspace(tmp_path):
+    """Creates a temporary workspace directory."""
+    ws_path = tmp_path / "mock_workspace"
+    ws_path.mkdir()
+    return ws_path
 
-# == General/Invalid Action Tests ==
+@pytest.fixture
+def patch_workspace_root(mock_workspace):
+    """Patches the WORKSPACE_ROOT constant to use the mock workspace."""
+    # Assuming WORKSPACE_ROOT is correctly imported in skills.manage_files
+    with patch('skills.manage_files.WORKSPACE_ROOT', str(mock_workspace)):
+        yield str(mock_workspace)
 
-def test_invalid_action():
-    """Test calling the skill with an unsupported action."""
-    action_input = {"action": "fly", "destination": "moon"}
-    result = skill_manage_files(action_input)
-    assert result['status'] == "error"
-    assert result['action'] == "manage_files_failed"
-    assert "Ação 'fly' não é suportada" in result['data']['message']
+# Example common test (can be expanded)
+def test_workspace_root_patching(patch_workspace_root):
+    """Verify that the WORKSPACE_ROOT is correctly patched."""
+    # Re-import within the test to get the patched value
+    from skills.manage_files import WORKSPACE_ROOT as patched_root
+    assert patched_root == patch_workspace_root
 
-def test_missing_action():
-    """Test calling the skill without the 'action' parameter."""
-    action_input = {"filepath": "some/file.txt"}
-    result = skill_manage_files(action_input)
-    assert result['status'] == "error"
-    assert result['action'] == "manage_files_failed"
-    assert "Parâmetro 'action' ausente" in result['data']['message']
-
-# == Delete Action Tests (Placeholder/Error Cases) ==
-
-def test_delete_action_disabled():
-    """Test that the 'delete' action is currently disabled/not implemented."""
-    filepath = "file_to_delete.tmp"
-    action_input = {"action": "delete", "filepath": filepath}
-    result = skill_manage_files(action_input)
-
-    assert result['status'] == "error"
-    assert result['action'] == "action_not_implemented"
-    assert "ainda não está implementada/habilitada" in result['data']['message']
-    assert filepath in result['data']['message']
-
-def test_missing_filepath_for_delete():
-     """Test calling 'delete' without 'filepath'."""
-     # This test assumes 'delete' action exists but filepath is missing.
-     # If 'delete' is completely removed, this test might need adjustment.
-     action_input = {"action": "delete"}
-     result = skill_manage_files(action_input)
-     assert result['status'] == "error"
-     # The action result depends on whether the 'delete' case exists in the main function.
-     # If it doesn't exist, it might fall through to 'invalid_action'.
-     # If it exists but checks for filepath first, it should be 'delete_failed'.
-     # Assuming the latter for now:
-     assert result['action'] == "delete_failed"
-     assert "Parâmetro 'filepath' obrigatório" in result['data']['message']
+# Add other common tests or helper functions if applicable

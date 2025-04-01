@@ -9,9 +9,23 @@ import sys
 import asyncio # Added import
 import httpx # Added import
 from unittest.mock import AsyncMock, MagicMock # Ensured imports
+import json
+
+# --- Add project root to sys.path ---
+# This ensures that pytest can find modules like 'core' and 'skills'
+# when importing test files and fixtures.
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    print(f"[conftest.py] Added project root to sys.path: {project_root}")
 
 # --- Core component imports for specs/instantiation ---
 from core.agent import ReactAgent # Corrected import: ReactAgent
+from core.config import ( # Assuming these exist in your config
+    PROJECT_ROOT as CONFIG_PROJECT_ROOT, # Use consistently named root
+    LLAMA_MODEL_PATH as DEFAULT_MODEL_PATH, 
+    CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE,
+)
 # from core.llm_interface import llm_interface # Removed problematic import
 # from core.db_utils import DatabaseManager # Removed import
 # from core.config import Config # Removed import (Wasn't used)
@@ -26,7 +40,28 @@ fixture_logger.addHandler(log_handler)
 fixture_logger.setLevel(logging.INFO) # Set desired log level (INFO, DEBUG, etc.)
 
 # Define the base URL directly for now
-LLAMA_SERVER_URL_BASE = "http://127.0.0.1:8080"
+# LLAMA_SERVER_URL_BASE = "http://127.0.0.1:8080" # Original default
+
+# --- Test Server Configuration ---
+TEST_SERVER_PORT = 8081 # Use a different port for testing
+TEST_SERVER_HOST = "127.0.0.1"
+TEST_SERVER_BASE_URL = f"http://{TEST_SERVER_HOST}:{TEST_SERVER_PORT}"
+TEST_SERVER_COMPLETIONS_URL = f"{TEST_SERVER_BASE_URL}/v1/chat/completions"
+# Use /health endpoint for readiness check (introduced in later llama.cpp versions)
+READINESS_CHECK_URL = f"{TEST_SERVER_BASE_URL}/health" 
+SERVER_LOG_PATH = os.path.join(CONFIG_PROJECT_ROOT, "llama_server_session_test.log")
+LLAMA_EXECUTABLE_PATH = os.path.join(CONFIG_PROJECT_ROOT, "llama.cpp", "build", "bin", "llama-server")
+# Default GPU layers for tests (can be overridden by env var)
+DEFAULT_TEST_GPU_LAYERS = int(os.getenv("PYTEST_LLAMA_GPU_LAYERS", "-1")) 
+# Default Model Path for tests (can be overridden by env var)
+DEFAULT_TEST_MODEL_PATH = os.getenv("PYTEST_LLAMA_MODEL_PATH", DEFAULT_MODEL_PATH)
+DEFAULT_TEST_CONTEXT_SIZE = int(os.getenv("PYTEST_LLAMA_CONTEXT_SIZE", str(DEFAULT_CONTEXT_SIZE)))
+
+# Define the actual model path
+# Use absolute path for clarity in fixture
+LLAMA_CPP_SERVER_PATH = "/home/arthur/projects/A3X/llama.cpp/build_rocm/bin/llama-server" # Corrected path based on user-provided folder content
+# REAL_MODEL_PATH = os.path.join(project_root, "models", "test-model.gguf") # Old dummy model
+REAL_MODEL_PATH = "/home/arthur/projects/A3X/models/gemma-3-4b-it-Q4_K_M.gguf" # Using Gemma model as requested
 
 # --- Session-scoped Event Loop --- 
 @pytest.fixture(scope="session")
@@ -86,199 +121,179 @@ def agent_instance(mock_llm_interface, mock_planner, mock_reflector, mock_parser
     return agent_obj # Return the agent object
 
 
-# --- Server Management Fixture ---
-@pytest.fixture(scope="function") # Escopo "function": inicia/para para CADA teste que usar
-def managed_llama_server(request):
-    """Fixture to start/stop llama-server for a test."""
+# --- NEW SESSION-SCOPED SERVER FIXTURE ---
+@pytest.fixture(scope="session")
+def managed_llama_server_session(request):
+    """Starts and stops the REAL llama.cpp server for integration tests in session scope."""
     server_process = None
-    pgid = None
-    server_log_path = "/home/arthur/Projects/A3X/llama_server_test.log" # Log file in workspace root
+    llama_server_path = LLAMA_CPP_SERVER_PATH
+    model_path = REAL_MODEL_PATH
+    host = TEST_SERVER_HOST
+    port = TEST_SERVER_PORT
+    # Adjust context size and GPU layers as needed for your model/hardware
+    ctx_size = DEFAULT_CONTEXT_SIZE
+    n_gpu_layers = 33 # Using 33 GPU layers as requested
 
-    # --- Definir Caminhos e Modelo (Hardcoded por enquanto) ---
-    # TODO: Parametrizar o modelo e caminhos via request.param ou markers
-    # Assuming llama.cpp was built in the project root directory structure
-    llama_cpp_dir = "/home/arthur/Projects/A3X/llama.cpp"
-    llama_server_executable = os.path.join(llama_cpp_dir, "build/bin/llama-server")
-    # Use a smaller, faster-loading model for testing if available, otherwise use the specified one
-    # Example: model_path = "/path/to/your/smaller_test_model.gguf"
-    model_path = "/home/arthur/Projects/A3X/models/dolphin-2.2.1-mistral-7b.Q4_K_M.gguf" # Default model
+    # Check if server binary exists
+    if not os.path.exists(llama_server_path):
+        pytest.fail(f"llama.cpp server binary not found at: {llama_server_path}. Please adjust LLAMA_CPP_SERVER_PATH.", pytrace=False)
+    # Check if model exists
+    if not os.path.exists(model_path):
+        pytest.fail(f"LLM model file not found at: {model_path}. Please adjust REAL_MODEL_PATH or download the model.", pytrace=False)
 
-    # Check if executable and model exist
-    if not os.path.isfile(llama_server_executable):
-        pytest.fail(f"llama-server executable not found at: {llama_server_executable}. Please build llama.cpp.")
-    if not os.path.isfile(model_path):
-         pytest.fail(f"LLM model file not found at: {model_path}. Please download the model.")
+    # Command to start the server
+    cmd = [
+        llama_server_path,
+        "-m", model_path,
+        "--host", host,
+        "--port", str(port),
+        "-c", str(ctx_size),
+        # Add other relevant parameters
+        "-ngl", str(n_gpu_layers),
+        "--log-disable" # Optional: disable server logs for cleaner test output
+    ]
 
-    readiness_check_url = f"{LLAMA_SERVER_URL_BASE}/v1/models" # Use /v1/models as readiness check
+    fixture_logger.info(f"Starting REAL llama.cpp server (Gemma) for session: {' '.join(cmd)}")
 
-    fixture_logger.info(f"Fixture Setup: Starting llama-server with model {os.path.basename(model_path)}...")
-    fixture_logger.info(f"Server executable: {llama_server_executable}")
-    fixture_logger.info(f"Model path: {model_path}")
-    fixture_logger.info(f"Log file: {server_log_path}")
-    fixture_logger.info(f"Readiness check URL: {readiness_check_url}")
-
-
-    # --- Parar Servidor Anterior (Garantia) ---
+    # --- Best effort to kill previous instances ---
     try:
-        # Using pkill with the executable name's basename for robustness
-        pkill_command = ["pkill", "-f", os.path.basename(llama_server_executable)]
-        fixture_logger.info(f"Attempting to stop any previous server process using: {' '.join(pkill_command)}")
-        # Use run instead of check_output, capture output, don't check=True as it might fail if no process exists
-        result = subprocess.run(pkill_command, capture_output=True, text=True)
-        if result.returncode == 0:
-             fixture_logger.info("pkill found and stopped a previous server process.")
-        else:
-            fixture_logger.info("No previous server process found by pkill or error occurred (this is often ok).")
-            if result.stderr:
-                 fixture_logger.debug(f"pkill stderr: {result.stderr}")
-        time.sleep(2) # Increased pause after pkill
+        pkill_cmd = ["pkill", "-f", os.path.basename(llama_server_path)]
+        fixture_logger.info(f"Running pre-kill command: {' '.join(pkill_cmd)}")
+        subprocess.run(pkill_cmd, timeout=5, check=False, capture_output=True)
+        fixture_logger.info("Pre-kill command finished (exit code ignored).")
+        time.sleep(2) # Give processes time to terminate if killed
     except FileNotFoundError:
-         fixture_logger.warning("'pkill' command not found. Skipping pre-stop step.")
-    except Exception as e:
-        fixture_logger.warning(f"Could not pre-stop server (maybe not running or other issue): {e}")
+        fixture_logger.warning("'pkill' command not found. Skipping pre-kill step.")
+    except Exception as pre_kill_err:
+        fixture_logger.warning(f"Error during pre-kill: {pre_kill_err}")
+    # --- End pre-kill ---
 
-    # --- Iniciar Novo Servidor ---
     try:
-        fixture_logger.info(f"Starting server process: {llama_server_executable} -m {model_path}")
-        with open(server_log_path, "w") as log_file:
+        # Start the server process
+        with open(SERVER_LOG_PATH, "w") as log_file:
             server_process = subprocess.Popen(
-                [llama_server_executable, "-m", model_path, "--port", "8080"], # Explicitly set port
+                cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                preexec_fn=os.setsid # Create a new process group
+                preexec_fn=os.setsid # Crucial for creating a process group
             )
-        # Wait a fraction of a second for the process group ID to become available
-        time.sleep(0.5)
+        time.sleep(0.5) # Give time for pid/pgid to be available
         try:
-             pgid = os.getpgid(server_process.pid)
-             fixture_logger.info(f"llama-server started with PID {server_process.pid} (Process Group ID: {pgid}). Log: {server_log_path}")
+            pgid = os.getpgid(server_process.pid)
+            fixture_logger.info(f"REAL server started successfully (PID: {server_process.pid}) on port {port}")
         except ProcessLookupError:
-             fixture_logger.error("Server process terminated immediately after starting. Check logs.")
-             pytest.fail("Server process failed to start correctly. Check llama_server_test.log")
-
-
-        # --- Esperar Servidor Ficar Pronto ---
-        max_wait = 120 # Increased max wait time (model loading can be slow)
-        wait_interval = 3 # Increased interval
-        start_wait = time.time()
-        server_ready = False
-        fixture_logger.info(f"Waiting up to {max_wait}s for server to become ready at {readiness_check_url}...")
-
-        while time.time() - start_wait < max_wait:
-            # Check if the process terminated prematurely
-            if server_process.poll() is not None:
-                 fixture_logger.error(f"llama-server process PID {server_process.pid} terminated unexpectedly during startup! Exit code: {server_process.returncode}")
-                 # Attempt to read the tail of the log file for clues
-                 try:
-                     with open(server_log_path, "r") as f:
-                         log_tail = f.readlines()[-20:] # Get last 20 lines
-                     fixture_logger.error(f"Last lines from llama_server_test.log:\n{''.join(log_tail)}")
-                 except Exception as log_e:
-                     fixture_logger.error(f"Could not read log file {server_log_path}: {log_e}")
-                 pytest.fail("llama-server process terminated unexpectedly during startup.") # Fail the test setup
-
-            # Attempt to connect to the readiness endpoint
+            fixture_logger.error("REAL server process terminated immediately after starting! Check log file.")
+            # Try reading the log file for more details
+            log_content = "Could not read log file."
             try:
-                response = requests.get(readiness_check_url, timeout=2) # Increased timeout for request
-                # llama.cpp returns 200 for /v1/models when ready
-                if response.status_code == 200:
-                    fixture_logger.info(f"Server ready after ~{int(time.time() - start_wait)} seconds.")
-                    server_ready = True
-                    break
-                else:
-                    # Log unexpected status codes
-                     fixture_logger.debug(f"Server responded with status {response.status_code}, not ready yet.")
+                with open(SERVER_LOG_PATH, "r") as f:
+                    log_content = f.read()
+            except Exception:
+                pass # Ignore read errors
+            pytest.fail(f"REAL server failed to start.\nCmd: {' '.join(cmd)}\nLog ({SERVER_LOG_PATH}):\n{log_content}", pytrace=False)
 
-            except requests.exceptions.ConnectionError:
-                fixture_logger.debug("Server not ready yet (connection refused).")
-            except requests.exceptions.Timeout:
-                 fixture_logger.debug("Server not ready yet (connection timeout).")
-            except Exception as e:
-                 fixture_logger.warning(f"An unexpected error occurred while checking server readiness: {e}")
+    except Exception as start_err:
+        fixture_logger.exception("Failed to start REAL llama-server process:")
+        pytest.fail(f"Failed to start REAL server: {start_err}. Check logs/permissions.", pytrace=False)
 
-            fixture_logger.info(f"Still waiting... ({int(time.time() - start_wait)}s / {max_wait}s)")
-            time.sleep(wait_interval)
+    # --- Wait for Server Readiness ---
+    max_wait = 180 # Generous timeout for model loading
+    wait_interval = 5
+    start_wait = time.time()
+    server_ready = False
+    last_error = None
 
-        if not server_ready:
-            fixture_logger.error(f"llama-server failed to become ready within {max_wait} seconds.")
-            # Attempt to read log tail on timeout as well
-            try:
-                 with open(server_log_path, "r") as f:
-                     log_tail = f.readlines()[-20:]
-                 fixture_logger.error(f"Last lines from llama_server_test.log:\n{''.join(log_tail)}")
-            except Exception as log_e:
-                 fixture_logger.error(f"Could not read log file {server_log_path}: {log_e}")
-            # Try to kill the potentially stuck process before failing
-            if pgid and server_process and server_process.poll() is None:
-                 try:
-                    fixture_logger.warning(f"Attempting to kill potentially hung server process group {pgid} before failing test.")
-                    os.killpg(pgid, signal.SIGKILL)
-                 except Exception as kill_e:
-                    fixture_logger.error(f"Failed to SIGKILL server process group {pgid}: {kill_e}")
-            pytest.fail(f"llama-server failed to become ready within {max_wait} seconds. Check logs.") # Fail the test setup
+    fixture_logger.info(f"Waiting up to {max_wait}s for REAL server (Gemma) at {READINESS_CHECK_URL} ...")
+    while time.time() - start_wait < max_wait:
+        # Check if process died
+        if server_process.poll() is not None:
+            fixture_logger.error(f"REAL server process PID {server_process.pid} terminated unexpectedly! Exit code: {server_process.returncode}")
+            pytest.fail(f"REAL server terminated unexpectedly. Check {SERVER_LOG_PATH}", pytrace=False)
 
-        # --- Passar Controle para o Teste ---
-        fixture_logger.info("Server is ready. Yielding to test function.")
-        yield server_process # O teste executa aqui (pode usar o objeto process se precisar)
-
-    finally:
-        # --- Parar Servidor (Teardown) ---
-        fixture_logger.info("Fixture Teardown: Cleaning up llama-server process...")
-        if pgid and server_process and server_process.poll() is None: # Check if we have a pgid, process object, and it's running
-            fixture_logger.info(f"Attempting to stop llama-server process group {pgid} with SIGTERM...")
-            try:
-                os.killpg(pgid, signal.SIGTERM)
+        # Check readiness endpoint
+        try:
+            response = requests.get(READINESS_CHECK_URL, timeout=3)
+            # /health returns 200 OK with body {"status": "ok"} when ready
+            if response.status_code == 200:
                 try:
-                    # Wait for the process to terminate
-                    server_process.wait(timeout=15) # Increased timeout for graceful shutdown
-                    fixture_logger.info(f"Server process group {pgid} stopped gracefully.")
-                except subprocess.TimeoutExpired:
-                    fixture_logger.warning(f"Server process group {pgid} did not terminate after SIGTERM. Sending SIGKILL.")
-                    os.killpg(pgid, signal.SIGKILL)
-                    # Short wait after SIGKILL
-                    time.sleep(1)
-                    if server_process.poll() is None:
-                         fixture_logger.error(f"Failed to stop server process group {pgid} even with SIGKILL.")
-                    else:
-                         fixture_logger.info(f"Server process group {pgid} stopped with SIGKILL.")
-                except Exception as wait_e: # Catch potential errors during wait
-                     fixture_logger.error(f"Error waiting for server process {pgid} after SIGTERM: {wait_e}. Attempting SIGKILL.")
-                     os.killpg(pgid, signal.SIGKILL) # Ensure kill attempt even if wait fails
+                     health_status = response.json()
+                     if health_status.get("status") == "ok":
+                          fixture_logger.info(f"REAL server ready after ~{int(time.time() - start_wait)}s.")
+                          server_ready = True
+                          break
+                     else:
+                          last_error = f"Health endpoint returned status {response.status_code} but unexpected body: {response.text[:100]}"
+                          fixture_logger.debug(last_error)
+                except json.JSONDecodeError:
+                     last_error = f"Health endpoint returned status {response.status_code} but non-JSON body: {response.text[:100]}"
+                     fixture_logger.debug(last_error)
+            else:
+                last_error = f"Health check failed with status: {response.status_code}"
+                fixture_logger.debug(last_error)
 
-            except ProcessLookupError:
-                 fixture_logger.warning(f"Server process group {pgid} not found during teardown (already terminated?).")
-            except Exception as e:
-                fixture_logger.error(f"Error stopping server process group {pgid} with SIGTERM: {e}. Attempting SIGKILL.")
-                try:
-                    # Ensure pgid exists before trying SIGKILL again
-                    if pgid:
-                         os.killpg(pgid, signal.SIGKILL)
-                         fixture_logger.info(f"Server process group {pgid} stopped with SIGKILL after error.")
-                except Exception as kill_e:
-                     fixture_logger.error(f"Failed to SIGKILL server process group {pgid} after initial error: {kill_e}")
-        elif server_process and server_process.poll() is not None:
-             fixture_logger.info(f"Server process PID {server_process.pid} was already terminated before teardown.")
+        except requests.exceptions.ConnectionError:
+            last_error = "Connection refused"
+            fixture_logger.debug(f"Waiting... ({last_error})")
+        except requests.exceptions.Timeout:
+            last_error = "Connection timeout"
+            fixture_logger.debug(f"Waiting... ({last_error})")
+        except Exception as e:
+            last_error = f"Unexpected error: {e}"
+            fixture_logger.warning(f"Error during readiness check: {e}")
+
+        time.sleep(wait_interval)
+
+    if not server_ready:
+        fixture_logger.error(f"REAL server (Gemma) failed to become ready within {max_wait}s. Last error: {last_error}")
+        pytest.fail(f"REAL server readiness timeout. Check {SERVER_LOG_PATH}", pytrace=False)
+
+    # --- Yield URL to Tests ---
+    fixture_logger.info(f"REAL server (Gemma) ready. Yielding URL: {TEST_SERVER_BASE_URL}")
+    yield TEST_SERVER_BASE_URL # Yield the base URL, tests can append endpoints
+
+    # --- Cleanup --- 
+    fixture_logger.info(f"[Pytest Fixture] Stopping REAL server (Gemma - PID: {server_process.pid})...")
+    # Send SIGTERM to the entire process group
+    try:
+        if pgid: # Ensure pgid was obtained
+            os.killpg(pgid, signal.SIGTERM)
+            fixture_logger.info(f"Sent SIGTERM to process group {pgid}.")
         else:
-             fixture_logger.info("No running llama-server process was found or managed by this fixture instance to stop.")
+            fixture_logger.warning(f"PGID not found, sending SIGTERM directly to PID {server_process.pid}")
+            server_process.terminate()
+    except ProcessLookupError:
+        fixture_logger.warning(f"Process group {pgid} or PID {server_process.pid} not found during SIGTERM (already stopped?).")
+    except Exception as term_err:
+        fixture_logger.error(f"Error sending SIGTERM: {term_err}")
 
-        # Optional: Clean up the log file? Or leave it for debugging?
-        # try:
-        #     if os.path.exists(server_log_path):
-        #         os.remove(server_log_path)
-        #         fixture_logger.info(f"Removed log file: {server_log_path}")
-        # except Exception as e:
-        #     fixture_logger.warning(f"Could not remove log file {server_log_path}: {e}")
+    # Wait for termination
+    try:
+        server_process.wait(timeout=15) # Increased timeout slightly
+        fixture_logger.info("REAL server (Gemma) stopped gracefully.")
+    except subprocess.TimeoutExpired:
+        fixture_logger.warning("[Pytest Fixture] Server did not terminate gracefully after SIGTERM, killing...")
+        try:
+            if pgid:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                server_process.kill()
+            # Short wait to confirm kill
+            try:
+                 server_process.wait(timeout=5) 
+                 fixture_logger.info("REAL server (Gemma) stopped after SIGKILL.")
+            except subprocess.TimeoutExpired:
+                 fixture_logger.error("REAL server (Gemma) could not be stopped even with SIGKILL.")
+        except ProcessLookupError:
+             fixture_logger.warning("Process group/PID not found during SIGKILL (already stopped?).")
+        except Exception as kill_err:
+            fixture_logger.error(f"Error sending SIGKILL: {kill_err}")
+    except Exception as wait_err:
+        fixture_logger.error(f"Error waiting for server process: {wait_err}")
 
-# Example of how a test would use the fixture:
-#
-# def test_something_requiring_server(managed_llama_server):
-#     # Your test code that interacts with http://127.0.0.1:8080
-#     response = requests.get("http://127.0.0.1:8080/v1/models")
-#     assert response.status_code == 200
-#     # ... more test logic
-#
+    fixture_logger.info("SESSION FIXTURE: Teardown complete.")
 
-# Removed old agent_instance and LLM_JSON_RESPONSE_HELLO_FINAL fixtures
+
+# --- Other Fixtures (Mocked, keep for tests not needing real LLM) ---
 
 @pytest.fixture
 def mock_llm_url():

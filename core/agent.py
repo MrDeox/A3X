@@ -160,15 +160,96 @@ class ReactAgent:
             self._history.append(f"Observation: {{'status': 'error', 'message': '{error_content}'}}")
             return error_content
 
-    # --- run (Refatorado para ser um AsyncGenerator) ---
+    # <<< NEW: Extracted ReAct Iteration Logic >>>
+    async def _perform_react_iteration(self, step_objective: str, log_prefix: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Performs a single Thought-Action-Observation cycle for a given step objective.
+
+        Args:
+            step_objective (str): The objective for the current step.
+            log_prefix (str): Prefix for logging messages.
+
+        Yields:
+            Dict[str, Any]: Dictionaries for thought, action, observation, or error.
+        """
+        # Trim history before building prompt
+        self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
+
+        # Build Prompt
+        prompt = build_react_prompt(
+            objective=step_objective,
+            history=self._history,
+            system_prompt=self.system_prompt,
+            tool_descriptions=get_tool_descriptions(),
+            agent_logger=agent_logger
+        )
+
+        # Call LLM and Parse Response
+        parsed_output = await self._process_llm_response(prompt, log_prefix)
+
+        # Check for processing errors
+        if not parsed_output or parsed_output.get("type") == "error":
+            yield parsed_output or {"type": "error", "content": "Unknown error processing LLM response."}
+            # Indicate failure to the caller (e.g., by returning False or raising exception?)
+            # For now, yielding error and letting caller handle it.
+            return
+
+        # Yield Thought
+        if parsed_output.get("thought"):
+            thought = parsed_output["thought"]
+            self._history.append(f"Thought: {thought}")
+            yield {"type": "thought", "content": thought}
+        else:
+            agent_logger.warning(f"{log_prefix} No 'Thought' found in parsed output.")
+
+        # Handle Action or Final Answer
+        action_name = parsed_output.get("action_name")
+        action_input = parsed_output.get("action_input") # Already ensured to be a dict
+
+        if action_name == "final_answer":
+            final_answer = action_input.get("answer", "No final answer provided.") # Get answer from input dict
+            agent_logger.info(f"{log_prefix} Final Answer received for step: '{final_answer[:100]}...'")
+            self._history.append(f"Final Answer: {final_answer}")
+            # Yield a special type indicating the step finished with an answer
+            yield {"type": "step_final_answer", "content": final_answer}
+            return # Iteration ends here for this step
+
+        if not action_name:
+            agent_logger.error(f"{log_prefix} No Action specified by LLM (and not Final Answer). Yielding error.")
+            yield {"type": "error", "content": "Agent did not specify an action."}
+            return
+
+        # Yield Action
+        self._history.append(f"Action: {action_name}")
+        try:
+            action_input_json = json.dumps(action_input, ensure_ascii=False)
+            self._history.append(f"Action Input: {action_input_json}")
+        except TypeError:
+            agent_logger.warning(f"{log_prefix} Action input not JSON serializable for history. Using str().")
+            self._history.append(f"Action Input: {str(action_input)}")
+        yield {"type": "action", "tool_name": action_name, "tool_input": action_input}
+
+        # Execute Action
+        observation_data = await self._execute_action(action_name, action_input, log_prefix)
+
+        # Handle and Yield Observation
+        _ = self._handle_observation(observation_data, log_prefix) # Adds to history
+        yield {"type": "observation", "content": observation_data}
+        
+        # Check if tool execution failed, potentially yield error
+        if observation_data.get("status") == "error":
+            yield {"type": "error", "content": f"Tool execution failed: {observation_data.get('data', {}).get('message', 'Unknown tool error')}" }
+            # Decide if the loop should stop? For now, let the main loop decide based on error.
+
+    # --- run (Refactored to use _perform_react_iteration) ---
     async def run(self, objective: str) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Executa o ciclo ReAct (agora orientado por plano) para atingir o objetivo,
-        gerando cada passo (Thought, Action, Observation, Final Answer) como um dicionário.
+        Executes the plan-driven ReAct cycle to achieve the objective,
+        generating each step's events (Thought, Action, Observation, Final Answer) as a dictionary.
         """
         log_prefix_base = "[ReactAgent]"
         self._current_plan = None
-        final_answer_yielded = False # Flag para controlar se a resposta final foi gerada
+        final_answer_yielded = False # Flag to control if the overall objective final answer was yielded
 
         try:
             # --- Setup History --- 
@@ -179,117 +260,110 @@ class ReactAgent:
             # --- Planning Phase --- 
             plan_to_execute = await self._generate_plan(objective)
             self._current_plan = plan_to_execute # Store the plan
+            yield {"type": "plan", "content": plan_to_execute}
 
             agent_logger.info("--- Starting Plan Execution ---")
 
-            # --- Plan Execution Loop / ReAct Cycle ---
+            # --- Plan Execution Loop ---
             current_step_index = 0
-            total_iterations = 0
-            max_total_iterations = self.max_iterations
+            total_iterations = 0 # Track overall iterations across all steps
+            max_total_iterations = self.max_iterations * len(plan_to_execute) # Adjust max iterations based on plan length
 
             while current_step_index < len(plan_to_execute) and total_iterations < max_total_iterations:
                 current_step_objective = plan_to_execute[current_step_index]
-                log_prefix = f"{log_prefix_base} Cycle {total_iterations + 1} (Step {current_step_index + 1}/{len(plan_to_execute)})"
-                agent_logger.info(f"\n{log_prefix} (Step Objective: '{current_step_objective[:60]}...')" )
+                log_prefix = f"{log_prefix_base} Iteration {total_iterations + 1} (Plan Step {current_step_index + 1}/{len(plan_to_execute)})"
+                agent_logger.info(f"\n{log_prefix} (Objective: '{current_step_objective[:60]}...')" )
 
-                # Trim history
-                self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
+                step_completed = False
+                step_iterations = 0 # Iterations for this specific step
+                max_step_iterations = self.max_iterations # Max iterations per step objective
 
-                # Build Prompt
-                prompt = build_react_prompt(
-                    objective=current_step_objective, # <<< Use step objective for react cycle
-                    history=self._history,
-                    system_prompt=self.system_prompt,
-                    tool_descriptions=get_tool_descriptions(),
-                    agent_logger=agent_logger
-                )
+                # --- Inner Loop for ReAct cycle on the current step objective --- 
+                while not step_completed and step_iterations < max_step_iterations and total_iterations < max_total_iterations:
+                    iteration_prefix = f"{log_prefix} React Iter {step_iterations + 1}"
+                    agent_logger.debug(f"Starting React iteration {step_iterations + 1} for step {current_step_index + 1}")
+                    
+                    iteration_finished_step = False
+                    error_occurred = False
 
-                # <<< CALL _process_llm_response >>>
-                parsed_output = await self._process_llm_response(prompt, log_prefix)
+                    async for event in self._perform_react_iteration(current_step_objective, iteration_prefix):
+                        yield event # Pass through events from the iteration
+                        
+                        if event.get("type") == "step_final_answer":
+                            iteration_finished_step = True
+                            break # Exit inner async for loop, step is done
+                        if event.get("type") == "error":
+                            agent_logger.error(f"{iteration_prefix} Error occurred during iteration: {event.get('content')}")
+                            error_occurred = True
+                            # Decide whether to break the inner loop on error or allow retry?
+                            # For now, let's break the inner loop on error. The outer loop might retry the step or stop.
+                            break 
+                    
+                    step_iterations += 1
+                    total_iterations += 1
+                    
+                    if iteration_finished_step:
+                        step_completed = True # Mark step as completed
+                        agent_logger.info(f"{log_prefix} Step completed with Final Answer.")
+                        break # Exit while loop for this step
+                    
+                    if error_occurred:
+                        # Decide recovery strategy - retry step, skip step, stop all?
+                        # For now, let's just log and stop processing *this* step.
+                        agent_logger.warning(f"{log_prefix} Stopping processing for step {current_step_index + 1} due to error in iteration {step_iterations}.")
+                        step_completed = True # Mark as completed (with error) to move to next step
+                        break # Exit while loop for this step
 
-                # Check for processing errors
-                if parsed_output.get("type") == "error":
-                    yield parsed_output # Yield the error dict
-                    return # Stop execution on critical LLM/parsing error
+                    if step_iterations >= max_step_iterations:
+                         agent_logger.warning(f"{log_prefix} Max iterations ({max_step_iterations}) reached for step {current_step_index + 1}. Moving to next step.")
+                         step_completed = True # Mark as completed (timeout) to move to next step
+                         break
 
-                # Yield Thought
-                if parsed_output.get("thought"):
-                    thought = parsed_output["thought"]
-                    self._history.append(f"Thought: {thought}")
-                    yield {"type": "thought", "content": thought}
-                else:
-                    agent_logger.warning(f"{log_prefix} No 'Thought' found in parsed output.")
-                    # Pode acontecer, continua para Action
+                # --- End Inner Loop for Step --- 
+                current_step_index += 1 # Move to the next step in the plan
+            
+            # --- End Plan Execution Loop ---
 
-                # Handle Action or Final Answer
-                action_name = parsed_output.get("action_name")
-                action_input = parsed_output.get("action_input") # Already ensured to be a dict
+            if current_step_index >= len(plan_to_execute):
+                 agent_logger.info("--- Plan Execution Finished ---")
+            elif total_iterations >= max_total_iterations:
+                 agent_logger.warning(f"--- Max total iterations ({max_total_iterations}) reached. Stopping execution. ---")
+                 yield {"type": "error", "content": "Max total iterations reached."}
 
-                if action_name == "final_answer":
-                    final_answer = action_input.get("answer", "No final answer provided.") # Get answer from input dict
-                    agent_logger.info(f"{log_prefix} Final Answer received: '{final_answer[:100]}...'")
-                    self._history.append(f"Final Answer: {final_answer}")
-                    yield {"type": "final_answer", "content": final_answer}
-                    final_answer_yielded = True
-                    # Decide if we break the loop or move to the next plan step
-                    # For now, assume final_answer for a step completes that step
-                    current_step_index += 1 # Move to next plan step
-                    continue # Skip action execution for this cycle
-
-                if not action_name:
-                    agent_logger.error(f"{log_prefix} No Action or Final Answer specified by LLM.")
-                    yield {"type": "error", "content": "Agent did not specify an action or final answer."}
-                    # Decide if we retry or stop. Stopping for now.
-                    return
-
-                # Yield Action
-                self._history.append(f"Action: {action_name}")
-                # Ensure action_input is serializable for logging/history if needed
-                self._history.append(f"Action Input: {json.dumps(action_input, ensure_ascii=False)}")
-                yield {"type": "action", "tool_name": action_name, "tool_input": action_input}
-
-                # <<< CALL _execute_action >>>
-                observation_data = await self._execute_action(action_name, action_input, log_prefix)
-
-                # <<< CALL _handle_observation >>>
-                # observation_content = self._handle_observation(observation_data, log_prefix) # Handles history append
-                self._handle_observation(observation_data, log_prefix) # Call to handle history etc.
-
-                # Yield Observation (yield the raw data dict)
-                yield {"type": "observation", "content": observation_data}
-
-                # --- Check if step is complete based on observation? ---
-                # TODO: Implement logic to decide if the current step objective is met
-                # Check if the tool execution resulted in an error that should stop the plan step
-                if observation_data.get("status") == "error":
-                     agent_logger.warning(f"{log_prefix} Tool execution failed for step. Stopping current plan step.")
-                     # Decide if we stop the whole plan or just this step. Stopping plan for now.
-                     # yield {"type": "error", "content": f"Step failed due to tool error: {observation_data.get('data', {}).get('message', 'Unknown tool error')}"}
-                     # return # Stop the entire run
-                     # Or, simply break the inner loop if we had one, and let the outer loop decide?
-                     # For now, let's just log and continue to the next step/iteration count check
-                     pass # Allow loop condition to check iterations/steps
-
-                # For now, assume one ReAct cycle per plan step unless final_answer is given
-                current_step_index += 1
-                total_iterations += 1
-
-            # --- End of Loop Handling ---
-            if total_iterations >= max_total_iterations:
-                agent_logger.warning(f"{log_prefix_base} Reached max iterations ({max_total_iterations}).")
-                if not final_answer_yielded:
-                     yield {"type": "error", "content": "Agent reached max iterations without a final answer."}
-
-            if current_step_index >= len(plan_to_execute) and not final_answer_yielded:
-                 agent_logger.warning(f"{log_prefix_base} Plan completed, but no final answer was explicitly generated.")
-                 # Optionally yield a generic completion message
-                 # yield {"type": "final_answer", "content": "Plan execution finished."}
+            # If the loop finished but no final answer was explicitly yielded for the *overall* objective
+            if not final_answer_yielded:
+                agent_logger.warning(f"{log_prefix_base} Plan execution finished, but no overall Final Answer was yielded. Attempting to summarize.")
+                # Provide a summary or the last observation as a fallback? 
+                # This might need a final LLM call to summarize based on history.
+                last_thought_or_obs = self._history[-1] if self._history else "No history available."
+                yield {"type": "final_answer", "content": f"Plan execution concluded. Last state: {last_thought_or_obs}"} # Fallback
+                final_answer_yielded = True
 
         except Exception as e:
             agent_logger.exception(f"{log_prefix_base} Unhandled exception during agent run:")
-            if not final_answer_yielded:
-                 yield {"type": "error", "content": f"An unexpected error occurred: {e}"}
+            yield {"type": "error", "content": f"Agent execution failed: {e}"}
         finally:
-            # Save final state regardless of how run exits
+            # --- Save State --- 
             save_agent_state(AGENT_STATE_ID, self._memory)
-            agent_logger.info(f"{log_prefix_base} Agent run finished.")
+            agent_logger.info(f"{log_prefix_base} Agent state saved.")
+
+    def get_history(self):
+        """Retorna o histórico interno para possível inspeção ou passagem para outros componentes."""
+        return self._history
+
+    # <<< ADDED Method to add history externally >>>
+    def add_history_entry(self, role: str, content: str):
+        """Adiciona uma entrada ao histórico interno (usado por CerebrumX para registrar resultados)."""
+        # Simple append for now, role might be used for formatting later
+        if role.lower() == "human" or role.lower() == "user":
+             self._history.append(f"Human: {content}")
+        elif role.lower() == "assistant":
+             # Format based on likely type (Thought, Observation, etc.)
+             if content.startswith("Thought:") or content.startswith("Observation:") or content.startswith("Final Answer:") or content.startswith("Execution result for"):
+                 self._history.append(content)
+             else: # Generic assistant message
+                  self._history.append(f"Assistant: {content}") 
+        else:
+             self._history.append(f"{role.capitalize()}: {content}")
+        # Optional: Trim history after adding
+        # self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)

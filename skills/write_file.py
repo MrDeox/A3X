@@ -23,11 +23,10 @@ MAX_SIZE_WARN = 1 * 1024 * 1024  # 1MB warning threshold
     parameters={
         "filepath": (str, ...),
         "content": (str, ...),
-        "overwrite": (bool, False),
-        "agent_history": (list | None, None)
+        "overwrite": (bool, False)
     }
 )
-def write_file(filepath: str, content: str, overwrite: bool = False, agent_memory: dict | None = None, agent_history: list | None = None) -> dict:
+def write_file(filepath: str, content: str, overwrite: bool = False) -> dict:
     """
     Creates a new file or overwrites an existing file with the provided content.
 
@@ -35,8 +34,6 @@ def write_file(filepath: str, content: str, overwrite: bool = False, agent_memor
         filepath (str): The relative path within the workspace where the file should be written.
         content (str): The string content to write to the file.
         overwrite (bool, optional): Whether to overwrite the file if it exists. Defaults to False.
-        agent_memory (dict | None, optional): Agent's memory (not used). Defaults to None.
-        agent_history (list | None, optional): Conversation history (not used). Defaults to None.
 
     Returns:
         dict: Standardized dictionary with the result.

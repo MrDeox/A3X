@@ -63,15 +63,28 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
         if takes_history:
             func_param_names.remove('agent_history') # Do not include in schema validation
 
-        # Verificar se todos os parâmetros declarados estão na assinatura da função
-        if not declared_param_names.issubset(func_param_names):
-             missing_in_func = declared_param_names - func_param_names
-             raise TypeError(f"Skill '{name}': Parameters {missing_in_func} declared in decorator but not found in function signature.")
+        # --- Start Modification: Ignore 'self' for method signature validation ---
+        is_method = 'self' in func_param_names
+        if is_method:
+            func_param_names.remove('self') # Remove 'self' before comparing with declared params
+        # --- End Modification ---
 
-        # Verificar se a função não tem parâmetros extras (exceto agent_memory)
-        extra_in_func = func_param_names - declared_param_names
+        # <<< START NEW: Define parameters to ignore during signature validation >>>
+        ignored_params = {'self', 'agent_memory', 'agent_history', 'resolved_path', 'original_path_str', 'kwargs'}
+        # <<< END NEW >>>
+
+        # Verificar se todos os parâmetros declarados estão na assinatura da função
+        # <<< MODIFIED: Remove ignored params before check >>>
+        func_params_to_validate = func_param_names - ignored_params
+        if not declared_param_names.issubset(func_params_to_validate):
+             missing_in_func = declared_param_names - func_params_to_validate
+             raise TypeError(f"Skill '{name}': Parameters {missing_in_func} declared in decorator but not found in function signature (excluding {ignored_params}).")
+
+        # Verificar se a função não tem parâmetros extras
+        # <<< MODIFIED: Remove ignored params before check >>>
+        extra_in_func = func_params_to_validate - declared_param_names
         if extra_in_func:
-             raise TypeError(f"Skill '{name}': Parameters {extra_in_func} found in function signature but not declared in decorator.")
+             raise TypeError(f"Skill '{name}': Parameters {extra_in_func} found in function signature but not declared in decorator (excluding {ignored_params}).")
 
         # Criar schema Pydantic dinamicamente
         pydantic_fields = {}
@@ -105,19 +118,31 @@ def load_skills(skill_directory: str = "skills"):
     seja executado e registre as skills nele importadas.
     """
     logger.info(f"Attempting to load skills package: {skill_directory}")
-    # DEBUG: Print project_root and sys.path before import attempt
-    # print(f"DEBUG: project_root in load_skills: {project_root}") # REMOVED DEBUGGING
-    # print(f"DEBUG: sys.path BEFORE import in load_skills: {sys.path}") # REMOVED DEBUGGING
+    # # DEBUG: Print project_root and sys.path before import attempt # REMOVED DEBUGGING
+    # # print(f"DEBUG: project_root in load_skills: {project_root}") # REMOVED DEBUGGING
+    # # print(f"DEBUG: sys.path BEFORE import in load_skills: {sys.path}") # REMOVED DEBUGGING
+
+    # Garantir que a raiz do projeto esteja no path ANTES de importar skills
+    # (Repetido aqui para garantir, caso o módulo seja recarregado ou o path mude)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+        # print(f"DEBUG: Added {project_root} to sys.path in load_skills") # REMOVED DEBUGGING
+
     count_before = len(SKILL_REGISTRY)
 
     try:
         # Importa o pacote skills; seu __init__.py deve importar os módulos individuais.
-        importlib.import_module(skill_directory)
+        # Usar importlib.invalidate_caches() pode ser útil se as skills mudarem dinamicamente
+        # importlib.invalidate_caches()
+        module = importlib.import_module(skill_directory)
+        # Recarregar o módulo se ele já foi importado, para pegar novas skills/mudanças
+        # importlib.reload(module)
         count_after = len(SKILL_REGISTRY)
         newly_registered = count_after - count_before
         logger.info(f"Finished loading skills package '{skill_directory}'. Newly registered skills: {newly_registered}. Total registry size: {count_after}")
-    except ModuleNotFoundError:
-         logger.error(f"Could not find skills package '{skill_directory}'. Check PYTHONPATH and directory structure.", exc_info=True)
+    except ModuleNotFoundError as e:
+         # Adicionar mais detalhes ao log de erro
+         logger.error(f"Could not find skills package '{skill_directory}'. Check PYTHONPATH ({sys.path}) and directory structure. Error: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Failed to import or process skills package '{skill_directory}': {e}", exc_info=True)
 
@@ -132,6 +157,11 @@ def get_skill_registry() -> Dict[str, Dict[str, Any]]:
     # if not SKILL_REGISTRY:
     #     logger.warning("Skill registry is empty. Attempting to load skills now.")
     #     load_skills()
+    # Se o registro estiver vazio, TENTAR carregar (útil para testes ou execuções diretas)
+    if not SKILL_REGISTRY:
+        logger.warning("Skill registry accessed while empty. Attempting to load skills implicitly.")
+        load_skills()
+
     return SKILL_REGISTRY
 
 def get_tool_descriptions() -> str:
@@ -185,4 +215,3 @@ def get_tool(tool_name: str) -> Optional[Dict[str, Any]]:
 # (provavelmente na inicialização do Agent) para garantir que todas as
 # skills sejam registradas antes de serem necessárias.
 # Exemplo: remover a chamada automática daqui
-# load_skills() 

@@ -21,11 +21,10 @@ MAX_ITEMS = 1000 # Limit for number of items listed
     description="Lists non-hidden files and directories within a specified workspace directory (defaults to workspace root). Optionally filters by extension.",
     parameters={
         "directory": (str, "."), # Parâmetro opcional, default '.' (raiz do workspace)
-        "extension": (str | None, None), # Parâmetro opcional para filtrar (e.g., '.py', '.txt')
-        "agent_history": (list | None, None) # Added missing parameter
+        "extension": (str | None, None) # Removed agent_history
     }
 )
-def list_files(directory: str = ".", extension: str | None = None, agent_memory: dict | None = None, agent_history: list | None = None) -> dict:
+def list_files(directory: str = ".", extension: str | None = None) -> dict: # Removed agent_memory and agent_history
     """
     Lists non-hidden files and directories within a specified workspace directory.
     Optionally filters by a specific file extension.
@@ -34,8 +33,6 @@ def list_files(directory: str = ".", extension: str | None = None, agent_memory:
         directory (str, optional): Path relative to the workspace root. Defaults to "." (root).
         extension (str | None, optional): If provided, filters results to files with this extension
                                           (e.g., '.py', '.txt'). Defaults to None.
-        agent_memory (dict, optional): Agent's memory (not used). Defaults to None.
-        agent_history (list | None, optional): Conversation history (not used). Defaults to None.
 
     Returns:
         dict: Standardized dictionary with the result:

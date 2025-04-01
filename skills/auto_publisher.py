@@ -43,17 +43,7 @@ GUMROAD_PRODUCT_ID = os.getenv("GUMROAD_PRODUCT_ID")
 # Define the skill name consistently
 SKILL_NAME = "auto_publisher"
 
-@skill(
-    name=SKILL_NAME,
-    description="Generates content based on a topic, exports it, and publishes (simulated) to a target platform (GitHub/Gumroad).",
-    parameters={
-        "topic": (str, "The topic to generate content about."),
-        "format": (str, "The format to export the content (e.g., 'markdown', 'txt'). Default: 'markdown'."),
-        "target": (str, "The platform to publish to ('github' or 'gumroad').")
-    },
-    output_type="dict", # Returns a dictionary with status, message, link, etc.
-    category="Monetization"
-)
+# Removed decorator from class
 class AutoPublisherSkill:
     def __init__(self, output_dir="output/autopublisher"):
         self.output_dir = output_dir
@@ -123,35 +113,51 @@ class AutoPublisherSkill:
         slug = title.lower().replace(" ", "-").replace(r'[^a-z0-9-]', '')[:50]
         return f"https://{GITHUB_USERNAME or 'yourusername'}.gumroad.com/l/{slug}" # Simulated Gumroad link structure
 
-    def generate_and_publish_from_niche(self, topic: str, format: str = "markdown", target: str = "gumroad", price: float = 0.99) -> dict:
-        """
-        Orchestrates content generation, export, and publication for a given niche/topic.
+    # <<< NEW: Private helper for logging >>>
+    def _log_execution_result(self, log_data: Dict[str, Any], status: str) -> str | None:
+        """Saves the execution log data to a JSON file."""
+        log_filename = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{status}.json"
+        log_filepath = os.path.join(self.log_dir, log_filename)
+        try:
+            with open(log_filepath, 'w', encoding='utf-8') as f_log:
+                json.dump(log_data, f_log, indent=4)
+            logger.info(f"[{SKILL_NAME}] Operation log saved to: {log_filepath}")
+            return str(log_filepath) # Return path on success
+        except Exception as log_e:
+            logger.error(f"[{SKILL_NAME}] Failed to write JSON log file to {log_filepath}: {log_e}", exc_info=True)
+            return None # Return None on failure
 
-        Args:
-            topic (str): The topic to generate content about.
-            format (str, optional): The export format ('markdown' or 'txt'). Defaults to "markdown".
-            target (str, optional): The publishing platform ('github' or 'gumroad'). Defaults to "gumroad".
-            price (float, optional): The price if publishing to Gumroad. Defaults to 0.99.
-
-        Returns:
-            dict: A dictionary containing the execution status, messages, and results.
+    # --- Main execute method with @skill decorator ---    
+    @skill(
+        name=SKILL_NAME, # Use the consistent name
+        description="Generates content based on a topic, exports it, and publishes (simulated) to a target platform (GitHub/Gumroad).",
+        parameters={
+            "topic": (str, "The topic to generate content about."),
+            "format": (str, "markdown"),
+            "target": (str, "gumroad"),
+            "price": (float, 0.99)
+        }
+    )
+    def execute(self, topic: str, format: str = "markdown", target: str = "gumroad", price: float = 0.99) -> dict:
         """
-        logger.info(f"Starting generation and publication for topic: '{topic}', format: '{format}', target: '{target}'")
+        Orchestrates content generation, export, and publication.
+        """
+        logger.info(f"Executing {SKILL_NAME} skill for topic: '{topic}', format: '{format}', target: '{target}'")
         status = "error" # Default status
         message = "Orchestration failed."
-        content = ""
         filepath = None
         final_link = None
-        log_filepath = None # Initialize log_filepath
+        log_filepath_str = None
+        error_details = None
 
-        # Simplified log data structure, more focused on final outcome
+        # Prepare log data structure
         log_data = {
             "timestamp": datetime.now().isoformat(),
             "topic": topic,
             "format": format,
             "target": target,
-            "price": price if target == "gumroad" else None, # Log price only for Gumroad
-            "status": status,
+            "price": price if target.lower() == "gumroad" else None,
+            "status": status, # Will be updated
             "content_generated": False,
             "filepath": None,
             "final_link": None,
@@ -160,81 +166,70 @@ class AutoPublisherSkill:
 
         try:
             # 1. Generate Content
-            logger.info(f"[{SKILL_NAME}] Generating content for topic: '{topic}'...")
             content = self.generate_content(topic)
-            if content.startswith("Error generating content:"): # Check if generation failed
+            if content.startswith("Error generating content:"):
                 raise ValueError(f"Content generation failed: {content}")
-            logger.info(f"[{SKILL_NAME}] Content generated successfully.")
             log_data["content_generated"] = True
 
             # 2. Export Content
-            # Basic filename sanitization from topic
             filename_prefix = re.sub(r'[^a-z0-9_]', '', topic.lower().replace(" ", "_"))[:30]
-            logger.info(f"[{SKILL_NAME}] Exporting content to format: '{format}' with prefix '{filename_prefix}'...")
             filepath = self.export_content(content, filename_prefix=filename_prefix, format=format)
             if filepath is None:
                  raise IOError("Content export failed.")
-            logger.info(f"[{SKILL_NAME}] Content exported successfully to: {filepath}")
-            log_data["filepath"] = filepath
+            log_data["filepath"] = filepath # Log the actual filepath string
 
             # 3. Publish Content
-            logger.info(f"[{SKILL_NAME}] Publishing content to target: '{target}'...")
-            if target == "github":
+            if target.lower() == "github":
                 final_link = self.publish_to_github(filepath)
-            elif target == "gumroad":
-                # Use the topic as the default title for Gumroad product
+            elif target.lower() == "gumroad":
                 final_link = self.publish_to_gumroad(filepath, title=topic, price=price)
             else:
                 raise ValueError(f"Unsupported publish target: '{target}'. Use 'github' or 'gumroad'.")
-            logger.info(f"[{SKILL_NAME}] Content published successfully (simulated). Link: {final_link}")
             log_data["final_link"] = final_link
-            status = "success" # Changed from 'published' for consistency
+            
+            status = "success"
             message = f"Content generated, exported to '{os.path.basename(filepath)}', and published (simulated) to {target}."
             log_data["status"] = status
 
         except Exception as e:
-            logger.error(f"[{SKILL_NAME}] Error during generate_and_publish_from_niche for topic '{topic}': {e}", exc_info=True)
+            logger.error(f"[{SKILL_NAME}] Error during execute for topic '{topic}': {e}", exc_info=True)
+            error_details = str(e)
             log_data["status"] = "error"
-            log_data["error"] = str(e)
-            status = "error" # Ensure status reflects failure
-            message = f"Error during auto-publication: {e}"
+            log_data["error"] = error_details
+            status = "error"
+            message = f"Error during auto-publication: {error_details}"
 
         finally:
-            # 4. Log Result to JSON (Simplified logging)
-            log_filename = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{status}.json"
-            log_filepath = os.path.join(self.log_dir, log_filename)
-            try:
-                with open(log_filepath, 'w', encoding='utf-8') as f_log:
-                    json.dump(log_data, f_log, indent=4)
-                logger.info(f"[{SKILL_NAME}] Operation log saved to: {log_filepath}")
-            except Exception as log_e:
-                logger.error(f"[{SKILL_NAME}] Failed to write JSON log file to {log_filepath}: {log_e}", exc_info=True)
-                # Append log writing error to message if primary operation succeeded
-                if status == "success":
-                    message += f" (Warning: Failed to write log file: {log_e})"
-                # Don't overwrite primary error if that occurred
-
-        # Use create_skill_response for consistent output
+            # 4. Log Result using helper
+            log_filepath_str = self._log_execution_result(log_data, status)
+            if log_filepath_str is None and status == "success":
+                 message += " (Warning: Failed to write log file)"
+            elif log_filepath_str is None and status == "error":
+                 # Don't overwrite primary error message if logging also fails
+                 logger.error(f"[{SKILL_NAME}] Primary operation failed AND log writing failed.")
+                 message = f"Primary operation error: {error_details}. Additionally, log writing failed."
+                 
+        # Return standardized response
         return create_skill_response(
             status=status,
-            action=f"{SKILL_NAME}_completed", # Generic action name
+            action=f"{SKILL_NAME}_completed",
             data={
                 "topic": topic,
                 "format": format,
                 "target": target,
-                "filepath": filepath,
+                "filepath": filepath, # Return the path returned by export
                 "link": final_link,
-                "log_file": log_filepath,
-                "price": price if target == "gumroad" else None
+                "log_file": log_filepath_str, # Path to the log file
+                "price": price if target.lower() == "gumroad" else None
             },
             message=message,
-            error_details=log_data["error"] # Pass error message back if any
+            error_details=error_details # Pass original error details if any
         )
 
 # Example usage (if run directly)
 # if __name__ == '__main__':
 #     publisher = AutoPublisherSkill()
-#     result = publisher.generate_and_publish_from_niche(
+#     result = publisher.execute(
 #         topic="Test Topic Direct Run",
 #         format="markdown",
 #         target="gumroad",
@@ -242,9 +237,8 @@ class AutoPublisherSkill:
 #     )
 #     print(json.dumps(result, indent=2))
 #
-#     result_gh = publisher.generate_and_publish_from_niche(
+#     result_gh = publisher.execute(
 #         topic="GitHub Test Topic",
 #         format="txt",
 #         target="github"
 #     )
-#     print(json.dumps(result_gh, indent=2))

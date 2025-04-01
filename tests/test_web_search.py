@@ -1,6 +1,6 @@
 import pytest
-import sys
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 # Adiciona o diretório raiz ao path para importar os módulos

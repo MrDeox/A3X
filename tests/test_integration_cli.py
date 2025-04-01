@@ -15,17 +15,16 @@ CLI_SCRIPT = os.path.join(project_root, 'assistant_cli.py')
 
 # Garante que o diretório de trabalho seja a raiz do projeto
 # para que os caminhos relativos funcionem corretamente.
-PROJECT_ROOT = "/home/arthur/Projects/A3X" # Ajuste se necessário
 try:
-    os.chdir(PROJECT_ROOT)
+    os.chdir(project_root)
 except FileNotFoundError:
-    print(f"Erro fatal: Diretório raiz do projeto '{PROJECT_ROOT}' não encontrado.")
+    print(f"Erro fatal: Diretório raiz do projeto '{project_root}' não encontrado.")
     sys.exit(1)
 
 # Caminho para o executável do assistente CLI
-ASSISTANT_CLI_PATH = os.path.join(PROJECT_ROOT, "assistant_cli.py")
+ASSISTANT_CLI_PATH = os.path.join(project_root, "assistant_cli.py")
 # Caminho para o diretório de dados de teste (não usado diretamente aqui, mas bom ter)
-# TEST_DATA_DIR = os.path.join(PROJECT_ROOT, "tests", "test_data")
+# TEST_DATA_DIR = os.path.join(project_root, "tests", "test_data")
 
 # Helper function (mantida e com timeout aumentado)
 def run_a3x_test_capture(input_file: str = None, command: str = None, timeout: int = 240) -> tuple[int, str, str]: # Timeout aumentado para 240s
@@ -38,7 +37,7 @@ def run_a3x_test_capture(input_file: str = None, command: str = None, timeout: i
 
     cmd = [sys.executable, ASSISTANT_CLI_PATH]
     if input_file:
-        input_path = os.path.join(PROJECT_ROOT, input_file) # Usar PROJECT_ROOT para input file
+        input_path = os.path.join(project_root, input_file) # Usar project_root para input file
         if not os.path.exists(input_path):
              pytest.fail(f"Arquivo de input não encontrado: {input_path}")
         cmd.extend(['-i', input_path])
@@ -96,7 +95,7 @@ def run_a3x_test_capture(input_file: str = None, command: str = None, timeout: i
 #     input_filename = "test_planning_files.txt"
 #     input_path = os.path.join(TEST_DATA_DIR, input_filename)
 #     test_file_name = "test_planning_file.txt"
-#     test_file_path = os.path.join(PROJECT_ROOT, test_file_name)
+#     test_file_path = os.path.join(project_root, test_file_name)
 
 #     # Garante que o arquivo não existe antes do teste
 #     if os.path.exists(test_file_path):
@@ -211,6 +210,75 @@ def test_react_search_web():
     print(f"  >> Resposta final encontrada contendo: 'A capital da França é Paris'")
 
 
+# --- Tests for test_react_list_files (if needed) ---
+
+# No specific fixtures needed for the test_react_list_files as it mocks manage_files directly.
+
+
+# --- Setup for Integration Tests (llama.cpp server) ---
+
+@pytest.fixture(scope="session")
+def llama_server_port():
+    """Port for the mock llama.cpp server."""
+    return 8099 # Use a different port than default 8080
+
+@pytest.fixture(scope="session")
+def managed_llama_server(llama_server_port): # Use session scope
+    """Starts and stops the mock llama.cpp server for integration tests."""
+    server_script = os.path.join(project_root, "llama.cpp", "server") # Path to the executable
+    model_path = os.path.join(project_root, "models", "test-model.gguf") # Path to a dummy model file
+
+    # Create dummy model file if it doesn't exist
+    model_dir = os.path.dirname(model_path)
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+    if not os.path.exists(model_path):
+        with open(model_path, "w") as f:
+            f.write("dummy model content")
+        print(f"[Pytest Fixture] Created dummy model: {model_path}")
+
+    # Verify server executable exists
+    if not os.path.exists(server_script) or not os.access(server_script, os.X_OK):
+        pytest.skip(f"Mock server executable not found or not executable: {server_script}")
+        return # Necessary after skip
+
+    # Server command
+    cmd = [server_script, "-m", model_path, "-c", "4096", "--port", str(llama_server_port)]
+    print(f"\n[Pytest Fixture] Starting mock server: {' '.join(cmd)}")
+    server_process = None
+    try:
+        # Start the server process
+        server_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(5) # Give the server time to start
+
+        # Check if the server started correctly
+        if server_process.poll() is not None:
+            stdout, stderr = server_process.communicate()
+            pytest.fail(f"Mock server failed to start. Exit code: {server_process.returncode}\nCmd: {' '.join(cmd)}\nStdout:\n{stdout}\nStderr:\n{stderr}")
+
+        print(f"[Pytest Fixture] Mock server started successfully (PID: {server_process.pid})")
+        yield server_process # Provide the process object to the tests
+
+    finally:
+        # Ensure the server is stopped after tests
+        if server_process and server_process.poll() is None:
+            print(f"\n[Pytest Fixture] Stopping mock server (PID: {server_process.pid})...")
+            server_process.terminate()
+            try:
+                server_process.wait(timeout=10) # Wait for graceful termination
+            except subprocess.TimeoutExpired:
+                print("[Pytest Fixture] Server did not terminate gracefully, killing...")
+                server_process.kill()
+                server_process.wait()
+            print("[Pytest Fixture] Mock server stopped.")
+        # Clean up dummy model file
+        if os.path.exists(model_path):
+            os.remove(model_path)
+            print(f"[Pytest Fixture] Cleaned up dummy model: {model_path}")
+
+# --- Tests Requiring Llama Server ---
+
+# Example test using the server (modify test_react_list_files)
 # @pytest.mark.skip(reason="Integration test needs review/update for current agent logic") # Removed skip
 def test_react_list_files(managed_llama_server): # Added fixture
     """
@@ -234,10 +302,8 @@ def test_react_list_files(managed_llama_server): # Added fixture
     # Simplifica asserção da observação da listagem
     assert "Observação: Nenhum arquivo" in stdout or ("Observação:" in stdout and "arquivo(s)" in stdout and "encontrado(s)" in stdout), "Observação de listagem não encontrada (substring check)."
 
-
     # Simplifica asserção da resposta final
     assert "[A³X]: Nenhum arquivo" in stdout or ("[A³X]:" in stdout and "arquivo(s)" in stdout and "encontrado(s)" in stdout), "Resposta final sobre listagem não encontrada (substring check)."
-
 
     print(f"  >> Resposta final encontrada (verificada por substrings)")
 

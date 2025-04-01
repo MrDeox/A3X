@@ -30,19 +30,16 @@ PROTECTED_EXTENSIONS = {".db", ".sqlite", ".sqlite3", ".env"}
     description="Deletes a specified file or directory within the workspace.",
     parameters={
         "filepath": (str, ...),
-        "backup": (bool, False), # Added parameter for backup control
-        "agent_history": (list | None, None) # Added missing parameter
+        "backup": (bool, False) # Removed agent_history from here
     }
 )
-def delete_file(filepath: str, backup: bool = False, agent_memory: dict | None = None, agent_history: list | None = None) -> dict:
+def delete_file(filepath: str, backup: bool = False) -> dict: # Removed agent_memory and agent_history from signature
     """
     Deletes the specified file or directory within the workspace.
 
     Args:
         filepath (str): Relative path within the workspace to the file or directory to delete.
         backup (bool, optional): Flag to create a backup before deleting. Defaults to False.
-        agent_memory (dict | None, optional): Agent's memory (not used). Defaults to None.
-        agent_history (list | None, optional): Conversation history (not used). Defaults to None.
 
     Returns:
         dict: Standardized dictionary with the result.
