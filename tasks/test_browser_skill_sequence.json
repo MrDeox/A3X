@@ -1,0 +1,39 @@
+[
+  {
+    "id": "browser_test_001",
+    "description": "Open test form page.",
+    "skill": "open_url",
+    "parameters": {
+      "url": "https://httpbin.org/forms/post"
+    }
+  },
+  {
+    "id": "browser_test_002",
+    "description": "Fill the customer name field.",
+    "skill": "fill_form_field",
+    "parameters": {
+      "selector": "input[name='custname']",
+      "value": "A3X Test User"
+    }
+  },
+  {
+    "id": "browser_test_003",
+    "description": "Click the submit button.",
+    "skill": "click_element",
+    "parameters": {
+      "selector": "button[type='submit']"
+    }
+  },
+  {
+    "id": "browser_test_004",
+    "description": "Get the content of the result page (expecting submitted data).",
+    "skill": "get_page_content",
+    "parameters": {} 
+  },
+  {
+    "id": "browser_test_005",
+    "description": "Close the browser.",
+    "skill": "close_browser",
+    "parameters": {}
+  }
+] 

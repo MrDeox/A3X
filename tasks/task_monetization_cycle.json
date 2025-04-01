@@ -1,12 +1,10 @@
-[
-  {
-    "id": "monetization_cycle_001",
-    "description": "Execute one full autonomous monetization cycle (Scan -> Publish -> Fetch -> Analyze).",
-    "skill": "orchestrator", 
-    "action": "full_monetization_cycle",
-    "parameters": {
-      "initial_target_platform": "gumroad",
-      "default_price": 1.99 
-    }
+{
+  "id": "monetization_cycle_001",
+  "description": "Execute one full autonomous monetization cycle (Scan -> Publish -> Fetch -> Analyze).",
+  "skill": "orchestrator", 
+  "action": "full_monetization_cycle",
+  "parameters": {
+    "initial_target_platform": "gumroad",
+    "default_price": 1.99 
   }
-]
+}

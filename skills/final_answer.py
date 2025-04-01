@@ -21,14 +21,14 @@ def final_answer(answer: str) -> dict:
               {"status": "success", "action": "final_answer_provided",
                "data": {"final_answer": "..."}}
     """
-    logger.debug(f"Executing final_answer with answer: {answer[:100]}...")
+    logger.debug(f"Executing final_answer with answer: {str(answer)[:100]}...")
 
     # A validação de tipo já é feita pelo Pydantic através do schema no decorador
     # Não precisamos mais de action_input.get ou isinstance
 
     final_answer_text = answer # Usar o parâmetro diretamente
 
-    logger.info(f"Final Answer processed: {final_answer_text[:100]}...")
+    logger.info(f"Final Answer processed: {str(final_answer_text)[:100]}...")
 
     return {
         "status": "success",

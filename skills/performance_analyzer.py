@@ -11,13 +11,6 @@ logger = logging.getLogger(__name__)
 # Define o nome da skill de forma consistente
 SKILL_NAME = "performance_analyzer"
 
-@skill(
-    name=SKILL_NAME,
-    description="Analyzes sales data to provide directives for future content strategy.",
-    parameters={
-        "sales_data": (List[Dict[str, Any]], "A list of sales data records, typically from SalesFetcherSkill.")
-    }
-)
 class PerformanceAnalyzerSkill:
     """
     Skill to analyze the performance of published products based on sales data.
@@ -36,9 +29,17 @@ class PerformanceAnalyzerSkill:
         self.sales_threshold_low = sales_threshold_low
         logger.info(f"Initialized PerformanceAnalyzerSkill with thresholds: High Revenue >= ${revenue_threshold_high}, Low Sales <= {sales_threshold_low}")
 
-    def analyze_performance(self, sales_data: List[Dict[str, Any]], agent_history: list | None = None) -> dict:
+    @skill(
+        name=SKILL_NAME,
+        description="Analyzes sales data to provide directives for future content strategy.",
+        parameters={
+            "sales_data": (List[Dict[str, Any]], "A list of sales data records, typically from SalesFetcherSkill.")
+        }
+    )
+    def execute(self, sales_data: List[Dict[str, Any]]) -> dict:
         """
         Analyzes a list of sales data records to determine future content strategy.
+        THIS is the main entry point for the skill.
 
         Identifies the best performing product (by revenue) and the worst
         performing product (by lowest sales, potentially filtered by low revenue).
@@ -46,16 +47,15 @@ class PerformanceAnalyzerSkill:
         Args:
             sales_data (List[Dict[str, Any]]): The list of sales records.
                 Expected format per record: {"title": str, "sales": int, "revenue": float, ...}
-            agent_history (list | None, optional): Conversation history (not used). Defaults to None.
 
         Returns:
             dict: A dictionary containing the analysis status, directives, and summary.
                   Example Directives: ["Create more content like 'Top Product'", "Avoid content like 'Worst Product'"]
         """
-        logger.info(f"Executing {SKILL_NAME} skill: analyze_performance")
+        logger.info(f"Executing {SKILL_NAME} skill: execute")
 
         if not isinstance(sales_data, list) or not sales_data:
-            logger.warning("analyze_performance called with empty or invalid sales data.")
+            logger.warning("execute called with empty or invalid sales data.")
             return create_skill_response(
                 status="error",
                 action=f"{SKILL_NAME}_failed_no_data",
@@ -173,14 +173,14 @@ class PerformanceAnalyzerSkill:
 #     }
 #
 #     print("\n--- Analyzing Sample Data ---")
-#     analysis_result = analyzer.analyze_performance(sales_data=sample_data['data']['sales_records'])
+#     analysis_result = analyzer.execute(sales_data=sample_data['data']['sales_records'])
 #     import json
 #     print(json.dumps(analysis_result, indent=2))
 #
 #     print("\n--- Analyzing Empty Data ---")
-#     empty_result = analyzer.analyze_performance(sales_data=[])
+#     empty_result = analyzer.execute(sales_data=[])
 #     print(json.dumps(empty_result, indent=2))
 #
 #     print("\n--- Analyzing Invalid Format Data ---")
-#     invalid_result = analyzer.analyze_performance(sales_data=[{"name": "Product A", "value": 10}])
+#     invalid_result = analyzer.execute(sales_data=[{"name": "Product A", "value": 10}])
 #     print(json.dumps(invalid_result, indent=2))

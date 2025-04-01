@@ -78,7 +78,7 @@ async def call_llm(
         # Adicione outros parâmetros suportados pelo servidor Llama.cpp se necessário
         # "stop": ["Observation:"] # Exemplo, se o servidor suportar
     }
-    headers = LLAMA_DEFAULT_HEADERS
+    headers = LLAMA_DEFAULT_HEADERS # Use global default directly
 
     llm_logger.debug(f"Enviando para LLM: URL={target_url}, Stream={stream}, Payload Messages Count={len(messages)}")
     if llm_logger.isEnabledFor(logging.DEBUG):

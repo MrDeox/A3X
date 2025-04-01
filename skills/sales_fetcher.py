@@ -12,14 +12,6 @@ logger = logging.getLogger(__name__)
 # Define o nome da skill de forma consistente
 SKILL_NAME = "sales_fetcher"
 
-@skill(
-    name=SKILL_NAME,
-    description="Fetches sales data (simulated) for published products, typically from platforms like Gumroad.",
-    parameters={
-        "platform": (str, "The platform to fetch sales data from (e.g., 'gumroad'). Currently only simulation is supported."),
-        "product_id": (str | None, "Optional: ID of a specific product to fetch data for. If None, fetches aggregated data.")
-    }
-)
 class SalesFetcherSkill:
     """
     Skill to retrieve sales data for published digital products.
@@ -30,9 +22,18 @@ class SalesFetcherSkill:
         # Placeholder for potential future initializations (e.g., API keys, platform connections)
         pass
 
-    def fetch_sales_data(self, platform: str = "gumroad", product_id: str | None = None, agent_history: list | None = None) -> dict:
+    @skill(
+        name=SKILL_NAME,
+        description="Fetches sales data (simulated) for published products, typically from platforms like Gumroad.",
+        parameters={
+            "platform": (str, "gumroad"),
+            "product_id": (str | None, None)
+        }
+    )
+    def execute(self, platform: str = "gumroad", product_id: str | None = None) -> dict:
         """
         Simulates fetching sales data for products.
+        THIS is the main entry point for the skill.
 
         If product_id is provided, simulates data for that specific product.
         Otherwise, returns aggregated simulated data for a few predefined products.
@@ -40,13 +41,12 @@ class SalesFetcherSkill:
         Args:
             platform (str, optional): The platform name (ignored in simulation). Defaults to "gumroad".
             product_id (str | None, optional): Specific product ID (ignored in simulation). Defaults to None.
-            agent_history (list | None, optional): Conversation history (not used). Defaults to None.
 
         Returns:
             dict: A dictionary containing the status and a list of simulated sales data records.
                   Example Record: {"title": "Prompt Pack", "sales": 4, "revenue": 8.00, "fetch_timestamp": "..."}
         """
-        logger.info(f"Executing {SKILL_NAME} skill: fetch_sales_data (simulation) for platform '{platform}'")
+        logger.info(f"Executing {SKILL_NAME} skill: execute (simulation) for platform '{platform}'")
 
         # --- Simulation Logic ---
         # Simulate data for a few products if no specific ID is given
@@ -102,10 +102,10 @@ class SalesFetcherSkill:
 #     fetcher = SalesFetcherSkill()
 #
 #     print("\n--- Fetching Aggregated Data ---")
-#     result_agg = fetcher.fetch_sales_data()
+#     result_agg = fetcher.execute()
 #     import json
 #     print(json.dumps(result_agg, indent=2))
 #
 #     print("\n--- Fetching Specific Product Data ---")
-#     result_spec = fetcher.fetch_sales_data(product_id="prod_123xyz")
+#     result_spec = fetcher.execute(product_id="prod_123xyz")
 #     print(json.dumps(result_spec, indent=2))

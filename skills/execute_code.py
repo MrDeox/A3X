@@ -4,78 +4,15 @@ import subprocess
 import logging
 from pathlib import Path
 from core.config import PYTHON_EXEC_TIMEOUT # Default timeout
+from core.code_safety import is_safe_ast
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
-# Função _is_safe_ast (COLE AQUI SE NÃO ESTIVER JÁ NO ARQUIVO)
-# Certifique-se que a função _is_safe_ast está definida neste arquivo
-# ou importada corretamente. Colando a última versão conhecida dela aqui
-# para garantir que existe:
-def _is_safe_ast(code_string: str) -> tuple[bool, str]:
-    """Analisa a AST do código para permitir apenas construções seguras."""
-    try:
-        tree = ast.parse(code_string)
-        allowed_nodes = (
-            ast.Module, ast.Expr, ast.Constant, ast.Call, ast.Name,
-            ast.Load, ast.Store, ast.Assign, ast.FunctionDef, ast.arguments,
-            ast.arg, ast.Return, ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div,
-            # Adicionar outros nós seguros conforme necessário (ex: loops, condicionais básicos)
-            ast.For, ast.While, ast.If, ast.Compare, ast.Eq, ast.NotEq,
-            ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot, ast.In, ast.NotIn,
-            ast.Pass, ast.Break, ast.Continue, ast.List, ast.Tuple, ast.Dict,
-            ast.Subscript, ast.Index, # Para acesso a listas/dicionários
-        )
-        allowed_calls = {'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'tuple', 'set'} # Funções built-in seguras
-        allowed_imports = set() # Nenhum import permitido por padrão
-
-        for node in ast.walk(tree):
-            if not isinstance(node, allowed_nodes):
-                return False, f"Nó AST não permitido: {type(node).__name__}"
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name):
-                    if node.func.id not in allowed_calls:
-                        # Permitir chamadas a funções definidas no próprio código
-                        # (Verifica se a função chamada está definida no escopo atual da AST)
-                        is_defined_locally = False
-                        for definition in ast.walk(tree):
-                             if isinstance(definition, ast.FunctionDef) and definition.name == node.func.id:
-                                 is_defined_locally = True
-                                 break
-                        if not is_defined_locally:
-                             return False, f"Chamada de função não permitida: {node.func.id}"
-                # Bloquear chamadas de atributos (ex: obj.method()) por segurança inicial
-                elif isinstance(node.func, ast.Attribute):
-                     return False, f"Chamada de método/atributo não permitida: {ast.dump(node.func)}"
-            # Bloquear imports
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                 # Permitir apenas imports específicos se necessário
-                 # module_name = node.module if isinstance(node, ast.ImportFrom) else node.names[0].name
-                 # if module_name not in allowed_imports:
-                 return False, f"Imports não são permitidos ({type(node).__name__})"
-            # Bloquear acesso a atributos como __builtins__, __import__ etc.
-            if isinstance(node, ast.Attribute):
-                 # Permitir acesso a atributos seguros se necessário no futuro
-                 # Ex: if node.attr not in {'append', 'pop', ...}:
-                 if node.attr.startswith('_'): # Bloqueia atributos "privados" ou "mágicos"
-                      return False, f"Acesso a atributo não permitido: {node.attr}"
-            # Validação específica para BinOp
-            if isinstance(node, ast.BinOp):
-                 if not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
-                      return False, f"Operação binária não permitida: {type(node.op).__name__}"
-
-
-        return True, "Código parece seguro (análise AST básica)."
-    except SyntaxError as e:
-        return False, f"Erro de sintaxe no código: {str(e)}"
-    except Exception as e:
-        logger.error(f"Erro inesperado durante análise AST: {e}", exc_info=True)
-        return False, f"Erro inesperado durante análise AST: {e}"
-
-
 def skill_execute_code(action_input: dict) -> dict:
     """
     Executa um bloco de código (atualmente apenas Python) em um sandbox Firejail.
+    Realiza uma análise AST básica para segurança antes da execução.
 
     Args:
         action_input (dict): Dicionário contendo a ação e parâmetros.
@@ -118,12 +55,11 @@ def skill_execute_code(action_input: dict) -> dict:
         }
 
     logger.info(f"Tentando executar código {language} com timeout de {timeout_sec}s.")
-    # Logar apenas uma parte do código para não poluir logs
     code_preview = code_to_execute[:100] + ("..." if len(code_to_execute) > 100 else "")
     logger.debug(f"Código (prévia):\n---\n{code_preview}\n---")
 
     # --- Safety Check (AST) ---
-    is_safe, safety_message = _is_safe_ast(code_to_execute)
+    is_safe, safety_message = is_safe_ast(code_to_execute)
     if not is_safe:
         logger.warning(f"Execução bloqueada pela análise AST: {safety_message}")
         return {
@@ -140,7 +76,6 @@ def skill_execute_code(action_input: dict) -> dict:
 
     try:
         # Construir comando Firejail
-        # Usar 'python3' para melhor compatibilidade
         firejail_command = [
             "firejail",
             "--quiet",
@@ -184,7 +119,6 @@ def skill_execute_code(action_input: dict) -> dict:
                 }
             }
         else:
-            # Tentar dar uma mensagem de erro mais específica
             error_cause = f"erro durante a execução (exit code: {exit_code})"
             if "SyntaxError:" in stderr_result:
                 error_cause = "erro de sintaxe"
@@ -210,7 +144,6 @@ def skill_execute_code(action_input: dict) -> dict:
             "data": {"message": f"Execução do código excedeu o limite de tempo ({timeout_sec}s)."}
         }
     except FileNotFoundError:
-         # Pode ser 'firejail' ou 'python3'
          logger.error("Comando 'firejail' ou 'python3' não encontrado. Verifique a instalação e o PATH.", exc_info=True)
          return {"status": "error", "action": "execution_failed", "data": {"message": "Erro de ambiente: 'firejail' ou 'python3' não encontrado."}}
     except Exception as e:

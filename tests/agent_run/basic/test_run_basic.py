@@ -7,7 +7,7 @@ import requests
 
 # Import necessary components (adjust paths if needed)
 from core.agent import ReactAgent
-from core.tools import TOOLS, get_tool_descriptions
+from core.tools import get_tool_descriptions
 from core.config import MAX_REACT_ITERATIONS
 # Import exception type if needed for specific error tests, e.g.:
 from requests.exceptions import HTTPError, Timeout, RequestException

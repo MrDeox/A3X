@@ -15,3 +15,5 @@ pytesseract
 ultralytics
 sentence-transformers
 pydantic
+playwright
+pytest-mock
