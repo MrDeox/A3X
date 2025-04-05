@@ -1,5 +1,6 @@
 import logging
 import json
+import os
 from typing import Dict, Any, List, AsyncGenerator, Optional
 
 # Local imports
@@ -51,9 +52,18 @@ class ReactAgent:
         self.system_prompt = system_prompt
         self.tools = get_skill_registry()
         self._history = []  # Histórico de Thought, Action, Observation
-        self._memory = load_agent_state(
-            AGENT_STATE_ID
-        )  # Carrega estado/memória inicial
+        self.agent_id = "1"  # TODO: Make agent ID configurable/dynamic
+        self.agent_logger = agent_logger
+        self._memory: Dict[str, Any] = {}
+        self.llm_url = llm_url or os.getenv("LLM_API_URL") # Use env var if not provided
+
+        # Load agent state if exists
+        # <<< FIX: Use string "1" for agent_id >>>
+        loaded_state = load_agent_state(agent_id="1")
+        if loaded_state:
+            self._history = loaded_state.get("history", [])
+            self._memory = loaded_state.get("memory", {})
+            agent_logger.info(f"[ReactAgent INIT] Estado do agente carregado para ID '1'. Memória: {list(self._memory.keys())}")
         self.max_iterations = MAX_REACT_ITERATIONS
         self._current_plan = None  # <<< Initialize plan >>>
         agent_logger.info(
@@ -101,10 +111,12 @@ class ReactAgent:
         llm_response_raw = ""
         try:
             # Use call_llm (non-streaming for react cycle response)
+            # <<< REVERT: Use async for as call_llm likely always returns async generator >>>
+            # llm_response_raw = await call_llm(prompt, llm_url=self.llm_url, stream=False) # OLD CORRECTION
             async for chunk in call_llm(prompt, llm_url=self.llm_url, stream=False):
-                llm_response_raw += chunk
+                 llm_response_raw += chunk
             agent_logger.info(f"{log_prefix} LLM Response received.")
-            agent_logger.debug(f"{log_prefix} Raw LLM Response:\n{llm_response_raw}")
+            agent_logger.debug(f"{log_prefix} Raw LLM Response:\\n{llm_response_raw}")
 
             # Parse the response
             parsed_output_tuple = parse_llm_response(llm_response_raw, agent_logger)
@@ -257,7 +269,7 @@ class ReactAgent:
 
         # Handle Action or Final Answer
         action_name = parsed_output.get("action_name")
-        action_input = parsed_output.get("action_input")  # Already ensured to be a dict
+        action_input = parsed_output.get("action_input", {})
 
         if action_name == "final_answer":
             final_answer = action_input.get(
@@ -337,115 +349,91 @@ class ReactAgent:
             # --- Plan Execution Loop ---
             current_step_index = 0
             total_iterations = 0  # Track overall iterations across all steps
+            last_error_message = None  # <<< INITIALIZE last_error_message >>>
             max_total_iterations = self.max_iterations * len(
                 plan_to_execute
             )  # Adjust max iterations based on plan length
 
-            while (
-                current_step_index < len(plan_to_execute)
-                and total_iterations < max_total_iterations
-            ):
-                current_step_objective = plan_to_execute[current_step_index]
-                log_prefix = f"{log_prefix_base} Iteration {total_iterations + 1} (Plan Step {current_step_index + 1}/{len(plan_to_execute)})"
-                agent_logger.info(
-                    f"\n{log_prefix} (Objective: '{current_step_objective[:60]}...')"
-                )
+            # <<< ADD FLAG and CONTENT STORE >>>
+            max_total_reached = False
+            final_answer_content = None # Store content from last step's final answer
+
+            # <<< MAIN PLAN EXECUTION LOOP - ADD ITERATION CHECK BACK >>>
+            # while current_step_index < len(plan_to_execute):
+            while current_step_index < len(plan_to_execute) and total_iterations < max_total_iterations:
+                # <<< REMOVED CHECK FROM HERE >>>
+                step_objective = plan_to_execute[current_step_index]
+                log_prefix_step = f"{log_prefix_base} (Plan Step {current_step_index + 1}/{len(plan_to_execute)})"
+                agent_logger.info(f"\n{log_prefix_step} (Objective: '{step_objective[:50]}...')")
 
                 step_completed = False
-                step_iterations = 0  # Iterations for this specific step
-                max_step_iterations = (
-                    self.max_iterations
-                )  # Max iterations per step objective
+                react_iterations_this_step = 0
 
-                # --- Inner Loop for ReAct cycle on the current step objective ---
-                while (
-                    not step_completed
-                    and step_iterations < max_step_iterations
-                    and total_iterations < max_total_iterations
-                ):
-                    iteration_prefix = f"{log_prefix} React Iter {step_iterations + 1}"
-                    agent_logger.debug(
-                        f"Starting React iteration {step_iterations + 1} for step {current_step_index + 1}"
-                    )
+                # <<< INNER ReAct LOOP FOR THE CURRENT STEP >>>
+                while not step_completed and react_iterations_this_step < self.max_iterations:
+                    # <<< REMOVED CHECK FROM HERE >>>
+                    total_iterations += 1
+                    react_iterations_this_step += 1
+                    log_prefix_react = f"{log_prefix_step} React Iter {react_iterations_this_step}"
 
-                    iteration_finished_step = False
-                    error_occurred = False
-
-                    async for event in self._perform_react_iteration(
-                        current_step_objective, iteration_prefix
-                    ):
-                        yield event  # Pass through events from the iteration
+                    # Handle actual ReAct iteration
+                    async for event in self._perform_react_iteration(step_objective, log_prefix_react):
+                        # <<< YIELD ONLY INTERMEDIATE EVENTS, NOT step_final_answer >>>
+                        if event.get("type") != "step_final_answer":
+                            yield event # Pass through non-final step events
 
                         if event.get("type") == "step_final_answer":
-                            iteration_finished_step = True
-                            break  # Exit inner async for loop, step is done
-                        if event.get("type") == "error":
-                            agent_logger.error(
-                                f"{iteration_prefix} Error occurred during iteration: {event.get('content')}"
-                            )
-                            error_occurred = True
-                            # Decide whether to break the inner loop on error or allow retry?
-                            # For now, let's break the inner loop on error. The outer loop might retry the step or stop.
-                            break
+                            step_completed = True
+                            # Store content if it's the last step
+                            if current_step_index == len(plan_to_execute) - 1:
+                                final_answer_content = event.get("content") # Store content
+                                final_answer_yielded = True # Mark that we *have* a final answer
+                            break # Break inner loop
+                        elif event.get("type") == "error":
+                            last_error_message = event.get("content")
+                            agent_logger.error(f"{log_prefix_react} Error during iteration: {last_error_message}")
+                            step_completed = True # Mark step as completed (due to error)
+                            break # Break inner loop
 
-                    step_iterations += 1
-                    total_iterations += 1
+                # Check iterations *per step*
+                if not step_completed and react_iterations_this_step >= self.max_iterations:
+                    agent_logger.warning(f"{log_prefix_step} Max iterations ({self.max_iterations}) reached for step {current_step_index + 1}. Moving to next step.")
+                    last_error_message = f"Max iterations reached for step {current_step_index + 1}"
 
-                    if iteration_finished_step:
-                        step_completed = True  # Mark step as completed
-                        agent_logger.info(
-                            f"{log_prefix} Step completed with Final Answer."
-                        )
-                        break  # Exit while loop for this step
+                if max_total_reached:
+                    break # Break outer loop if total limit was hit inside inner loop
 
-                    if error_occurred:
-                        # Decide recovery strategy - retry step, skip step, stop all?
-                        # For now, let's just log and stop processing *this* step.
-                        agent_logger.warning(
-                            f"{log_prefix} Stopping processing for step {current_step_index + 1} due to error in iteration {step_iterations}."
-                        )
-                        step_completed = (
-                            True  # Mark as completed (with error) to move to next step
-                        )
-                        break  # Exit while loop for this step
+                current_step_index += 1
 
-                    if step_iterations >= max_step_iterations:
-                        agent_logger.warning(
-                            f"{log_prefix} Max iterations ({max_step_iterations}) reached for step {current_step_index + 1}. Moving to next step."
-                        )
-                        step_completed = (
-                            True  # Mark as completed (timeout) to move to next step
-                        )
-                        break
+            # --- End MAIN PLAN EXECUTION LOOP ---
 
-                # --- End Inner Loop for Step ---
-                current_step_index += 1  # Move to the next step in the plan
-
-            # --- End Plan Execution Loop ---
-
-            if current_step_index >= len(plan_to_execute):
-                agent_logger.info("--- Plan Execution Finished ---")
-            elif total_iterations >= max_total_iterations:
+            # <<< CHECK IF LOOP EXITED DUE TO MAX ITERATIONS >>>
+            if total_iterations >= max_total_iterations and not final_answer_yielded:
                 agent_logger.warning(
                     f"--- Max total iterations ({max_total_iterations}) reached. Stopping execution. ---"
                 )
                 yield {"type": "error", "content": "Max total iterations reached."}
+                # No need to set final_answer_yielded = True here, summary will run if needed
 
-            # If the loop finished but no final answer was explicitly yielded for the *overall* objective
-            if not final_answer_yielded:
+            # <<< ADJUST FINAL YIELD LOGIC >>>
+            # If loop finished AND we captured a final answer from the last step
+            if final_answer_yielded and final_answer_content is not None:
+                yield {"type": "final_answer", "content": final_answer_content}
+            # Otherwise, if loop finished or broke early without a specific final answer
+            elif not final_answer_yielded:
                 agent_logger.warning(
-                    f"{log_prefix_base} Plan execution finished, but no overall Final Answer was yielded. Attempting to summarize."
+                    f"{log_prefix_base} Plan execution finished, but no overall Final Answer was yielded during steps. Attempting to summarize."
                 )
-                # Provide a summary or the last observation as a fallback?
-                # This might need a final LLM call to summarize based on history.
                 last_thought_or_obs = (
                     self._history[-1] if self._history else "No history available."
                 )
+                final_content = f"Plan execution concluded. Last state: {last_thought_or_obs}"
+                if last_error_message:
+                    final_content += f". Encountered error: {last_error_message}"
                 yield {
                     "type": "final_answer",
-                    "content": f"Plan execution concluded. Last state: {last_thought_or_obs}",
-                }  # Fallback
-                final_answer_yielded = True
+                    "content": final_content,
+                }
 
         except Exception as e:
             agent_logger.exception(
@@ -454,7 +442,7 @@ class ReactAgent:
             yield {"type": "error", "content": f"Agent execution failed: {e}"}
         finally:
             # --- Save State ---
-            save_agent_state(AGENT_STATE_ID, self._memory)
+            self._save_state()
             agent_logger.info(f"{log_prefix_base} Agent state saved.")
 
     def get_history(self):
@@ -482,3 +470,10 @@ class ReactAgent:
             self._history.append(f"{role.capitalize()}: {content}")
         # Optional: Trim history after adding
         # self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
+
+    # <<< NEW: Save State Method (Example using file storage) >>>
+    def _save_state(self):
+        state = {"history": self._history, "memory": self._memory}
+        # <<< FIX: Use string "1" for agent_id >>>
+        save_agent_state(agent_id="1", state=state) # Use self.agent_id later
+        agent_logger.info(f"[ReactAgent] Agent state saved for ID '1'.")
