@@ -1,15 +1,13 @@
 # /home/arthur/Projects/A3X/skills/ocr_image.py
 import logging
 import pathlib
-import os
 from typing import Dict, Any
 import pytesseract
 from PIL import Image
 
 # from core.tools import skill
-from a3x.core.tools import skill
+
 # from core.skills_utils import create_skill_response
-from a3x.core.skills_utils import create_skill_response
 
 # Configure logger
 logger = logging.getLogger(__name__)

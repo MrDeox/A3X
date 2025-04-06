@@ -161,7 +161,7 @@ def load_skills(skill_directory: str = "skills"):
         # Usar importlib.invalidate_caches() pode ser útil se as skills mudarem dinamicamente
         # importlib.invalidate_caches()
         # module = importlib.import_module(skill_directory) # F841
-        importlib.import_module(skill_directory) # Just import, don't assign
+        importlib.import_module(skill_directory)  # Just import, don't assign
         # Recarregar o módulo se ele já foi importado, para pegar novas skills/mudanças
         # importlib.reload(module)
         count_after = len(SKILL_REGISTRY)

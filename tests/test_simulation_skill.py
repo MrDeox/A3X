@@ -1,16 +1,17 @@
 # tests/test_simulation_skill.py
 import pytest
-from unittest.mock import patch, MagicMock, ANY
-from skills.simulation import simulate_step, SIMULATE_STEP_PROMPT_TEMPLATE
-from core.llm_interface import call_llm # Keep for type hints if needed
+from unittest.mock import patch
+from a3x.skills.simulation import simulate_step
 
 # Add project root to sys.path
 # project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # sys.path.insert(0, project_root)
 
+
 # <<< ADDED: Helper for async generator >>>
 async def async_generator_for(item):
     yield item
+
 
 # Mark all tests as async
 pytestmark = pytest.mark.asyncio
@@ -24,14 +25,14 @@ async def test_simulate_step_success(mock_call_llm):
     mock_llm_response = "Agent likely runs 'pip install requests'. Success expected."
     mock_call_llm.return_value = async_generator_for(mock_llm_response)
 
-    expected_prompt = SIMULATE_STEP_PROMPT_TEMPLATE.format(step=step, context=context)
+    # F841: expected_prompt = SIMULATE_STEP_PROMPT_TEMPLATE.format(step=step, context=context)
 
     result = await simulate_step(step=step, context=context)
 
     mock_call_llm.assert_called_once()
     call_args, call_kwargs = mock_call_llm.call_args
     assert isinstance(call_args[0], list)
-    assert call_kwargs.get('stream') == False
+    assert not call_kwargs.get("stream")
     assert result["status"] == "success"
     assert result["simulated_outcome"] == mock_llm_response.strip()
     assert result["confidence"] == "Média"  # Default confidence
@@ -50,7 +51,7 @@ async def test_simulate_step_success_no_context(mock_call_llm):
     mock_call_llm.assert_called_once()
     call_args, call_kwargs = mock_call_llm.call_args
     assert isinstance(call_args[0], list)
-    assert call_kwargs.get('stream') == False
+    assert not call_kwargs.get("stream")
     assert result["status"] == "success"
     assert result["simulated_outcome"] == mock_llm_response.strip()
     assert result["confidence"] == "Média"
@@ -69,7 +70,7 @@ async def test_simulate_step_llm_empty_response(mock_call_llm):
     mock_call_llm.assert_called_once()
     call_args, call_kwargs = mock_call_llm.call_args
     assert isinstance(call_args[0], list)
-    assert call_kwargs.get('stream') == False
+    assert not call_kwargs.get("stream")
     assert result["status"] == "error"
     assert result["simulated_outcome"] is None
     assert result["confidence"] == "N/A"
@@ -89,7 +90,7 @@ async def test_simulate_step_llm_invalid_type(mock_call_llm):
     mock_call_llm.assert_called_once()
     call_args, call_kwargs = mock_call_llm.call_args
     assert isinstance(call_args[0], list)
-    assert call_kwargs.get('stream') == False
+    assert not call_kwargs.get("stream")
     assert result["status"] == "error"
     assert result["simulated_outcome"] is None
     assert result["confidence"] == "N/A"
@@ -109,7 +110,7 @@ async def test_simulate_step_llm_exception(mock_call_llm):
     mock_call_llm.assert_called_once()
     call_args, call_kwargs = mock_call_llm.call_args
     assert isinstance(call_args[0], list)
-    assert call_kwargs.get('stream') == False
+    assert not call_kwargs.get("stream")
     assert result["status"] == "error"
     assert result["simulated_outcome"] is None
     assert result["confidence"] == "N/A"

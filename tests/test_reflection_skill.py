@@ -1,20 +1,20 @@
 # tests/test_reflection_skill.py
 import pytest
-from unittest.mock import patch, MagicMock, ANY
-from skills.reflection import (
+from unittest.mock import patch
+from a3x.skills.reflection import (
     reflect_plan_step,
     _parse_reflection_output,
-    REFLECT_STEP_PROMPT_TEMPLATE,
 )
-from core.llm_interface import call_llm # Keep for type hints if needed
 
 # Add project root to sys.path
 # project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # sys.path.insert(0, project_root)
 
+
 # <<< ADDED: Helper for async generator >>>
 async def async_generator_for(item):
     yield item
+
 
 # --- Tests for _parse_reflection_output (Synchronous Helper) ---
 
@@ -105,8 +105,8 @@ async def test_reflect_plan_step_success_execute():
         # <<< MODIFIED: Check call args, ensure stream=False >>>
         mock_call_llm.assert_called_once()
         call_args, call_kwargs = mock_call_llm.call_args
-        assert isinstance(call_args[0], list) # Check messages format
-        assert call_kwargs.get('stream') == False
+        assert isinstance(call_args[0], list)  # Check messages format
+        assert not call_kwargs.get("stream")
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_reflect_plan_step_success_modify():
         mock_call_llm.assert_called_once()
         call_args, call_kwargs = mock_call_llm.call_args
         assert isinstance(call_args[0], list)
-        assert call_kwargs.get('stream') == False
+        assert not call_kwargs.get("stream")
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_reflect_plan_step_success_skip():
         mock_call_llm.assert_called_once()
         call_args, call_kwargs = mock_call_llm.call_args
         assert isinstance(call_args[0], list)
-        assert call_kwargs.get('stream') == False
+        assert not call_kwargs.get("stream")
 
 
 @pytest.mark.asyncio
@@ -170,7 +170,7 @@ async def test_reflect_plan_step_llm_error():
         mock_call_llm.assert_called_once()
         call_args, call_kwargs = mock_call_llm.call_args
         assert isinstance(call_args[0], list)
-        assert call_kwargs.get('stream') == False
+        assert not call_kwargs.get("stream")
 
 
 @pytest.mark.asyncio
@@ -191,4 +191,4 @@ async def test_reflect_plan_step_empty_llm_response():
         mock_call_llm.assert_called_once()
         call_args, call_kwargs = mock_call_llm.call_args
         assert isinstance(call_args[0], list)
-        assert call_kwargs.get('stream') == False
+        assert not call_kwargs.get("stream")

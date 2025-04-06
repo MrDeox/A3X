@@ -139,10 +139,7 @@ async def test_create_file_target_is_directory(file_manager, temp_workspace_file
     # Assertions
     assert result["status"] == "error"
     assert result["action"] == "path_validation_failed"
-    assert (
-        f"Path is not a file: '{relative_path}'"
-        in result["data"]["message"]
-    )
+    assert f"Path is not a file: '{relative_path}'" in result["data"]["message"]
     assert absolute_path.is_dir()  # Verify it's still a directory
 
 

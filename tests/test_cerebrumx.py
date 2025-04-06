@@ -3,8 +3,10 @@ import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from a3x.core.cerebrumx import CerebrumXAgent, cerebrumx_logger
 from a3x.core.agent import ReactAgent  # Needed for mocking super().run
+
 # Import execution logic functions
 from a3x.core.execution_logic import _execute_actual_plan_step
+
 # Import config from conftest
 from tests.conftest import TEST_SERVER_BASE_URL  # Import only constants
 
@@ -72,10 +74,12 @@ async def test_retrieve_context(cerebrumx_agent_instance):
     # Mock the memory object's method directly on the instance for this test
     # OLD: (Mocking was previously assumed to be handled by fixture)
     # NEW: Mock directly on the instance's _memory object
-    cerebrumx_agent_instance._memory.retrieve_relevant_context = AsyncMock(return_value={
-        "semantic_match": "Mocked context via direct instance mock",
-        "short_term_history": [] # Keep history simple
-    })
+    cerebrumx_agent_instance._memory.retrieve_relevant_context = AsyncMock(
+        return_value={
+            "semantic_match": "Mocked context via direct instance mock",
+            "short_term_history": [],  # Keep history simple
+        }
+    )
 
     processed_perception = {"processed": "some data"}
     result = await cerebrumx_agent_instance._retrieve_context(processed_perception)
@@ -406,7 +410,7 @@ async def test_reflect_partial_failure(agent_instance):
         result["assessment"]
         == "Objective 'Objective...': Plan partially executed. 2/3 steps successful (67%)."
     )
-    assert round(result["success_rate"], 2) == 0.67 # Check rounded rate
+    assert round(result["success_rate"], 2) == 0.67  # Check rounded rate
     assert result["overall_outcome"] == "partial_success"
     assert len(result["learnings"]) == 3
 
@@ -477,17 +481,28 @@ async def test_learn(agent_instance):
     }
 
     # Mock the logger used within _learn and the memory method if needed
-    with patch("a3x.core.cerebrumx.cerebrumx_logger.info") as mock_log_info, \
-         patch.object(agent_instance._memory, "add_episodic_record", new_callable=AsyncMock) as mock_add_memory:
+    with (
+        patch("a3x.core.cerebrumx.cerebrumx_logger.info") as mock_log_info,
+        patch.object(
+            agent_instance._memory, "add_episodic_record", new_callable=AsyncMock
+        ) as mock_add_memory,
+    ):
 
         await agent_instance._learn(reflection_success)
         # Check logging
         log_calls_success = [args[0] for args, kwargs in mock_log_info.call_args_list]
         assert "Updating memory based on reflection..." in log_calls_success
-        assert "1 potential learning points identified." in log_calls_success # Check count
-        assert "Overall Execution Assessment: Plan execution completed. Success Rate: 100%" in log_calls_success
+        assert (
+            "1 potential learning points identified." in log_calls_success
+        )  # Check count
+        assert (
+            "Overall Execution Assessment: Plan execution completed. Success Rate: 100%"
+            in log_calls_success
+        )
         # Check memory call
-        mock_add_memory.assert_awaited_once_with(data=reflection_success["learnings"][0])
+        mock_add_memory.assert_awaited_once_with(
+            data=reflection_success["learnings"][0]
+        )
 
         # Reset mocks for the failure case
         mock_log_info.reset_mock()
@@ -497,10 +512,17 @@ async def test_learn(agent_instance):
         # Check logging for failure
         log_calls_failure = [args[0] for args, kwargs in mock_log_info.call_args_list]
         assert "Updating memory based on reflection..." in log_calls_failure
-        assert "1 potential learning points identified." in log_calls_failure # Check count
-        assert "Overall Execution Assessment: Plan execution completed. Success Rate: 0% (1 failed steps)" in log_calls_failure
+        assert (
+            "1 potential learning points identified." in log_calls_failure
+        )  # Check count
+        assert (
+            "Overall Execution Assessment: Plan execution completed. Success Rate: 0% (1 failed steps)"
+            in log_calls_failure
+        )
         # Check memory call for failure
-        mock_add_memory.assert_awaited_once_with(data=reflection_failure["learnings"][0])
+        mock_add_memory.assert_awaited_once_with(
+            data=reflection_failure["learnings"][0]
+        )
 
         # Reset mocks for the empty learnings case
         mock_log_info.reset_mock()

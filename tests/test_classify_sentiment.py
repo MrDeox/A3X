@@ -45,59 +45,59 @@ def test_sentiment_classification_valid(text, expected_min_rating, description):
         f"Sentiment Result ({description}): {result.get('status')}, Rating: {result.get('data', {}).get('sentiment_rating')}, Label: {result.get('data', {}).get('sentiment_label')}"
     )
 
-    assert result["status"] == "success", (
-        f"Test Failed ({description}): Status was not success."
-    )
-    assert result["action"] == "sentiment_classified", (
-        f"Test Failed ({description}): Action was incorrect."
-    )
+    assert (
+        result["status"] == "success"
+    ), f"Test Failed ({description}): Status was not success."
+    assert (
+        result["action"] == "sentiment_classified"
+    ), f"Test Failed ({description}): Action was incorrect."
     assert "data" in result, f"Test Failed ({description}): Missing data key."
     data = result["data"]
 
-    assert "sentiment_label" in data, (
-        f"Test Failed ({description}): Missing sentiment_label."
-    )
-    assert isinstance(data["sentiment_label"], str), (
-        f"Test Failed ({description}): Label should be string."
-    )
-    assert "star" in data["sentiment_label"], (
-        f"Test Failed ({description}): Label format unexpected (should contain 'star' or 'stars')."
-    )
+    assert (
+        "sentiment_label" in data
+    ), f"Test Failed ({description}): Missing sentiment_label."
+    assert isinstance(
+        data["sentiment_label"], str
+    ), f"Test Failed ({description}): Label should be string."
+    assert (
+        "star" in data["sentiment_label"]
+    ), f"Test Failed ({description}): Label format unexpected (should contain 'star' or 'stars')."
 
-    assert "sentiment_rating" in data, (
-        f"Test Failed ({description}): Missing sentiment_rating."
-    )
-    assert isinstance(data["sentiment_rating"], int), (
-        f"Test Failed ({description}): Rating should be int."
-    )
-    assert 1 <= data["sentiment_rating"] <= 5, (
-        f"Test Failed ({description}): Rating out of range (1-5)."
-    )
+    assert (
+        "sentiment_rating" in data
+    ), f"Test Failed ({description}): Missing sentiment_rating."
+    assert isinstance(
+        data["sentiment_rating"], int
+    ), f"Test Failed ({description}): Rating should be int."
+    assert (
+        1 <= data["sentiment_rating"] <= 5
+    ), f"Test Failed ({description}): Rating out of range (1-5)."
     # Check if rating aligns with expectation (e.g., positive >= 4, negative <= 2)
     if expected_min_rating >= 4:  # Expecting positive
-        assert data["sentiment_rating"] >= expected_min_rating, (
-            f"Test Failed ({description}): Expected positive rating (>= {expected_min_rating}), got {data['sentiment_rating']}."
-        )
+        assert (
+            data["sentiment_rating"] >= expected_min_rating
+        ), f"Test Failed ({description}): Expected positive rating (>= {expected_min_rating}), got {data['sentiment_rating']}."
     elif (
         expected_min_rating == 1
     ):  # Expecting strictly negative (rating 1 or 2 is also acceptable negative)
-        assert data["sentiment_rating"] <= 2, (
-            f"Test Failed ({description}): Expected negative rating (<= 2), got {data['sentiment_rating']}."
-        )
+        assert (
+            data["sentiment_rating"] <= 2
+        ), f"Test Failed ({description}): Expected negative rating (<= 2), got {data['sentiment_rating']}."
     else:  # Expecting neutral-ish (allow 2, 3, 4 for input expected_min_rating=2)
-        assert 2 <= data["sentiment_rating"] <= 4, (
-            f"Test Failed ({description}): Expected neutral rating (2-4), got {data['sentiment_rating']}."
-        )
+        assert (
+            2 <= data["sentiment_rating"] <= 4
+        ), f"Test Failed ({description}): Expected neutral rating (2-4), got {data['sentiment_rating']}."
 
-    assert "confidence_score" in data, (
-        f"Test Failed ({description}): Missing confidence_score."
-    )
-    assert isinstance(data["confidence_score"], float), (
-        f"Test Failed ({description}): Score should be float."
-    )
-    assert 0.0 <= data["confidence_score"] <= 1.0, (
-        f"Test Failed ({description}): Score out of range (0-1)."
-    )
+    assert (
+        "confidence_score" in data
+    ), f"Test Failed ({description}): Missing confidence_score."
+    assert isinstance(
+        data["confidence_score"], float
+    ), f"Test Failed ({description}): Score should be float."
+    assert (
+        0.0 <= data["confidence_score"] <= 1.0
+    ), f"Test Failed ({description}): Score out of range (0-1)."
 
 
 def test_sentiment_classification_empty_text():

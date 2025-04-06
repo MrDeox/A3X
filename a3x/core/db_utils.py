@@ -86,29 +86,34 @@ def initialize_database():
 
         # --- Criação GARANTIDA de agent_state ---
         logger.info("Verificando/Criando tabela 'agent_state'...")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS agent_state (
                 agent_id TEXT PRIMARY KEY, 
                 last_code TEXT,
                 last_lang TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        """
+        )
         logger.info("Verificando/Criando trigger 'update_agent_state_updated_at'...")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TRIGGER IF NOT EXISTS update_agent_state_updated_at
             AFTER UPDATE ON agent_state FOR EACH ROW
             BEGIN
                 UPDATE agent_state SET updated_at = CURRENT_TIMESTAMP WHERE agent_id = OLD.agent_id;
             END;
-        """)
+        """
+        )
         conn.commit()  # Commit IMEDIATO para agent_state
         logger.info("Tabela 'agent_state' e trigger verificados/criados.")
         # --- Fim Bloco agent_state ---
 
         # --- Criação Tabelas Semantic Memory ---
         logger.info("Verificando/Criando tabela 'semantic_memory'...")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS semantic_memory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 content TEXT NOT NULL UNIQUE, -- Texto original
@@ -117,7 +122,8 @@ def initialize_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        """
+        )
         logger.info("Tabela 'semantic_memory' verificada/criada.")
 
         # Tenta criar tabela VSS (com try/except separado)
@@ -126,11 +132,13 @@ def initialize_database():
             logger.info("Extensão VSS funcional detectada.")
             EMBEDDING_DIM = 768  # Para ibm-granite
             logger.info("Verificando/Criando tabela virtual 'vss_semantic_memory'...")
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                  CREATE VIRTUAL TABLE IF NOT EXISTS vss_semantic_memory USING vss0(
                      embedding({EMBEDDING_DIM}) 
                  )
-             """)
+             """
+            )
             logger.info("Tabela virtual 'vss_semantic_memory' verificada/criada.")
         except sqlite3.OperationalError as e:
             logger.warning(

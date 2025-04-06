@@ -33,9 +33,7 @@ MOCK_LLM_RESPONSE_EMPTY = {"choices": [{"message": {"content": ""}}]}
 MOCK_LLM_RESPONSE_WITH_MARKDOWN = {
     "choices": [{"message": {"content": f"```python\n{MOCK_CODE}\n```"}}]
 }
-MOCK_LLM_RESPONSE_UNEXPECTED_FORMAT = {
-    "error": "unexpected format"  # Sem 'choices'
-}
+MOCK_LLM_RESPONSE_UNEXPECTED_FORMAT = {"error": "unexpected format"}  # Sem 'choices'
 
 # --- Testes com Pytest e Mocker ---
 

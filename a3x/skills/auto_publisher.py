@@ -8,6 +8,7 @@ from typing import Dict, Any
 # from core.skill_registry import register_skill # REMOVED
 from a3x.core.tools import skill  # ADDED
 from a3x.core.skills_utils import create_skill_response
+
 # from core.config import GITHUB_TOKEN, GITHUB_REPO, GITHUB_USERNAME, GUMROAD_API_KEY, GUMROAD_PRODUCT_ID # REMOVED - Variables not defined in config.py
 
 # Setup logging

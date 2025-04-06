@@ -3,7 +3,7 @@ from unittest.mock import mock_open, MagicMock, patch
 from pathlib import Path
 
 # Import the skill function
-from a3x.skills.file_manager import FileManagerSkill, TEXT_EXTENSIONS, MAX_READ_SIZE
+from a3x.skills.file_manager import FileManagerSkill, MAX_READ_SIZE
 
 # Import the actual WORKSPACE_ROOT
 from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT  # Use the real one
@@ -62,8 +62,9 @@ def mock_open_func(mocker):
 
 # == Read Action Tests (Testing wrapped function) ==
 
+
 @pytest.mark.asyncio
-@patch("builtins.open", new_callable=mock_open) # Correct syntax
+@patch("builtins.open", new_callable=mock_open)  # Correct syntax
 async def test_read_success(mock_open_func, tmp_path):
     """Test successful file reading via wrapped function."""
     filepath = "data/my_file.txt"
@@ -72,18 +73,20 @@ async def test_read_success(mock_open_func, tmp_path):
 
     # --- Mock Configuration ---
     resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
-    resolved_path_mock.suffix = ".txt" # Needs suffix for extension check
-    resolved_path_mock.stat.return_value = MagicMock(st_size=len(expected_content)) # Mock stat for size check
+    resolved_path_mock.suffix = ".txt"  # Needs suffix for extension check
+    resolved_path_mock.stat.return_value = MagicMock(
+        st_size=len(expected_content)
+    )  # Mock stat for size check
 
     # Configure builtins.open mock
     mock_open_func.return_value.read.return_value = expected_content
 
     # --- Execution ---
     result = await FileManagerSkill.read_file.__wrapped__(
-        file_manager_instance, # self
+        file_manager_instance,  # self
         resolved_path=resolved_path_mock,
         original_path_str=filepath,
-        path=filepath
+        path=filepath,
     )
 
     # --- Assertions ---
@@ -106,19 +109,19 @@ async def test_read_unsupported_extension(tmp_path):
     file_manager_instance = FileManagerSkill()
 
     resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
-    resolved_path_mock.suffix = ".zip" # Unsupported extension
+    resolved_path_mock.suffix = ".zip"  # Unsupported extension
 
     result = await FileManagerSkill.read_file.__wrapped__(
         file_manager_instance,
         resolved_path=resolved_path_mock,
         original_path_str=filepath,
-        path=filepath
+        path=filepath,
     )
 
     assert result["status"] == "error"
     assert result["action"] == "read_file_failed_unsupported_ext"
     assert "Extension '.zip' not supported" in result["data"]["message"]
-    resolved_path_mock.stat.assert_not_called() # Should fail before stat
+    resolved_path_mock.stat.assert_not_called()  # Should fail before stat
 
 
 @pytest.mark.asyncio
@@ -128,32 +131,34 @@ async def test_read_file_too_large(tmp_path):
     file_manager_instance = FileManagerSkill()
 
     resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
-    resolved_path_mock.suffix = ".txt" # Supported extension
-    resolved_path_mock.stat.return_value = MagicMock(st_size=MAX_READ_SIZE + 1) # Mock size check
+    resolved_path_mock.suffix = ".txt"  # Supported extension
+    resolved_path_mock.stat.return_value = MagicMock(
+        st_size=MAX_READ_SIZE + 1
+    )  # Mock size check
 
     result = await FileManagerSkill.read_file.__wrapped__(
         file_manager_instance,
         resolved_path=resolved_path_mock,
         original_path_str=filepath,
-        path=filepath
+        path=filepath,
     )
 
     assert result["status"] == "error"
     assert result["action"] == "read_file_failed_too_large"
     assert "File too large" in result["data"]["message"]
-    resolved_path_mock.stat.assert_called_once() # Stat is called
+    resolved_path_mock.stat.assert_called_once()  # Stat is called
 
 
 @pytest.mark.asyncio
-@patch("builtins.open", new_callable=mock_open) # Correct syntax
+@patch("builtins.open", new_callable=mock_open)  # Correct syntax
 async def test_read_permission_error(mock_open_func, tmp_path):
     """Test PermissionError during file read via wrapped function."""
     filepath = "restricted.txt"
     file_manager_instance = FileManagerSkill()
 
     resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
-    resolved_path_mock.suffix = ".txt" # Supported
-    resolved_path_mock.stat.return_value = MagicMock(st_size=50) # Size is okay
+    resolved_path_mock.suffix = ".txt"  # Supported
+    resolved_path_mock.stat.return_value = MagicMock(st_size=50)  # Size is okay
 
     # Configure builtins.open to raise PermissionError
     mock_open_func.side_effect = PermissionError("Permission denied by OS")
@@ -162,7 +167,7 @@ async def test_read_permission_error(mock_open_func, tmp_path):
         file_manager_instance,
         resolved_path=resolved_path_mock,
         original_path_str=filepath,
-        path=filepath
+        path=filepath,
     )
 
     assert result["status"] == "error"

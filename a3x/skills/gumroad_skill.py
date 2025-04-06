@@ -2,14 +2,13 @@
 # Placeholder for Gumroad API interaction skills
 
 import logging
-import os
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any
 import datetime
-import requests
 
 # print(f"DEBUG: sys.path in gumroad_skill.py: {sys.path}") # REMOVED DEBUGGING
 from a3x.core.tools import skill  # CHANGED: Import 'skill' decorator from core.tools
 from a3x.core.skills_utils import create_skill_response
+
 # from a3x.core.config import GUMROAD_API_KEY, GUMROAD_PRODUCT_ID  # Need Product ID too # COMMENTED OUT
 
 logger = logging.getLogger(__name__)

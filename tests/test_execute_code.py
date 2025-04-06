@@ -28,11 +28,9 @@ def test_execute_python_success(mocker):
     expected_stdout = "Success!\nDone"
 
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mock_run = mocker.patch( # noqa: F841
+    mock_run = mocker.patch(  # noqa: F841
         "subprocess.run",
-        return_value=create_mock_process(
-            stdout=expected_stdout, returncode=0
-        ),
+        return_value=create_mock_process(stdout=expected_stdout, returncode=0),
     )
 
     result = execute_code(code=code, language=DEFAULT_LANGUAGE)
@@ -45,7 +43,7 @@ def test_execute_python_success(mocker):
     assert "Código executado com sucesso" in result["data"]["message"]
 
     # Verificar se subprocess.run foi chamado corretamente (verificar args)
-    args, kwargs = mock_run.call_args # noqa: F821
+    args, kwargs = mock_run.call_args  # noqa: F821
     assert args[0][0] == "firejail"  # Comando base
     assert args[0][-1] == code  # Código passado como último argumento
     assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT  # Timeout padrão
@@ -58,7 +56,7 @@ def test_execute_with_stderr_on_success(mocker):
     expected_stderr = "Warning"
 
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mock_run = mocker.patch( # noqa: F841
+    mock_run = mocker.patch(  # noqa: F841
         "subprocess.run",
         return_value=create_mock_process(
             stdout=expected_stdout, stderr=expected_stderr, returncode=0
@@ -92,7 +90,7 @@ def test_execute_python_syntax_error(mocker):
 """
 
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mock_run = mocker.patch( # noqa: F841
+    mock_run = mocker.patch(  # noqa: F841
         "subprocess.run",
         return_value=create_mock_process(
             stdout="", stderr=simulated_stderr, returncode=1
@@ -121,7 +119,7 @@ def test_execute_python_runtime_error(mocker):
 """  # Exemplo
 
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mock_run = mocker.patch( # noqa: F841
+    mock_run = mocker.patch(  # noqa: F841
         "subprocess.run",
         return_value=create_mock_process(
             stdout="", stderr=simulated_stderr, returncode=1
@@ -151,9 +149,7 @@ def test_execute_timeout(mocker):
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
     mock_run = mocker.patch(
         "subprocess.run",
-        side_effect=subprocess.TimeoutExpired(
-            cmd="firejail", timeout=timeout_value
-        ),
+        side_effect=subprocess.TimeoutExpired(cmd="firejail", timeout=timeout_value),
     )
 
     result = execute_code(code=code, language=DEFAULT_LANGUAGE, timeout=timeout_value)
@@ -168,7 +164,7 @@ def test_execute_timeout(mocker):
     assert "stdout" not in result["data"]  # Não deve haver stdout/stderr em timeout
     assert "returncode" not in result["data"]
 
-    args, kwargs = mock_run.call_args # Should work now
+    args, kwargs = mock_run.call_args  # Should work now
     assert (
         kwargs.get("timeout") == timeout_value
     )  # Verifica se o timeout correto foi passado
@@ -178,7 +174,7 @@ def test_execute_firejail_not_found(mocker):
     """Testa o cenário onde o comando firejail não é encontrado."""
 
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mock_run = mocker.patch( # noqa: F841
+    mock_run = mocker.patch(  # noqa: F841
         "subprocess.run",
         side_effect=FileNotFoundError(
             "[Errno 2] No such file or directory: 'firejail'"
@@ -230,7 +226,7 @@ def test_execute_negative_timeout(mocker):
     result = execute_code(code=DEFAULT_CODE, language=DEFAULT_LANGUAGE, timeout=-5)
     # A execução deve prosseguir com o timeout padrão
     assert result["status"] == "success"
-    args, kwargs = mock_run.call_args # Should work now
+    args, kwargs = mock_run.call_args  # Should work now
     assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT  # Verifica se usou o default
 
 
@@ -299,5 +295,5 @@ def test_execute_zero_timeout(mocker):
     result = execute_code(code=DEFAULT_CODE, language=DEFAULT_LANGUAGE, timeout=0)
     # A execution should proceed with the default timeout
     assert result["status"] == "success"
-    args, kwargs = mock_run.call_args # Should work now
-    assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT # noqa: F821
+    args, kwargs = mock_run.call_args  # Should work now
+    assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT  # noqa: F821

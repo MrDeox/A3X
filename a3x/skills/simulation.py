@@ -3,10 +3,6 @@ import logging
 from typing import Dict, Any
 from a3x.core.tools import skill
 from a3x.core.llm_interface import call_llm  # <-- CORRECT IMPORT
-from a3x.core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
-import requests
-import json
-import re
 
 logger = logging.getLogger(__name__)
 

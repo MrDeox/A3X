@@ -5,6 +5,7 @@ from typing import Dict, Any, List, AsyncGenerator
 # Assuming necessary imports from core modules will be added
 # from core.tool_executor import execute_tool
 from a3x.core.tool_executor import execute_tool
+
 # Need to import CerebrumXAgent for type hinting if agent is passed
 # from .cerebrumx import CerebrumXAgent # Circular import? Pass necessary methods/attributes instead.
 # Consider passing agent methods/attributes directly or using a Protocol
@@ -226,9 +227,9 @@ async def execute_plan_with_reflection(
             execution_results.append(step_result)
             yield {
                 "type": "execution_step",
-                "step_index": step_index - 1
-                if step_decision != "modify"
-                else step_index,
+                "step_index": (
+                    step_index - 1 if step_decision != "modify" else step_index
+                ),
                 "result": step_result,
             }
         else:

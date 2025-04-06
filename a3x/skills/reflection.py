@@ -4,10 +4,6 @@ import re
 from typing import Dict, Any, List, Optional, Union
 from a3x.core.tools import skill
 from a3x.core.llm_interface import call_llm  # Corrected import
-from a3x.core.skills_utils import create_skill_response
-from a3x.core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
-import requests
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +71,17 @@ def _parse_reflection_output(response_text: str) -> Dict[str, Any]:
     name="reflect_plan_step",
     description="Analyzes a planned step and its simulated outcome to decide whether to execute, skip, or modify the plan.",
     parameters={
-        "step": (str, ...), # The planned step objective
-        "simulated_outcome": (str, ...), # The description of the simulated result
-        "context": (dict, None), # REVERTED for @skill compatibility (keep func signature)
-    }
+        "step": (str, ...),  # The planned step objective
+        "simulated_outcome": (str, ...),  # The description of the simulated result
+        "context": (
+            dict,
+            None,
+        ),  # REVERTED for @skill compatibility (keep func signature)
+    },
 )
-async def reflect_plan_step(step: str, simulated_outcome: str, context: Optional[Union[Dict, str]] = None) -> Dict[str, Any]:
+async def reflect_plan_step(
+    step: str, simulated_outcome: str, context: Optional[Union[Dict, str]] = None
+) -> Dict[str, Any]:
     """
     Reflects on a plan step and its simulated outcome to decide the next course of action.
 
@@ -112,7 +113,7 @@ async def reflect_plan_step(step: str, simulated_outcome: str, context: Optional
         llm_response_text = ""
         # <<< ADDED: Wrap prompt in message list structure >>>
         messages = [{"role": "user", "content": prompt}]
-        async for chunk in call_llm(messages, stream=False): # Pass messages list
+        async for chunk in call_llm(messages, stream=False):  # Pass messages list
             llm_response_text += chunk
 
         if not llm_response_text or not isinstance(llm_response_text, str):
@@ -163,14 +164,25 @@ async def reflect_plan_step(step: str, simulated_outcome: str, context: Optional
     name="reflect_on_execution",
     description="Analyzes the overall execution of a plan based on the objective, the plan itself, and the results of each step.",
     parameters={
-        "objective": (str, ...), # The original objective
-        "plan": (list, ...), # The final executed plan (list of strings)
-        "execution_results": (list, ...), # List of result dictionaries for each executed/skipped step
-        "context": (dict, None), # REVERTED for @skill compatibility (keep func signature)
-    }
+        "objective": (str, ...),  # The original objective
+        "plan": (list, ...),  # The final executed plan (list of strings)
+        "execution_results": (
+            list,
+            ...,
+        ),  # List of result dictionaries for each executed/skipped step
+        "context": (
+            dict,
+            None,
+        ),  # REVERTED for @skill compatibility (keep func signature)
+    },
 )
-def reflect_on_execution(objective: str, plan: List[str], execution_results: List[Dict[str, Any]], context: Optional[Union[dict, str]] = None) -> Dict[str, Any]:
-    return {} # ADDED placeholder return
+def reflect_on_execution(
+    objective: str,
+    plan: List[str],
+    execution_results: List[Dict[str, Any]],
+    context: Optional[Union[dict, str]] = None,
+) -> Dict[str, Any]:
+    return {}  # ADDED placeholder return
     # pass # REMOVED pass
     # ... existing code ...
 

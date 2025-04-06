@@ -1,8 +1,7 @@
 # tests/test_agent_run_errors.py
 import pytest
 import json
-from unittest.mock import AsyncMock, patch, MagicMock, ANY
-import asyncio # Ensure asyncio is imported
+from unittest.mock import AsyncMock, ANY
 
 # <<< IMPORT parse_llm_response >>>
 from a3x.core.agent_parser import parse_llm_response
@@ -61,18 +60,19 @@ async def test_react_agent_run_handles_parsing_error(
 
     # <<< NEW: Mock _process_llm_response directly on the agent instance >>>
     mock_process_response = mocker.patch.object(
-        agent, # Patch the method on the specific agent instance
+        agent,  # Patch the method on the specific agent instance
         "_process_llm_response",
         new_callable=AsyncMock,
         # Simulate the return value when parsing fails inside the method
         return_value={
             "type": "error",
-            "content": f"Failed to parse LLM response: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)", # Simulate a specific JSONDecodeError message
-        }
+            "content": "Failed to parse LLM response: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",  # Simulate a specific JSONDecodeError message
+        },
     )
 
     # Mock reflector to return appropriate advice for parsing error
-    mock_reflector = mocker.patch(
+    # F841: mock_reflector = mocker.patch(
+    mocker.patch(
         "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("stop_processing", "Invalid JSON response from LLM"),
@@ -87,22 +87,30 @@ async def test_react_agent_run_handles_parsing_error(
     try:
         async for result in agent.run(objective):
             results.append(result)
-            final_event = result # Keep track of the last yielded event
-    except Exception as e:
+            final_event = result  # Keep track of the last yielded event
+    except Exception:
         # We don't expect an exception here, but maybe a specific error type later
         # For parsing failure, the agent yields an error dict
         pass
 
     # Assertions
-    mock_process_response.assert_awaited_once() # Check that our patched method was awaited
+    mock_process_response.assert_awaited_once()  # Check that our patched method was awaited
 
     # <<< ADJUST ASSERTIONS: Check the final *summarized* response >>>
-    assert final_event is not None, "Agent run did not yield any final event."
-    assert final_event.get("type") == "final_answer", f"Expected final event type to be 'final_answer', but got {final_event.get('type')}"
+    assert final_event is not None, "Agent loop finished without yielding a final event"
+    assert (
+        final_event.get("type") == "final_answer"
+    ), f"Expected final event type to be 'final_answer', but got {final_event.get('type')}"
+    # Check if the summarization includes the error message stored previously
+    # F841: expected_error_content = "Agent did not specify an action."  # This is the error logged when parser fails now
+    # <<< ADJUST CHECK: The actual final error should be max iterations, which is yielded separately >>>
+    # assert expected_error_content in final_event.get("content", ""), f"Expected error '{expected_error_content}' not found in final event: {final_event}"
     # Check that the error message from the mocked _process_llm_response is included in the final summary content
     expected_error_content = "Failed to parse LLM response: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
     final_content = final_event.get("content", "")
-    assert expected_error_content in final_content, f"Expected error message '{expected_error_content}' not found in final content: '{final_content}'"
+    assert (
+        expected_error_content in final_content
+    ), f"Expected error message '{expected_error_content}' not found in final content: '{final_content}'"
 
     # Ensure DB save is still attempted even on error
     mock_save_state.assert_called_once()
@@ -110,30 +118,30 @@ async def test_react_agent_run_handles_parsing_error(
 
 @integration_marker
 @pytest.mark.asyncio
-async def test_react_agent_run_handles_max_iterations(
-    agent_instance, mock_db, mocker
-):
+async def test_react_agent_run_handles_max_iterations(agent_instance, mock_db, mocker):
     """Testa se o agente para e YIELDS um erro ao atingir o limite TOTAL de iterações."""
     mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     agent = agent_instance
     agent.max_iterations = 1  # Max iterations PER STEP
     objective = "List files repeatedly across multiple steps"
-    mock_plan = ["Step 1", "Step 2", "Step 3"] # Make plan long enough
-    max_total_iterations = agent.max_iterations * len(mock_plan) # = 3
+    mock_plan = ["Step 1", "Step 2", "Step 3"]  # Make plan long enough
+    max_total_iterations = agent.max_iterations * len(mock_plan)  # = 3
 
     # Mock the planner to return the multi-step plan
     mocker.patch("a3x.core.agent.generate_plan", return_value=mock_plan)
 
     # <<< DEFINE LOCAL ReAct RESPONSE STRING >>>
-    LLM_REACT_RESPONSE_LIST_FILES = '''
+    LLM_REACT_RESPONSE_LIST_FILES = """
 Thought: I need to list files in the current directory.
 Action: list_directory
 Action Input: {"directory": "."}
-'''
+"""
 
     # <<< MOCK _process_llm_response TO ALWAYS RETURN A VALID ACTION (FROM ReAct STRING) >>>
     # Parse the local ReAct string to get the structured data
-    parsed_list_files_response = parse_llm_response(LLM_REACT_RESPONSE_LIST_FILES, agent.agent_logger)
+    parsed_list_files_response = parse_llm_response(
+        LLM_REACT_RESPONSE_LIST_FILES, agent.agent_logger
+    )
     mock_process_response = mocker.patch.object(
         agent,
         "_process_llm_response",
@@ -142,24 +150,25 @@ Action Input: {"directory": "."}
             "thought": parsed_list_files_response[0],
             "action_name": parsed_list_files_response[1],
             "action_input": parsed_list_files_response[2],
-        }
+        },
     )
 
     # Mock tool execution to return success
     # <<< CORRECT PATCH TARGET FOR execute_tool >>>
     # mock_executor = mocker.patch("core.tool_executor.execute_tool", ...)
     mock_executor = mocker.patch(
-        "a3x.core.agent.execute_tool", # <<< Use core.agent.execute_tool >>>
+        "a3x.core.agent.execute_tool",  # <<< Use core.agent.execute_tool >>>
         new_callable=AsyncMock,
         return_value={
             "status": "success",
             "action": "directory_listed",
-            "data": {"items": ["file1.txt", "file2.py"]}
-        }
+            "data": {"items": ["file1.txt", "file2.py"]},
+        },
     )
 
     # Mock reflector to always suggest continuing
-    mock_reflector = mocker.patch(
+    # F841: mock_reflector = mocker.patch(
+    mocker.patch(
         "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("continue_processing", None),
@@ -180,16 +189,20 @@ Action Input: {"directory": "."}
     # assert mock_reflector.call_count >= 1
 
     # Check the last yielded item is the max iterations error dictionary
-    assert len(results) > 0 , "Agent run yielded no results"
+    assert len(results) > 0, "Agent run yielded no results"
     final_event = results[-1]
-    assert final_event.get("type") == "final_answer", "Final event should be the summarized answer"
+    assert (
+        final_event.get("type") == "final_answer"
+    ), "Final event should be the summarized answer"
     # Check if the summarization includes the error message stored previously
-    expected_error_content = "Agent did not specify an action." # This is the error logged when parser fails now
+    # F841: expected_error_content = "Agent did not specify an action."  # This is the error logged when parser fails now
     # <<< ADJUST CHECK: The actual final error should be max iterations, which is yielded separately >>>
-    # assert expected_error_content in final_event.get("content", ""), f"Expected error '{expected_error_content}' not found in final summary: {final_event.get('content')}"
+    # assert expected_error_content in final_event.get("content", ""), f"Expected error '{expected_error_content}' not found in final event: {final_event}"
     # Assert that the specific max iterations error was yielded at some point
     max_iter_error_event = {"type": "error", "content": "Max total iterations reached."}
-    assert max_iter_error_event in results, f"Expected max iteration error event not found in results: {results}"
+    assert (
+        max_iter_error_event in results
+    ), f"Expected max iteration error event not found in results: {results}"
 
     # Check DB save was called
     mock_save_state.assert_called_once()
@@ -217,12 +230,13 @@ async def test_react_agent_run_handles_failed_planning(agent_instance, mock_db, 
         return_value={
             "thought": "Planning failed, I'll try the objective directly...",
             "action_name": "final_answer",
-            "action_input": {"answer": fallback_response_content}
-        }
+            "action_input": {"answer": fallback_response_content},
+        },
     )
 
     # Mock reflector (might not be strictly needed if plan fails early, but good practice)
-    mock_reflector = mocker.patch(
+    # F841: mock_reflector = mocker.patch(
+    mocker.patch(
         "a3x.core.agent_reflector.reflect_on_observation", new_callable=AsyncMock
     )
 
@@ -239,10 +253,10 @@ async def test_react_agent_run_handles_failed_planning(agent_instance, mock_db, 
     # We will mock/check the objective and llm_url, use ANY for the others.
 
     mock_planner.assert_awaited_once_with(
-        objective,          # Check the objective string
-        ANY,                # Tool descriptions (complex to match exactly)
-        ANY,                # Logger instance
-        agent.llm_url       # Check the LLM URL used by the agent
+        objective,  # Check the objective string
+        ANY,  # Tool descriptions (complex to match exactly)
+        ANY,  # Logger instance
+        agent.llm_url,  # Check the LLM URL used by the agent
     )
 
     # Check if LLM was called (since planning failed, it should proceed with the objective)

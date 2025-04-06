@@ -32,10 +32,13 @@ try:
         LLAMA_SERVER_URL as DEFAULT_SERVER_URL,
         CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE,
     )
+
     # from core.db_utils import initialize_database
     from a3x.core.db_utils import initialize_database
+
     # from core.cerebrumx import CerebrumXAgent
     from a3x.core.cerebrumx import CerebrumXAgent
+
     # from core.llm_interface import call_llm # F401
     # from core.tools import load_skills # F401
     # from core.logging_config import setup_logging
@@ -352,9 +355,9 @@ async def _handle_task_argument(agent: CerebrumXAgent, task_arg: str):
                     Panel(
                         json.dumps(result, indent=2, ensure_ascii=False),
                         title=f"Task {task_index + 1} ({skill_name}) Result",
-                        border_style="green"
-                        if result.get("status") == "success"
-                        else "red",
+                        border_style=(
+                            "green" if result.get("status") == "success" else "red"
+                        ),
                     )
                 )
                 console.rule()  # Separator between tasks

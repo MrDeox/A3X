@@ -1,11 +1,12 @@
 import pytest
-from pathlib import Path # Import real Path
-from unittest.mock import patch, MagicMock
+from pathlib import Path  # Import real Path
+from unittest.mock import MagicMock
 
 # Import the skill function
 from a3x.skills.file_manager import FileManagerSkill
 
 # Remove MOCK_WORKSPACE_ROOT and mock_resolve helper if not needed by other tests
+
 
 # Test the wrapped function directly
 @pytest.mark.asyncio
@@ -25,11 +26,11 @@ async def test_append_to_file_success(tmp_path):
 
     # --- Execution ---
     result = await FileManagerSkill.append_to_file.__wrapped__(
-        file_manager_instance, # self
+        file_manager_instance,  # self
         resolved_path=resolved_path_mock,
         original_path_str=original_path,
         content=content_to_append,
-        path=original_path # Pass original path too
+        path=original_path,  # Pass original path too
     )
 
     # --- Assertions ---
@@ -40,7 +41,9 @@ async def test_append_to_file_success(tmp_path):
 
     # Verify open and write calls on the resolved_path_mock
     resolved_path_mock.parent.mkdir.assert_called_once_with(parents=True, exist_ok=True)
-    resolved_path_mock.open.assert_called_once_with("a", encoding="utf-8") # Use resolved_path_mock.open
+    resolved_path_mock.open.assert_called_once_with(
+        "a", encoding="utf-8"
+    )  # Use resolved_path_mock.open
     mock_file_handle.write.assert_called_once_with(content_to_append)
 
 
@@ -62,12 +65,14 @@ async def test_append_to_file_no_newline(tmp_path):
         resolved_path=resolved_path_mock,
         original_path_str=original_path,
         content=content_to_append,
-        path=original_path
+        path=original_path,
     )
 
     assert result["status"] == "success"
     resolved_path_mock.parent.mkdir.assert_called_once_with(parents=True, exist_ok=True)
-    resolved_path_mock.open.assert_called_once_with("a", encoding="utf-8") # Use resolved_path_mock.open
+    resolved_path_mock.open.assert_called_once_with(
+        "a", encoding="utf-8"
+    )  # Use resolved_path_mock.open
     mock_file_handle.write.assert_called_once_with(expected_content)
 
 
@@ -88,18 +93,21 @@ async def test_append_to_file_permission_error(tmp_path):
         resolved_path=resolved_path_mock,
         original_path_str=original_path,
         content=content_to_append,
-        path=original_path
+        path=original_path,
     )
 
     # Check results for error
-    assert result["status"] == "error" # Check status is error
+    assert result["status"] == "error"  # Check status is error
     assert result["action"] == "append_failed"
     assert "Permission denied" in result["data"]["message"]
     assert original_path in result["data"]["message"]
 
     # Verify mkdir and open were called
     resolved_path_mock.parent.mkdir.assert_called_once_with(parents=True, exist_ok=True)
-    resolved_path_mock.open.assert_called_once_with("a", encoding="utf-8") # Use resolved_path_mock.open
+    resolved_path_mock.open.assert_called_once_with(
+        "a", encoding="utf-8"
+    )  # Use resolved_path_mock.open
+
 
 # Add test for IsADirectoryError if necessary (though should be caught by decorator in real use)
 # Add test for generic Exception if necessary
