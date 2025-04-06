@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from pathlib import Path
 
 # Import the skill function
@@ -13,12 +13,13 @@ from skills.file_manager import FileManagerSkill
 
 # Removed mock_decorator_logic helper
 
+
 @pytest.mark.asyncio
 # Removed decorator patch and old fixtures
 async def test_list_success_files_and_dirs(tmp_path):
     """Test successfully listing a directory via wrapped function."""
     directory = "src/components"
-    file_manager_instance = FileManagerSkill() # Need instance for self
+    file_manager_instance = FileManagerSkill()  # Need instance for self
 
     # --- Mock Configuration ---
     resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
@@ -26,7 +27,7 @@ async def test_list_success_files_and_dirs(tmp_path):
     # Mock workspace_root on the instance for relative_to calculation
     # Assuming the instance has workspace_root correctly set
     # We might need to mock self.workspace_root.resolve() if it's called
-    file_manager_instance.workspace_root = Path("/mock/workspace") # Set a mock root
+    file_manager_instance.workspace_root = Path("/mock/workspace")  # Set a mock root
     mock_workspace_resolved = file_manager_instance.workspace_root.resolve()
 
     # Mock items returned by iterdir
@@ -55,14 +56,14 @@ async def test_list_success_files_and_dirs(tmp_path):
         resolved_path=resolved_path_mock,
         original_path_str=directory,
         directory=directory,
-        extension=None # Assuming default or not used here
+        extension=None,  # Assuming default or not used here
     )
 
     # Expected items based on the mocked relative_to paths
     expected_items = sorted(
         [
             f"{directory}/Button.tsx",
-            f"{directory}/utils/", # Add trailing slash for dirs
+            f"{directory}/utils/",  # Add trailing slash for dirs
             f"{directory}/Card.tsx",
         ]
     )
@@ -98,7 +99,7 @@ async def test_list_empty_directory(tmp_path):
         resolved_path=resolved_path_mock,
         original_path_str=directory,
         directory=directory,
-        extension=None
+        extension=None,
     )
 
     assert result["status"] == "success"
@@ -119,24 +120,27 @@ async def test_list_permission_error(tmp_path):
     resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
     # resolved_path_mock.is_dir.return_value = True # Not needed
     # Configure iterdir to raise PermissionError
-    resolved_path_mock.iterdir.side_effect = PermissionError("Permission denied to list")
+    resolved_path_mock.iterdir.side_effect = PermissionError(
+        "Permission denied to list"
+    )
 
     result = await FileManagerSkill.list_directory.__wrapped__(
         file_manager_instance,
         resolved_path=resolved_path_mock,
         original_path_str=directory,
         directory=directory,
-        extension=None
+        extension=None,
     )
 
     assert result["status"] == "error"
-    assert result["action"] == "list_files_failed" # Correct action name
+    assert result["action"] == "list_files_failed"  # Correct action name
     assert "Permission denied" in result["data"]["message"]
     assert directory in result["data"]["message"]
 
     # Verify calls up to the point of error
     # resolved_path_mock.is_dir.assert_called_once() # Not called
     resolved_path_mock.iterdir.assert_called_once()
+
 
 # Removed tests that only tested decorator validation logic:
 # - test_list_directory_not_found

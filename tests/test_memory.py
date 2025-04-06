@@ -22,9 +22,7 @@ def mock_embedding_functions(mocker):
     """Mocks functions from core.embeddings."""
     # Update paths for save.py
     # mock_get_save = mocker.patch( # F841
-    mocker.patch(
-        "skills.memory.save.get_embedding", return_value=MOCK_EMBEDDING_ARRAY
-    )
+    mocker.patch("skills.memory.save.get_embedding", return_value=MOCK_EMBEDDING_ARRAY)
     mocker.patch("skills.memory.save.EMBEDDING_DIM", MOCK_EMBEDDING_DIM)
     # Update paths for recall.py
     mock_get_recall = mocker.patch(

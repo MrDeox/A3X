@@ -139,7 +139,7 @@ async def fill_form_field(selector: str, value: str) -> Dict[str, Any]:
     name="get_page_content",
     description="Retrieves the HTML content of the currently open page, optionally filtered by a CSS selector.",
     parameters={
-        "selector": (str, None), # Type is str, default is None making it optional
+        "selector": (str, None),  # Type is str, default is None making it optional
     },
 )
 async def get_page_content(selector: Optional[str] = None) -> Dict[str, Any]:

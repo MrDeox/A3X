@@ -5,14 +5,17 @@ from typing import Dict, Any, List, AsyncGenerator, Optional
 # Import base agent and other necessary core components
 # from core.agent import ReactAgent
 from a3x.core.agent import ReactAgent
+
 # from core.tools import get_tool_descriptions  # <<< ADDED import
 from a3x.core.tools import get_tool_descriptions  # <<< ADDED import
+
 # from core.tool_executor import execute_tool  # <<< ADDED import
 from a3x.core.tool_executor import execute_tool  # <<< ADDED import
 
 # <<< ADDED Import for new execution logic >>>
 # from core.execution_logic import execute_plan_with_reflection
 from a3x.core.execution_logic import execute_plan_with_reflection
+
 # Potentially import memory, reflection components later
 
 # Initialize logger for this module
@@ -92,9 +95,9 @@ class CerebrumXAgent(ReactAgent):  # Inheriting from ReactAgent for now
                     ),
                     "modification_request": {
                         "failed_step_index": step_index,
-                        "failed_step": plan[step_index]
-                        if step_index < len(plan)
-                        else "N/A",
+                        "failed_step": (
+                            plan[step_index] if step_index < len(plan) else "N/A"
+                        ),
                         "reason": reason,
                         "current_plan": plan,
                     },
@@ -117,7 +120,7 @@ class CerebrumXAgent(ReactAgent):  # Inheriting from ReactAgent for now
                     # modification_needed = ( # F841
                     #     False  # Reset flag, allow execution_logic to skip the step
                     # )
-                    pass # Flag is not actually used, just log and let logic proceed
+                    pass  # Flag is not actually used, just log and let logic proceed
                 else:
                     cerebrumx_logger.error(
                         "Re-planning failed or did not change the plan. Execution will continue skipping modified step."
@@ -125,7 +128,7 @@ class CerebrumXAgent(ReactAgent):  # Inheriting from ReactAgent for now
                     # modification_needed = ( # F841
                     #     False  # Reset flag, allow execution_logic to skip the step
                     # )
-                    pass # Flag is not actually used, just log and let logic proceed
+                    pass  # Flag is not actually used, just log and let logic proceed
 
         # --- 6. Reflexão (Pós-Execução Geral) ---
         cerebrumx_logger.info("--- Iniciando Reflexão Pós-Execução ---")

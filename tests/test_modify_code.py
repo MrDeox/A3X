@@ -37,12 +37,8 @@ MOCK_LLM_RESPONSE_WITH_MARKDOWN = {
 MOCK_LLM_RESPONSE_NO_CHANGE = {
     "choices": [{"message": {"content": ORIGINAL_CODE}}]  # Retorna o original
 }
-MOCK_LLM_RESPONSE_EMPTY = {
-    "choices": [{"message": {"content": ""}}]  # Conteúdo vazio
-}
-MOCK_LLM_RESPONSE_UNEXPECTED_FORMAT = {
-    "error": "unexpected format"  # Sem 'choices'
-}
+MOCK_LLM_RESPONSE_EMPTY = {"choices": [{"message": {"content": ""}}]}  # Conteúdo vazio
+MOCK_LLM_RESPONSE_UNEXPECTED_FORMAT = {"error": "unexpected format"}  # Sem 'choices'
 
 # --- Testes ---
 

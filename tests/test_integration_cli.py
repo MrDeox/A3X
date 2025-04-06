@@ -159,39 +159,39 @@ def test_react_gen_mod_exec():
     print(stderr)
     print("--- Fim da Saída ---")
 
-    assert return_code == 0, (
-        f"O script CLI saiu com código de erro {return_code}. Stderr:\n{stderr}"
-    )
+    assert (
+        return_code == 0
+    ), f"O script CLI saiu com código de erro {return_code}. Stderr:\n{stderr}"
 
     # Verifica geração (substrings)
-    assert "Action: generate_code" in stdout, (
-        "Ação 'generate_code' não foi registrada na saída."
-    )
-    assert "def dobrar" in stdout, (
-        "Definição da função 'dobrar' não encontrada na saída."
-    )  # Verifica início da definição
+    assert (
+        "Action: generate_code" in stdout
+    ), "Ação 'generate_code' não foi registrada na saída."
+    assert (
+        "def dobrar" in stdout
+    ), "Definição da função 'dobrar' não encontrada na saída."  # Verifica início da definição
 
     # Verifica modificação (substrings)
-    assert "Action: modify_code" in stdout, (
-        "Ação 'modify_code' não foi registrada na saída."
-    )
-    assert "print(dobrar(15))" in stdout, (
-        "Chamada 'print(dobrar(15))' não encontrada na saída."
-    )
+    assert (
+        "Action: modify_code" in stdout
+    ), "Ação 'modify_code' não foi registrada na saída."
+    assert (
+        "print(dobrar(15))" in stdout
+    ), "Chamada 'print(dobrar(15))' não encontrada na saída."
     # Simplifica asserção da observação de modify_code
     assert (
         "Observação: Código de o último código na memória modificado com sucesso."
         in stdout
     ), "Msg sucesso modify_code não encontrada."
     # Verifica o início do bloco, não precisa ser exatamente 'def dobrar(numero):' se a implementação mudar
-    assert "Código Modificado:\n```python\ndef dobrar" in stdout, (
-        "Bloco código modificado não encontrado."
-    )
+    assert (
+        "Código Modificado:\n```python\ndef dobrar" in stdout
+    ), "Bloco código modificado não encontrado."
 
     # Verifica execução (substrings)
-    assert "Action: execute_code" in stdout, (
-        "Ação 'execute_code' não foi registrada na saída."
-    )
+    assert (
+        "Action: execute_code" in stdout
+    ), "Ação 'execute_code' não foi registrada na saída."
     # Simplifica asserção da observação de execute_code
     # A mensagem pode variar um pouco ("(o último código...)", "(da memória)")
     assert (
@@ -201,24 +201,24 @@ def test_react_gen_mod_exec():
     stdout_marker = "Saída da Execução (stdout):"
     assert stdout_marker in stdout, f"Marcador '{stdout_marker}' não encontrado."
     stdout_start_index = stdout.find(stdout_marker)
-    assert stdout_start_index != -1, (
-        f"Índice do marcador '{stdout_marker}' não encontrado."
-    )
+    assert (
+        stdout_start_index != -1
+    ), f"Índice do marcador '{stdout_marker}' não encontrado."
     # Procura '30' na string *após* o marcador
-    assert "30" in stdout[stdout_start_index:], (
-        "Resultado '30' não encontrado após marcador stdout."
-    )
+    assert (
+        "30" in stdout[stdout_start_index:]
+    ), "Resultado '30' não encontrado após marcador stdout."
 
     # Verifica a resposta final (substring)
     # A resposta exata pode variar, mas deve conter '30'
     assert "[A³X]:" in stdout, "Resposta final do A³X não encontrada."
     final_answer_start_index = stdout.rfind("[A³X]:")  # Encontra a última ocorrência
-    assert final_answer_start_index != -1, (
-        "Índice da resposta final '[A³X]:' não encontrado."
-    )
-    assert "30" in stdout[final_answer_start_index:], (
-        "Resultado '30' não encontrado na resposta final do A³X."
-    )
+    assert (
+        final_answer_start_index != -1
+    ), "Índice da resposta final '[A³X]:' não encontrado."
+    assert (
+        "30" in stdout[final_answer_start_index:]
+    ), "Resultado '30' não encontrado na resposta final do A³X."
     print("  >> Resposta final encontrada e contém '30'.")
 
 
@@ -237,14 +237,14 @@ def test_react_search_web():
     print(stderr)
     print("--- Fim da Saída ---")
 
-    assert return_code == 0, (
-        f"O script CLI saiu com código de erro {return_code}. Stderr:\n{stderr}"
-    )
+    assert (
+        return_code == 0
+    ), f"O script CLI saiu com código de erro {return_code}. Stderr:\n{stderr}"
 
     # Verifica se a ferramenta foi chamada
-    assert "Action: search_web" in stdout, (
-        "Ação 'search_web' não foi registrada na saída."
-    )
+    assert (
+        "Action: search_web" in stdout
+    ), "Ação 'search_web' não foi registrada na saída."
 
     # Simplifica asserção da observação da busca
     assert (
@@ -255,9 +255,9 @@ def test_react_search_web():
     assert "Resultados (snippets):" in stdout, "Observação de snippets não encontrada."
 
     # Flexibiliza a asserção da resposta final (verifica apenas a parte essencial)
-    assert "[A³X]: A capital da França é Paris" in stdout, (
-        "Resposta final contendo 'A capital da França é Paris' não encontrada."
-    )
+    assert (
+        "[A³X]: A capital da França é Paris" in stdout
+    ), "Resposta final contendo 'A capital da França é Paris' não encontrada."
     print("  >> Resposta final encontrada contendo: 'A capital da França é Paris'")
 
 
@@ -373,16 +373,14 @@ def test_react_list_files(managed_llama_server):  # Added fixture
     print(stderr)
     print("--- Fim da Saída ---")
 
-    assert return_code == 0, (
-        f"O script CLI saiu com código de erro {return_code}. Stderr:\n{stderr}"
-    )
+    assert (
+        return_code == 0
+    ), f"O script CLI saiu com código de erro {return_code}. Stderr:\n{stderr}"
 
     # Verifica se a ferramenta manage_files foi chamada com a ação list
     assert (
         "Action: list_files" in stdout or 'Action Input: {"action": "list"' in stdout
-    ), (
-        "Ação 'list_files' ou 'manage_files' com action 'list' não foi registrada na saída."
-    )
+    ), "Ação 'list_files' ou 'manage_files' com action 'list' não foi registrada na saída."
 
     # Simplifica asserção da observação da listagem
     assert "Observação: Nenhum arquivo" in stdout or (

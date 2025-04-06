@@ -2,9 +2,12 @@ import pytest
 import os
 import sys
 from unittest.mock import MagicMock
+
 # Assume que core.config pode ser importado para testar TAVILY_ENABLED
 try:
-    from skills.web_search import skill_search_web#, TAVILY_ENABLED, TAVILY_API_KEY # F401
+    from skills.web_search import (
+        skill_search_web,
+    )  # , TAVILY_ENABLED, TAVILY_API_KEY # F401
 except ImportError as e:
     # Log the error for better debugging if skip occurs
     print(f"[Test Setup Warning] Could not import skills.web_search: {e}")

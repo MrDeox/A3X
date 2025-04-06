@@ -6,11 +6,10 @@ import re
 from typing import Dict, Any
 
 # from core.tools import skill
-from a3x.core.tools import skill
+
 # from core.skills_utils import create_skill_response
-from a3x.core.skills_utils import create_skill_response
+
 # from core.code_safety import is_safe_ast # Import safety check
-from a3x.core.code_safety import is_safe_ast # Import safety check
 
 # Use configurações centralizadas
 try:

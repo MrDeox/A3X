@@ -1,16 +1,11 @@
 # tests/test_agent_run_basic.py
 import pytest
 import json
-from unittest.mock import MagicMock, AsyncMock, patch, ANY
+from unittest.mock import MagicMock, AsyncMock, ANY
 import logging
 import asyncio
-import os
-import pytest_asyncio
 
 # Import necessary components (adjust paths if needed)
-from a3x.core.tools import get_tool_descriptions
-from a3x.core.agent import ReactAgent
-from tests.conftest import TEST_SERVER_HOST, TEST_SERVER_PORT
 
 # Import exception type if needed for specific error tests, e.g.:
 from requests.exceptions import HTTPError
@@ -35,13 +30,13 @@ integration_marker = pytest.mark.integration
 def LLM_JSON_RESPONSE_LIST_FILES():
     """Mock LLM response requesting to list files."""
     # <<< REFORMAT TO ReAct TEXT FORMAT >>>
-    return '''
+    return """
 Thought: The user wants to list files in the current directory. I should use the list_files tool.
 Action: list_files
 Action Input: {
   "directory": "."
 }
-'''
+"""
 
 
 @pytest.fixture
@@ -65,11 +60,11 @@ def LLM_JSON_RESPONSE_LIST_FILES_FINAL(LIST_FILES_RESULT_SUCCESS):
     action_input_dict = {"answer": f"Found files: {file_list_json_str}"}
     action_input_json_str = json.dumps(action_input_dict)
 
-    return f'''
+    return f"""
 Thought: I have successfully listed the files. Now I need to present the result to the user as the final answer.
 Action: final_answer
 Action Input: {action_input_json_str}
-'''
+"""
 
 
 @pytest.fixture
@@ -81,13 +76,15 @@ def mock_list_files_tool(LIST_FILES_RESULT_SUCCESS):
         action_input: dict,
         tools_dict: dict,
         agent_logger: logging.Logger,
-        agent_memory=None, # <<< ADD agent_memory and **kwargs >>>
-        **kwargs
+        agent_memory=None,  # <<< ADD agent_memory and **kwargs >>>
+        **kwargs,
     ):
         if tool_name == "list_files":  # Simplified check for the basic test
             return LIST_FILES_RESULT_SUCCESS
         # Log unexpected calls for debugging
-        agent_logger.warning(f"Mock received unexpected tool call: {tool_name} with {action_input}")
+        agent_logger.warning(
+            f"Mock received unexpected tool call: {tool_name} with {action_input}"
+        )
         return {"status": "error", "message": "Mock received unexpected tool call"}
 
     return AsyncMock(side_effect=mock_execute)
@@ -96,11 +93,11 @@ def mock_list_files_tool(LIST_FILES_RESULT_SUCCESS):
 # --- Fixture for test_react_agent_run_final_answer_direct ---
 @pytest.fixture
 def LLM_JSON_RESPONSE_HELLO_FINAL():
-    return '''
+    return """
 Thought: Objective is simple, just say hello.
 Action: final_answer
 Action Input: {"answer": "Hello there!"}
-'''
+"""
 
 
 # --- Fixtures for test_react_agent_run_handles_llm_call_error ---
@@ -173,15 +170,17 @@ async def test_react_agent_run_list_files(
     async def _gen1():
         yield LLM_JSON_RESPONSE_LIST_FILES
         # Generator implicitly stops after yielding once
+
     async def _gen2():
         yield LLM_JSON_RESPONSE_LIST_FILES_FINAL
         # Generator implicitly stops after yielding once
+
     # <<< ADD THIRD GENERATOR FOR STEP 2 >>>
     async def _gen3():
-        yield '''Thought: Step 2 is to provide the final answer. The previous step already did that.
+        yield """Thought: Step 2 is to provide the final answer. The previous step already did that.
 Action: final_answer
 Action Input: {"answer": "Plan completed successfully."}
-'''
+"""
         # Generator implicitly stops after yielding once
 
     mock_call_llm = mocker.patch("a3x.core.agent.call_llm")
@@ -198,12 +197,12 @@ Action Input: {"answer": "Plan completed successfully."}
 
     # Mock reflector (assume it continues the plan)
     # Use AsyncMock
-    mock_reflector = mocker.patch(
+    # F841: mock_reflector = mocker.patch(
+    mocker.patch(
         "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
-        return_value=("continue_plan", None), # Continue after list_files
+        return_value=("continue_plan", None),  # Continue after list_files
     )
-
 
     # Execute
     results = []
@@ -230,7 +229,6 @@ Action Input: {"answer": "Plan completed successfully."}
     # Extract observation passed to reflector
     # reflector_call_args = mock_reflector.call_args.kwargs
     # assert reflector_call_args.get("observation_dict") == LIST_FILES_RESULT_SUCCESS
-
 
     assert final_response is not None
     assert isinstance(final_response, dict)
@@ -267,15 +265,14 @@ async def test_react_agent_run_final_answer_direct(
         yield LLM_JSON_RESPONSE_HELLO_FINAL
         await asyncio.sleep(0)
 
-    mock_call_llm = mocker.patch(
-        "a3x.core.agent.call_llm"
-    )
+    mock_call_llm = mocker.patch("a3x.core.agent.call_llm")
     # Use side_effect with the generator function
     mock_call_llm.side_effect = mock_llm_hello_generator
 
     # Mock reflector to indicate plan completion
     # Use AsyncMock
-    mock_reflector = mocker.patch(
+    # F841: mock_reflector = mocker.patch(
+    mocker.patch(
         "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("plan_complete", None),
@@ -336,15 +333,14 @@ async def test_react_agent_run_handles_llm_call_error(
         yield
         await asyncio.sleep(0)
 
-    mock_call_llm = mocker.patch(
-        "a3x.core.agent.call_llm"
-    )
+    mock_call_llm = mocker.patch("a3x.core.agent.call_llm")
     # Use side_effect with the generator function
     mock_call_llm.side_effect = mock_llm_raise_error_generator
 
     # Mock reflector (assume it stops on LLM error for this test)
     # Use AsyncMock
-    mock_reflector = mocker.patch(
+    # F841: mock_reflector = mocker.patch(
+    mocker.patch(
         "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("stop_plan", None),
@@ -391,53 +387,56 @@ async def test_react_agent_run_handles_tool_execution_error(
     """Testa se o agente lida com um erro retornado pela execução de uma tool (agora com plano e reflector)."""
     # <<< PATCH save_agent_state AND GET THE MOCK OBJECT >>>
     mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
-    
+
     agent = agent_instance
     # mock_execute = mock_code_tools  # F841 - Get the mock function
 
     objective = "Execute este código Python: print(1/0)"
-    expected_plan = [objective]  # Planner might just pass the objective if it's simple enough
+    expected_plan = [
+        objective
+    ]  # Planner might just pass the objective if it's simple enough
 
     # Use AsyncMock - <<< CORRECT PATCH TARGET FOR generate_plan >>>
     mock_planner = mocker.patch(
-        "a3x.core.agent.generate_plan", new_callable=AsyncMock, return_value=expected_plan
+        "a3x.core.agent.generate_plan",
+        new_callable=AsyncMock,
+        return_value=expected_plan,
     )
 
     # <<< CORRECTED MOCK FOR call_llm >>>
     # Define the async generator function first
     async def mock_llm_tool_error_generator(*args, **kwargs):
         yield LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE
-        await asyncio.sleep(0) # Ensure the generator can be awaited properly if needed
+        await asyncio.sleep(0)  # Ensure the generator can be awaited properly if needed
 
     # Patch call_llm to *directly* return the generator object when called
-    mock_call_llm = mocker.patch(
-        "a3x.core.agent.call_llm"
-    )
+    mock_call_llm = mocker.patch("a3x.core.agent.call_llm")
     # Use side_effect with the generator function
     mock_call_llm.side_effect = mock_llm_tool_error_generator
 
     # Mock the tool executor to return the error
     mock_tool_executor = mocker.patch(
-        "a3x.core.agent.execute_tool", # <<< CORRECT PATCH TARGET >>>
-        return_value=EXECUTE_CODE_RESULT_ERROR
+        "a3x.core.agent.execute_tool",  # <<< CORRECT PATCH TARGET >>>
+        return_value=EXECUTE_CODE_RESULT_ERROR,
     )
-    
+
     # Mock reflector to decide to stop on error
     # Use AsyncMock
-    mock_reflector = mocker.patch(
+    # F841: mock_reflector = mocker.patch(
+    mocker.patch(
         "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("stop_plan", None),
     )
-    
+
     # Execute
     results = []
     async for result in agent.run(objective):
         results.append(result)
     final_response = results[-1] if results else None
-    
+
     # Verificações
-    mock_planner.assert_called_once() 
+    mock_planner.assert_called_once()
     # Check the correct mock was called
     mock_call_llm.assert_called_once()  # <<< Check the new mock object >>>
     mock_tool_executor.assert_called_once()
@@ -451,7 +450,9 @@ async def test_react_agent_run_handles_tool_execution_error(
     assert isinstance(final_response, dict)
     assert final_response.get("type") == "final_answer"
     # Check that the original tool error message is included in the final content
-    assert EXECUTE_CODE_RESULT_ERROR["data"]["message"] in final_response.get("content", "")
+    assert EXECUTE_CODE_RESULT_ERROR["data"]["message"] in final_response.get(
+        "content", ""
+    )
 
     # <<< ASSERT THE CORRECT MOCK WAS CALLED >>>
     # mock_db.assert_called_once()

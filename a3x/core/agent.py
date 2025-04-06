@@ -55,7 +55,9 @@ class ReactAgent:
         self.agent_id = "1"  # TODO: Make agent ID configurable/dynamic
         self.agent_logger = agent_logger
         self._memory: Dict[str, Any] = {}
-        self.llm_url = llm_url or os.getenv("LLM_API_URL") # Use env var if not provided
+        self.llm_url = llm_url or os.getenv(
+            "LLM_API_URL"
+        )  # Use env var if not provided
 
         # Load agent state if exists
         # <<< FIX: Use string "1" for agent_id >>>
@@ -63,7 +65,9 @@ class ReactAgent:
         if loaded_state:
             self._history = loaded_state.get("history", [])
             self._memory = loaded_state.get("memory", {})
-            agent_logger.info(f"[ReactAgent INIT] Estado do agente carregado para ID '1'. Memória: {list(self._memory.keys())}")
+            agent_logger.info(
+                f"[ReactAgent INIT] Estado do agente carregado para ID '1'. Memória: {list(self._memory.keys())}"
+            )
         self.max_iterations = MAX_REACT_ITERATIONS
         self._current_plan = None  # <<< Initialize plan >>>
         agent_logger.info(
@@ -114,7 +118,7 @@ class ReactAgent:
             # <<< REVERT: Use async for as call_llm likely always returns async generator >>>
             # llm_response_raw = await call_llm(prompt, llm_url=self.llm_url, stream=False) # OLD CORRECTION
             async for chunk in call_llm(prompt, llm_url=self.llm_url, stream=False):
-                 llm_response_raw += chunk
+                llm_response_raw += chunk
             agent_logger.info(f"{log_prefix} LLM Response received.")
             agent_logger.debug(f"{log_prefix} Raw LLM Response:\\n{llm_response_raw}")
 
@@ -150,7 +154,9 @@ class ReactAgent:
                 "type": "error",
                 "content": f"Failed to parse LLM response: {parse_err}",
             }
-        except Exception as llm_err:  # Catch other errors like connection issues during call_llm or general parsing
+        except (
+            Exception
+        ) as llm_err:  # Catch other errors like connection issues during call_llm or general parsing
             agent_logger.exception(f"{log_prefix} Error during LLM call or processing:")
             return {
                 "type": "error",
@@ -356,52 +362,79 @@ class ReactAgent:
 
             # <<< ADD FLAG and CONTENT STORE >>>
             max_total_reached = False
-            final_answer_content = None # Store content from last step's final answer
+            final_answer_content = None  # Store content from last step's final answer
 
             # <<< MAIN PLAN EXECUTION LOOP - ADD ITERATION CHECK BACK >>>
             # while current_step_index < len(plan_to_execute):
-            while current_step_index < len(plan_to_execute) and total_iterations < max_total_iterations:
+            while (
+                current_step_index < len(plan_to_execute)
+                and total_iterations < max_total_iterations
+            ):
                 # <<< REMOVED CHECK FROM HERE >>>
                 step_objective = plan_to_execute[current_step_index]
                 log_prefix_step = f"{log_prefix_base} (Plan Step {current_step_index + 1}/{len(plan_to_execute)})"
-                agent_logger.info(f"\n{log_prefix_step} (Objective: '{step_objective[:50]}...')")
+                agent_logger.info(
+                    f"\n{log_prefix_step} (Objective: '{step_objective[:50]}...')"
+                )
 
                 step_completed = False
                 react_iterations_this_step = 0
 
                 # <<< INNER ReAct LOOP FOR THE CURRENT STEP >>>
-                while not step_completed and react_iterations_this_step < self.max_iterations:
+                while (
+                    not step_completed
+                    and react_iterations_this_step < self.max_iterations
+                ):
                     # <<< REMOVED CHECK FROM HERE >>>
                     total_iterations += 1
                     react_iterations_this_step += 1
-                    log_prefix_react = f"{log_prefix_step} React Iter {react_iterations_this_step}"
+                    log_prefix_react = (
+                        f"{log_prefix_step} React Iter {react_iterations_this_step}"
+                    )
 
                     # Handle actual ReAct iteration
-                    async for event in self._perform_react_iteration(step_objective, log_prefix_react):
+                    async for event in self._perform_react_iteration(
+                        step_objective, log_prefix_react
+                    ):
                         # <<< YIELD ONLY INTERMEDIATE EVENTS, NOT step_final_answer >>>
                         if event.get("type") != "step_final_answer":
-                            yield event # Pass through non-final step events
+                            yield event  # Pass through non-final step events
 
                         if event.get("type") == "step_final_answer":
                             step_completed = True
                             # Store content if it's the last step
                             if current_step_index == len(plan_to_execute) - 1:
-                                final_answer_content = event.get("content") # Store content
-                                final_answer_yielded = True # Mark that we *have* a final answer
-                            break # Break inner loop
+                                final_answer_content = event.get(
+                                    "content"
+                                )  # Store content
+                                final_answer_yielded = (
+                                    True  # Mark that we *have* a final answer
+                                )
+                            break  # Break inner loop
                         elif event.get("type") == "error":
                             last_error_message = event.get("content")
-                            agent_logger.error(f"{log_prefix_react} Error during iteration: {last_error_message}")
-                            step_completed = True # Mark step as completed (due to error)
-                            break # Break inner loop
+                            agent_logger.error(
+                                f"{log_prefix_react} Error during iteration: {last_error_message}"
+                            )
+                            step_completed = (
+                                True  # Mark step as completed (due to error)
+                            )
+                            break  # Break inner loop
 
                 # Check iterations *per step*
-                if not step_completed and react_iterations_this_step >= self.max_iterations:
-                    agent_logger.warning(f"{log_prefix_step} Max iterations ({self.max_iterations}) reached for step {current_step_index + 1}. Moving to next step.")
-                    last_error_message = f"Max iterations reached for step {current_step_index + 1}"
+                if (
+                    not step_completed
+                    and react_iterations_this_step >= self.max_iterations
+                ):
+                    agent_logger.warning(
+                        f"{log_prefix_step} Max iterations ({self.max_iterations}) reached for step {current_step_index + 1}. Moving to next step."
+                    )
+                    last_error_message = (
+                        f"Max iterations reached for step {current_step_index + 1}"
+                    )
 
                 if max_total_reached:
-                    break # Break outer loop if total limit was hit inside inner loop
+                    break  # Break outer loop if total limit was hit inside inner loop
 
                 current_step_index += 1
 
@@ -427,7 +460,9 @@ class ReactAgent:
                 last_thought_or_obs = (
                     self._history[-1] if self._history else "No history available."
                 )
-                final_content = f"Plan execution concluded. Last state: {last_thought_or_obs}"
+                final_content = (
+                    f"Plan execution concluded. Last state: {last_thought_or_obs}"
+                )
                 if last_error_message:
                     final_content += f". Encountered error: {last_error_message}"
                 yield {
@@ -475,5 +510,5 @@ class ReactAgent:
     def _save_state(self):
         state = {"history": self._history, "memory": self._memory}
         # <<< FIX: Use string "1" for agent_id >>>
-        save_agent_state(agent_id="1", state=state) # Use self.agent_id later
-        agent_logger.info(f"[ReactAgent] Agent state saved for ID '1'.")
+        save_agent_state(agent_id="1", state=state)  # Use self.agent_id later
+        agent_logger.info("[ReactAgent] Agent state saved for ID '1'.")

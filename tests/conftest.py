@@ -5,10 +5,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import logging
 import subprocess
-import signal
 import time
-import json
 import requests
+
 # --- Core component imports for specs/instantiation ---
 from a3x.core.agent import ReactAgent  # Corrected import: ReactAgent
 from a3x.core.config import (  # Assuming these exist in your config
@@ -16,6 +15,7 @@ from a3x.core.config import (  # Assuming these exist in your config
     LLAMA_MODEL_PATH as DEFAULT_MODEL_PATH,
     CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE,
 )
+
 # from core.llm_interface import llm_interface # Removed problematic import
 # from core.db_utils import DatabaseManager # Removed import
 # from core.execution_logic import execute_tool # Removed import
@@ -63,7 +63,7 @@ DEFAULT_TEST_CONTEXT_SIZE = int(
 # Define the actual model path
 # Use absolute path for clarity in fixture
 # LLAMA_CPP_SERVER_PATH = "/home/arthur/projects/A3X/llama.cpp/build_rocm/bin/llama-server"  # Corrected path based on user-provided folder content
-LLAMA_CPP_SERVER_PATH = "/home/arthur/projects/A3X/llama.cpp/build_vulkan/bin/llama-server" # Using Vulkan build
+LLAMA_CPP_SERVER_PATH = "/home/arthur/projects/A3X/llama.cpp/build_vulkan/bin/llama-server"  # Using Vulkan build
 # REAL_MODEL_PATH = "/home/arthur/projects/A3X/models/test-model.gguf") # Old dummy model
 # REAL_MODEL_PATH = "/home/arthur/projects/A3X/models/gemma-3-4b-it-q4_0.gguf"  # Using the previous q4_0 model
 REAL_MODEL_PATH = "/home/arthur/projects/A3X/models/gemma-3-4b-it-Q4_K_M.gguf"  # <<< UPDATED TO USE Q4_K_M model >>>
@@ -91,12 +91,16 @@ def mock_db():
     mock.initialize_db.return_value = None
     mock.save_memory.return_value = None
     mock.load_memory.return_value = []  # Example: Assume loading returns an empty list
-    mock.recall_memories.return_value = []  # Example: Assume recall returns an empty list
+    mock.recall_memories.return_value = (
+        []
+    )  # Example: Assume recall returns an empty list
     # ADDED mock for CerebrumX test
-    mock.retrieve_relevant_context = AsyncMock(return_value={
-        "semantic_match": "Mocked semantic context from mock_db", 
-        "short_term_history": [] # Keep history simple
-    })
+    mock.retrieve_relevant_context = AsyncMock(
+        return_value={
+            "semantic_match": "Mocked semantic context from mock_db",
+            "short_term_history": [],  # Keep history simple
+        }
+    )
     mock.save_agent_state.return_value = None
     return mock
 
@@ -178,18 +182,22 @@ def cerebrumx_agent_instance(
     mock_tool_executor,
     mock_db,
     mock_llm_url,
-): # Re-use the same mock dependencies
+):  # Re-use the same mock dependencies
     """Provides a fully mocked CerebrumXAgent instance."""
     # Mock load_agent_state which might be called during init
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr("a3x.core.agent.load_agent_state", lambda *args, **kwargs: {}) # Assuming CerebrumXAgent also uses this
+        mp.setattr(
+            "a3x.core.agent.load_agent_state", lambda *args, **kwargs: {}
+        )  # Assuming CerebrumXAgent also uses this
         # Import CerebrumXAgent here to avoid circular dependency issues
-        from a3x.core.cerebrumx import CerebrumXAgent # Correct import path
+        from a3x.core.cerebrumx import CerebrumXAgent  # Correct import path
 
-        agent_obj = CerebrumXAgent(llm_url=mock_llm_url, system_prompt="mock_cerebrumx_prompt")
+        agent_obj = CerebrumXAgent(
+            llm_url=mock_llm_url, system_prompt="mock_cerebrumx_prompt"
+        )
         # ADDED: Explicitly assign the mock DB to the agent instance
         agent_obj._memory = mock_db
-    return agent_obj # Return the CerebrumXAgent object
+    return agent_obj  # Return the CerebrumXAgent object
 
 
 # --- NEW SESSION-SCOPED SERVER FIXTURE ---
@@ -207,7 +215,7 @@ def managed_llama_server_session(request):
     port = TEST_SERVER_PORT
     # Adjust context size and GPU layers as needed for your model/hardware
     ctx_size = DEFAULT_CONTEXT_SIZE
-    n_gpu_layers = 33  # Using 33 GPU layers as requested
+    # F841: n_gpu_layers = 33  # Using 33 GPU layers as requested
 
     # Check if server binary exists
     if not os.path.exists(llama_server_path):
@@ -238,10 +246,10 @@ def managed_llama_server_session(request):
     fixture_logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
     # server_log_file = open(SERVER_LOG_PATH, "w") # <<< REMOVING FILE OPEN
     # Use Popen for non-blocking start, DO NOT REDIRECT stdout/stderr
-    server_process = subprocess.Popen(
-        cmd # Removed stdout and stderr redirection
+    server_process = subprocess.Popen(cmd)  # Removed stdout and stderr redirection
+    fixture_logger.info(
+        f"llama-server process started (PID: {server_process.pid}). Waiting for readiness..."
     )
-    fixture_logger.info(f"llama-server process started (PID: {server_process.pid}). Waiting for readiness...")
 
     # --- Wait for server readiness ---
     base_url = f"http://{host}:{port}"
@@ -255,63 +263,77 @@ def managed_llama_server_session(request):
         try:
             # Check if process exited unexpectedly
             if server_process.poll() is not None:
-                 fixture_logger.error(f"llama-server process terminated unexpectedly with code {server_process.returncode}. Check pytest output for server logs.")
-                 break # Exit loop if process died
+                fixture_logger.error(
+                    f"llama-server process terminated unexpectedly with code {server_process.returncode}. Check pytest output for server logs."
+                )
+                break  # Exit loop if process died
 
-            response = requests.get(health_url, timeout=poll_interval) # Use short timeout for probe
+            response = requests.get(
+                health_url, timeout=poll_interval
+            )  # Use short timeout for probe
             if response.status_code == 200:
-                 fixture_logger.info("llama-server /health returned 200 OK. Waiting 1s extra for stabilization...")
-                 time.sleep(1.0) # Add a 1-second sleep for extra stabilization
-                 fixture_logger.info("llama-server should be stable now.")
-                 server_ready = True
-                 break
+                fixture_logger.info(
+                    "llama-server /health returned 200 OK. Waiting 1s extra for stabilization..."
+                )
+                time.sleep(1.0)  # Add a 1-second sleep for extra stabilization
+                fixture_logger.info("llama-server should be stable now.")
+                server_ready = True
+                break
             else:
-                 # Optional: Log non-200 status if needed for debugging
-                 # fixture_logger.debug(f"Server not ready yet, status: {response.status_code}")
-                 pass
+                # Optional: Log non-200 status if needed for debugging
+                # fixture_logger.debug(f"Server not ready yet, status: {response.status_code}")
+                pass
         except requests.exceptions.ConnectionError:
             # fixture_logger.debug("Server not ready yet (connection error).")
-            pass # Expected while server is starting
+            pass  # Expected while server is starting
         except requests.exceptions.Timeout:
             # fixture_logger.debug("Server not ready yet (timeout).")
-            pass # Expected if server is slow
+            pass  # Expected if server is slow
         except Exception as e:
-            fixture_logger.warning(f"Unexpected error during health check: {e}") # Log other errors
+            fixture_logger.warning(
+                f"Unexpected error during health check: {e}"
+            )  # Log other errors
 
         time.sleep(poll_interval)
     # --- End wait ---
 
-
     if not server_ready:
-         # Ensure process is terminated if it never became ready
-         if server_process.poll() is None:
-              fixture_logger.error(f"llama-server did not become ready within {max_wait_time} seconds. Terminating process.")
-              server_process.terminate()
-              try:
-                  server_process.wait(timeout=5)
-              except subprocess.TimeoutExpired:
-                  fixture_logger.warning("Server did not terminate gracefully, killing.")
-                  server_process.kill()
-         # server_log_file.close() # <<< REMOVING FILE CLOSE
-         pytest.fail(f"llama-server failed to start and become ready within {max_wait_time}s. Check pytest output for server logs.")
-
+        # Ensure process is terminated if it never became ready
+        if server_process.poll() is None:
+            fixture_logger.error(
+                f"llama-server did not become ready within {max_wait_time} seconds. Terminating process."
+            )
+            server_process.terminate()
+            try:
+                server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                fixture_logger.warning("Server did not terminate gracefully, killing.")
+                server_process.kill()
+        # server_log_file.close() # <<< REMOVING FILE CLOSE
+        pytest.fail(
+            f"llama-server failed to start and become ready within {max_wait_time}s. Check pytest output for server logs."
+        )
 
     yield base_url  # Yield the base URL for tests to use
 
     # Cleanup: Ensure the server process is terminated
     fixture_logger.info("Tearing down llama-server...")
-    if server_process.poll() is None: # Check if it's still running
+    if server_process.poll() is None:  # Check if it's still running
         server_process.terminate()
         try:
             server_process.wait(timeout=10)  # Wait for graceful termination
             fixture_logger.info("llama-server terminated gracefully.")
         except subprocess.TimeoutExpired:
-            fixture_logger.warning("llama-server did not terminate gracefully after 10s, killing.")
+            fixture_logger.warning(
+                "llama-server did not terminate gracefully after 10s, killing."
+            )
             server_process.kill()
-            server_process.wait() # Wait for kill
+            server_process.wait()  # Wait for kill
             fixture_logger.info("llama-server killed.")
     else:
-         fixture_logger.info(f"llama-server already terminated with code {server_process.returncode}.")
+        fixture_logger.info(
+            f"llama-server already terminated with code {server_process.returncode}."
+        )
 
     # server_log_file.close() # <<< REMOVING FILE CLOSE
     # fixture_logger.info("llama-server log file closed.") # <<< REMOVING LOG MSG
@@ -325,19 +347,19 @@ def mock_llm_url():
     """Fixture para fornecer uma URL mock para o LLM."""
     # Use a valid loopback address, potentially the one used by the test server
     # return "http://mock-llm-errors/v1/chat/completions" # Original problematic URL
-    return f"http://{TEST_SERVER_HOST}:{TEST_SERVER_PORT}/v1/chat/completions" # Use constants from top
+    return f"http://{TEST_SERVER_HOST}:{TEST_SERVER_PORT}/v1/chat/completions"  # Use constants from top
 
 
 @pytest.fixture
 def LLM_JSON_RESPONSE_EXECUTE_FAILING_CODE() -> str:
     # <<< REFORMAT TO ReAct TEXT FORMAT >>>
-    return '''
+    return """
 Thought: User wants to execute risky code that will likely fail. I need to use the execute_code tool.
 Action: execute_code
 Action Input: {
   "code": "print(1/0)",
   "language": "python"
 }
-'''
+"""
     # Original JSON string:
     # return '{"thought": "User wants to execute risky code.", "Action": "execute_code", "action_input": {"code": "print(1/0)", "language": "python"}}'

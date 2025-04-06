@@ -1,7 +1,9 @@
 # core/agent_reflector.py
 import json
 import logging
-from typing import List, Dict, Any, Optional, Tuple, Literal, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING, Literal
+
+# from a3x.core.llm_interface import call_llm # Removed unused import
 
 # Avoid circular import for type hinting
 if TYPE_CHECKING:
@@ -206,4 +208,3 @@ async def reflect_on_observation(
 
 
 # Note: We need to import Literal for the Decision type hint
-from typing import Literal

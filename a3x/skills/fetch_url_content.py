@@ -1,14 +1,12 @@
 # skills/fetch_url_content.py
 import logging
 import requests
-from bs4 import BeautifulSoup
-import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any
+from urllib.parse import urlparse
 
 # from core.tools import skill  # Import skill decorator
-from a3x.core.tools import skill  # Import skill decorator
+
 # from core.skills_utils import create_skill_response # Import utility function
-from a3x.core.skills_utils import create_skill_response # Import utility function
 
 # Importar BeautifulSoup e Readability se/quando usados
 # from readability import Document # Requires readability-lxml

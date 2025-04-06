@@ -7,9 +7,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 try:
     # from skills.code_generation import generate_code # F401
-    pass # Keep try block structure
+    pass  # Keep try block structure
 except ImportError:
-    pytest.skip("Não foi possível importar skills.code_generation", allow_module_level=True)
+    pytest.skip(
+        "Não foi possível importar skills.code_generation", allow_module_level=True
+    )
 
 # Simula uma resposta HTTP do servidor LLM contendo código e texto extra
 MOCK_LLM_CODE_RESPONSE = {

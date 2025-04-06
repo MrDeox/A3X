@@ -95,19 +95,23 @@ async def generate_plan(
     # 2. Call the LLM
     try:
         # <<< REVERTED: Use async for even for non-streaming, as call_llm always yields >>>
-        llm_response_raw = "" # Initialize raw response
+        llm_response_raw = ""  # Initialize raw response
         async for chunk in call_llm(
             planning_prompt_messages, llm_url=llm_url, stream=False
         ):
-             llm_response_raw += chunk # Accumulate (should be one chunk for stream=False)
+            llm_response_raw += (
+                chunk  # Accumulate (should be one chunk for stream=False)
+            )
 
         # Basic validation (optional, can be done during parsing)
         # if not isinstance(llm_response_raw, str):
         #     agent_logger.error(f"[Planner] LLM call yielded unexpected type: {type(llm_response_raw)}")
         #     return None
         if not llm_response_raw:
-             agent_logger.warning("[Planner] LLM call (non-streaming) yielded an empty response string.")
-             # Allow processing empty strings
+            agent_logger.warning(
+                "[Planner] LLM call (non-streaming) yielded an empty response string."
+            )
+            # Allow processing empty strings
 
         agent_logger.debug(f"[Planner] Raw LLM response:\n{llm_response_raw}")
     except Exception as e:
@@ -146,7 +150,7 @@ async def generate_plan(
         # <<< MODIFIED: Split type checking for more specific error logging >>>
         if not isinstance(plan, list):
             agent_logger.error(
-                 f"[Planner] LLM response is not a list: Parsed: {plan_str_for_logging}"
+                f"[Planner] LLM response is not a list: Parsed: {plan_str_for_logging}"
             )
             return None
 
@@ -174,13 +178,15 @@ async def generate_plan(
         #     return None
 
         # <<< If checks passed, the plan is valid >>>
-        if not plan: # Handle empty list case
+        if not plan:  # Handle empty list case
             agent_logger.warning(
                 "[Planner] LLM returned an empty plan list []. Objective might be unachievable or trivial."
             )
-            return [] # Return empty list, not None
+            return []  # Return empty list, not None
 
-        agent_logger.info(f"[Planner] Plan generated successfully with {len(plan)} steps.")
+        agent_logger.info(
+            f"[Planner] Plan generated successfully with {len(plan)} steps."
+        )
         return plan
 
     except json.JSONDecodeError as json_err:

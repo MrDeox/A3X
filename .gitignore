@@ -24,8 +24,10 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANAGE_DIR/
 
 # Virtual Environment
+.venv/
 venv/
 env/
 ENV/
@@ -56,25 +58,26 @@ htmlcov/
 
 # Sistema
 .DS_Store
-.env
 
 # Diretórios específicos
 logs/
 media/
 llama.cpp/build/
+locked/
+.a3x/
 
 # Outros
 *.tmp
 *.temp
 
-# Dependências compiladas (llama.cpp) - Ignora a pasta inteira
-llama.cpp/
+# Dependências compiladas (llama.cpp) - Ignora a pasta de build
+# Removido: llama.cpp/ (Deve ser rastreado se for submódulo)
 
 # Arquivos de sistema
 Thumbs.db
 
 # Arquivos .env (contêm segredos ou caminhos locais)
-.env node_modules/
+# Removido: .env node_modules/
 
 # LLM Models
 models/

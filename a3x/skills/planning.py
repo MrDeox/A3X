@@ -9,13 +9,12 @@ from core.prompt_builder import (
     build_planning_prompt,
 )  # Assuming this exists or will be created
 from core.llm_interface import call_llm
+
 # from core.skills_utils import create_skill_response
-from a3x.core.skills_utils import create_skill_response
+
 # from core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
-from a3x.core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
+
 # Need requests for HTTP call
-import requests
-import re
 
 # Define the system prompt for the hierarchical planner
 DEFAULT_PLANNER_SYSTEM_PROMPT = """
@@ -84,16 +83,20 @@ async def hierarchical_planner(
     plan_json_str = ""
     try:
         # <<< REVERTED: Use async for to consume the single item yielded by call_llm(stream=False) >>>
-        plan_json_str = "" # Initialize
+        plan_json_str = ""  # Initialize
         async for chunk in call_llm(prompt_messages, stream=False):
-            plan_json_str += chunk # Accumulate the single yielded string
+            plan_json_str += chunk  # Accumulate the single yielded string
 
         # Basic validation after accumulating
         if not isinstance(plan_json_str, str):
-            planner_logger.error(f"[PlanningSkill] LLM call yielded unexpected type: {type(plan_json_str)}")
-            return None # Or raise an error
+            planner_logger.error(
+                f"[PlanningSkill] LLM call yielded unexpected type: {type(plan_json_str)}"
+            )
+            return None  # Or raise an error
         if not plan_json_str:
-            planner_logger.warning("[PlanningSkill] LLM call yielded an empty response string.")
+            planner_logger.warning(
+                "[PlanningSkill] LLM call yielded an empty response string."
+            )
             # Handle empty string (e.g., return empty plan or None)
             return []
 
@@ -104,11 +107,19 @@ async def hierarchical_planner(
         try:
             plan_json_str_cleaned = plan_json_str.strip()
             # Remove potential markdown code block fences
-            if plan_json_str_cleaned.startswith("```json\n") and plan_json_str_cleaned.endswith("\n```"):
-                plan_json_str_cleaned = plan_json_str_cleaned[len("```json\n"):-len("\n```")]
-            elif plan_json_str_cleaned.startswith("```") and plan_json_str_cleaned.endswith("```"):
-                 plan_json_str_cleaned = plan_json_str_cleaned[len("```"):-len("```")]
-            plan_json_str_cleaned = plan_json_str_cleaned.strip() # Strip again after removing fences
+            if plan_json_str_cleaned.startswith(
+                "```json\n"
+            ) and plan_json_str_cleaned.endswith("\n```"):
+                plan_json_str_cleaned = plan_json_str_cleaned[
+                    len("```json\n") : -len("\n```")
+                ]
+            elif plan_json_str_cleaned.startswith(
+                "```"
+            ) and plan_json_str_cleaned.endswith("```"):
+                plan_json_str_cleaned = plan_json_str_cleaned[len("```") : -len("```")]
+            plan_json_str_cleaned = (
+                plan_json_str_cleaned.strip()
+            )  # Strip again after removing fences
 
             plan_list = json.loads(plan_json_str_cleaned)
         except json.JSONDecodeError as e:
@@ -163,7 +174,7 @@ async def hierarchical_planner(
             exc_info=True,
         )
         return None
-    except Exception as e:
+    except Exception:
         planner_logger.exception("Unexpected error during plan generation:")
         return None
 

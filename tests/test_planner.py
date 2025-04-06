@@ -3,7 +3,7 @@ import pytest
 import json
 import logging
 import requests  # Import requests *only* for exception types
-from unittest.mock import MagicMock, patch, AsyncMock  # Import AsyncMock
+from unittest.mock import MagicMock, patch  # Import AsyncMock
 
 # Import the functions/constants to be tested
 from core.planner import generate_plan
@@ -61,7 +61,7 @@ async def test_generate_plan_success(
     assert plan == expected_plan
     # mock_call_llm.assert_called_once() # Check that the mock was called
     # Redundant - checked above
-    call_args, call_kwargs = mock_call_llm.call_args # Use call_args for sync call
+    call_args, call_kwargs = mock_call_llm.call_args  # Use call_args for sync call
     messages = call_args[0]
     assert any(objective in msg["content"] for msg in messages if msg["role"] == "user")
     mock_agent_logger.info.assert_any_call(

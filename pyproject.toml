@@ -56,11 +56,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "pytest-asyncio",
-    "pytest-mock",
-    "ruff", # Optional: Linter/Formatter
-    "mypy", # Optional: Static type checker
+    "pytest>=8.3.5",
+    "pytest-mock>=3.14.0",
+    "pytest-asyncio>=0.26.0",
+    "pytest-cov>=5.0.0",
+    "pytest-anyio>=0.0.0",
+    "ruff>=0.6.2",
+    "black>=24.4.2",
 ]
 
 [project.scripts]
@@ -77,6 +79,11 @@ asyncio_mode = "auto"
 [tool.setuptools]
 # Include package data like prompts or schemas
 package-data = {"a3x" = ["py.typed", "prompts/*", "core/*.json"]}
+
+[tool.setuptools.packages.find]
+where = ["."]  # Look in the root directory
+include = ["a3x*"]  # Include only the 'a3x' directory and its subpackages
+exclude = ["tests*", "venv*", ".venv*"] # Ensure tests and venv are excluded
 
 
 # --- Optional: Ruff Linter/Formatter Configuration ---

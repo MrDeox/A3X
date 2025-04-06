@@ -2,9 +2,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import shutil
-import os
-import sys
-from typing import Dict, Any, Optional, List
+from typing import Dict, Optional
 
 # Corrected absolute import using alias
 from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT
@@ -212,8 +210,8 @@ class FileManagerSkill:
         description="Reads the content of a specified file within the workspace.",
         parameters={
             "path": (str, ...),
-            "start_line": (int, 0), # Default to start from the beginning
-            "end_line": (int, None), # REVERTED TYPE HINT for @skill compatibility
+            "start_line": (int, 0),  # Default to start from the beginning
+            "end_line": (int, None),  # REVERTED TYPE HINT for @skill compatibility
         },
     )
     @validate_workspace_path(arg_name="path", check_existence=True, target_type="file")
@@ -223,9 +221,9 @@ class FileManagerSkill:
         start_line: int = 0,
         end_line: int | None = None,
         # Injected by decorator:
-        resolved_path: Path = None, # Re-added = None
-        original_path_str: str = None, # Re-added = None
-        agent_memory: Optional[Dict] = None # Keep agent_memory optional if needed
+        resolved_path: Path = None,  # Re-added = None
+        original_path_str: str = None,  # Re-added = None
+        agent_memory: Optional[Dict] = None,  # Keep agent_memory optional if needed
     ) -> dict:
         """Reads file content. Path validation via decorator."""
         logger.debug(
@@ -333,9 +331,9 @@ class FileManagerSkill:
         overwrite: bool = False,
         create_backup_flag: bool = True,
         # Injected by decorator:
-        resolved_path: Path = None, # Re-added = None
-        original_path_str: str = None, # Re-added = None
-        agent_memory: Optional[Dict] = None # Keep agent_memory optional if needed
+        resolved_path: Path = None,  # Re-added = None
+        original_path_str: str = None,  # Re-added = None
+        agent_memory: Optional[Dict] = None,  # Keep agent_memory optional if needed
     ) -> dict:
         """Creates/overwrites file. Path validation via decorator."""
         logger.debug(

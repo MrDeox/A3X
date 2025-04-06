@@ -5,12 +5,12 @@ import logging
 from datetime import datetime
 import re
 from pathlib import Path
-from typing import Dict, Any
 
 from a3x.core.tools import skill
 from a3x.core.skills_utils import create_skill_response
 from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT
 from a3x.core.validators import validate_workspace_path
+
 # from a3x.core.config import GITHUB_TOKEN, GITHUB_REPO, GITHUB_USERNAME, GUMROAD_API_KEY, GUMROAD_PRODUCT_ID # COMMENTED OUT
 
 logger = logging.getLogger(__name__)
@@ -201,8 +201,8 @@ class PublisherSkill:
                 filepath=filepath,
                 title=title,
                 price=price,
-                resolved_path=None, # Dummy value
-                original_path_str=None, # Dummy value
+                resolved_path=None,  # Dummy value
+                original_path_str=None,  # Dummy value
             )
         else:
             logger.warning(f"Unsupported publishing target: '{target}'")
