@@ -44,6 +44,15 @@ htmlcov/
 .pytest_cache/
 .tox/
 
+# Cache
+.ruff_cache/
+
+# Build / Dist
+build/
+dist/
+*.egg-info/
+a3x.egg-info/
+
 # Logs
 *.log
 
@@ -52,9 +61,12 @@ htmlcov/
 .env.local
 .env.*.local
 
-# Database
+# Database / Data
 *.db
 *.sqlite3
+memory.db.*
+*.faissindex
+output/
 
 # Sistema
 .DS_Store
@@ -82,3 +94,6 @@ Thumbs.db
 # LLM Models
 models/
 !.gitkeep
+
+# Compiled Binaries / Specific Files
+llama-server
