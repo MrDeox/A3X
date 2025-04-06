@@ -161,7 +161,7 @@ async def reflect_on_observation(
                         "[Reflector] Auto-correction successful. Modified code received."
                     )
                     # Save corrected code to memory
-                    agent_instance.memory["last_code"] = modified_code
+                    agent_instance._memory["last_code"] = modified_code
                     agent_logger.info(
                         "[Reflector] Corrected code saved to memory['last_code']. Continuing plan."
                     )
