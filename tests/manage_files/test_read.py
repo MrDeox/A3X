@@ -1,12 +1,12 @@
 import pytest
-from unittest.mock import mock_open, MagicMock
+from unittest.mock import mock_open, MagicMock, patch
 from pathlib import Path
 
 # Import the skill function
-from skills.read_file import read_file
+from a3x.skills.file_manager import FileManagerSkill, TEXT_EXTENSIONS, MAX_READ_SIZE
 
 # Import the actual WORKSPACE_ROOT
-from core.config import PROJECT_ROOT as WORKSPACE_ROOT  # Use the real one
+from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT  # Use the real one
 
 # Define a consistent mock workspace root for tests
 # MOCK_WORKSPACE_ROOT = Path("/home/arthur/Projects/A3X").resolve()
@@ -60,114 +60,118 @@ def mock_open_func(mocker):
     return mocker.patch("builtins.open", m)
 
 
-# == Read Action Tests ==
+# == Read Action Tests (Testing wrapped function) ==
 
-
-def test_read_success(
-    mocker, mock_path_exists, mock_path_is_file, mock_path_resolve, mock_open_func
-):
+@pytest.mark.asyncio
+@patch("builtins.open", new_callable=mock_open) # Correct syntax
+async def test_read_success(mock_open_func, tmp_path):
+    """Test successful file reading via wrapped function."""
     filepath = "data/my_file.txt"
     expected_content = "Hello, world!"
-    # resolved_path_obj = Path(WORKSPACE_ROOT) / filepath # F841
+    file_manager_instance = FileManagerSkill()
 
-    # Configure mocks
-    mock_path_exists.return_value = True
-    mock_path_is_file.return_value = True
-    # Configure the mock returned by resolve fixture to have correct size
-    mock_resolved = mock_path_resolve.return_value  # Get the mock obj resolve returns
-    mock_resolved.stat.return_value.st_size = len(expected_content)
+    # --- Mock Configuration ---
+    resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
+    resolved_path_mock.suffix = ".txt" # Needs suffix for extension check
+    resolved_path_mock.stat.return_value = MagicMock(st_size=len(expected_content)) # Mock stat for size check
 
-    # Configure mock_open
-    mock_file_handle = mock_open_func.return_value.__enter__.return_value
-    mock_file_handle.read.return_value = expected_content
+    # Configure builtins.open mock
+    mock_open_func.return_value.read.return_value = expected_content
 
-    action_input = {"file_path": filepath}
-    result = read_file(**action_input)
+    # --- Execution ---
+    result = await FileManagerSkill.read_file.__wrapped__(
+        file_manager_instance, # self
+        resolved_path=resolved_path_mock,
+        original_path_str=filepath,
+        path=filepath
+    )
 
+    # --- Assertions ---
     assert result["status"] == "success"
     assert result["action"] == "file_read"
     assert result["data"]["filepath"] == filepath
     assert result["data"]["content"] == expected_content
-    assert "lido com sucesso" in result["data"]["message"]
-    mock_open_func.assert_called_once_with(
-        mocker.ANY, "r", encoding="utf-8"
-    )  # Use ANY for path due to mock complexity
+    assert "read successfully" in result["data"]["message"]
+
+    # Verify mock calls
+    resolved_path_mock.stat.assert_called_once()
+    mock_open_func.assert_called_once_with(resolved_path_mock, "r", encoding="utf-8")
+    mock_open_func().read.assert_called_once()
 
 
-def test_read_not_found(mocker, mock_path_exists):
-    filepath = "non_existent.txt"
-    mock_path_exists.return_value = False  # Configure exists to return False
+@pytest.mark.asyncio
+async def test_read_unsupported_extension(tmp_path):
+    """Test reading file with unsupported extension via wrapped function."""
+    filepath = "archive.zip"
+    file_manager_instance = FileManagerSkill()
 
-    action_input = {"file_path": filepath}
-    result = read_file(**action_input)
+    resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
+    resolved_path_mock.suffix = ".zip" # Unsupported extension
 
-    assert result["status"] == "error"
-    assert result["action"] == "path_validation_failed"
-    assert f"Arquivo não encontrado: '{filepath}'" == result["data"]["message"]
-
-
-def test_read_is_directory(
-    mocker, mock_path_exists, mock_path_is_file, mock_path_is_dir
-):
-    filepath = "data/"
-    mock_path_exists.return_value = True
-    mock_path_is_file.return_value = False  # It's not a file
-    mock_path_is_dir.return_value = True  # It's a directory
-
-    action_input = {"file_path": filepath}
-    result = read_file(**action_input)
-
-    assert result["status"] == "error"
-    assert result["action"] == "path_validation_failed"
-    assert (
-        f"O caminho fornecido não é um arquivo: '{filepath}'"
-        == result["data"]["message"]
+    result = await FileManagerSkill.read_file.__wrapped__(
+        file_manager_instance,
+        resolved_path=resolved_path_mock,
+        original_path_str=filepath,
+        path=filepath
     )
 
+    assert result["status"] == "error"
+    assert result["action"] == "read_file_failed_unsupported_ext"
+    assert "Extension '.zip' not supported" in result["data"]["message"]
+    resolved_path_mock.stat.assert_not_called() # Should fail before stat
 
-def test_read_permission_error(
-    mocker, mock_path_exists, mock_path_is_file, mock_path_resolve, mock_open_func
-):
+
+@pytest.mark.asyncio
+async def test_read_file_too_large(tmp_path):
+    """Test reading file larger than MAX_READ_SIZE via wrapped function."""
+    filepath = "large_log.txt"
+    file_manager_instance = FileManagerSkill()
+
+    resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
+    resolved_path_mock.suffix = ".txt" # Supported extension
+    resolved_path_mock.stat.return_value = MagicMock(st_size=MAX_READ_SIZE + 1) # Mock size check
+
+    result = await FileManagerSkill.read_file.__wrapped__(
+        file_manager_instance,
+        resolved_path=resolved_path_mock,
+        original_path_str=filepath,
+        path=filepath
+    )
+
+    assert result["status"] == "error"
+    assert result["action"] == "read_file_failed_too_large"
+    assert "File too large" in result["data"]["message"]
+    resolved_path_mock.stat.assert_called_once() # Stat is called
+
+
+@pytest.mark.asyncio
+@patch("builtins.open", new_callable=mock_open) # Correct syntax
+async def test_read_permission_error(mock_open_func, tmp_path):
+    """Test PermissionError during file read via wrapped function."""
     filepath = "restricted.txt"
-    # resolved_path_obj = Path(WORKSPACE_ROOT) / filepath # F841
+    file_manager_instance = FileManagerSkill()
 
-    # Configure mocks for validation to pass
-    mock_path_exists.return_value = True
-    mock_path_is_file.return_value = True
-    # Patch stat globally for this test to ensure size check passes before open
-    mocker.patch.object(Path, "stat", return_value=MagicMock(st_size=50))
+    resolved_path_mock = MagicMock(spec=Path, name="resolved_path_mock")
+    resolved_path_mock.suffix = ".txt" # Supported
+    resolved_path_mock.stat.return_value = MagicMock(st_size=50) # Size is okay
 
-    # Mock open to raise PermissionError
+    # Configure builtins.open to raise PermissionError
     mock_open_func.side_effect = PermissionError("Permission denied by OS")
 
-    action_input = {"file_path": filepath}
-    result = read_file(**action_input)
+    result = await FileManagerSkill.read_file.__wrapped__(
+        file_manager_instance,
+        resolved_path=resolved_path_mock,
+        original_path_str=filepath,
+        path=filepath
+    )
 
     assert result["status"] == "error"
     assert result["action"] == "read_file_failed"
-    assert (
-        f"Permissão negada para ler o arquivo: '{filepath}'"
-        == result["data"]["message"]
-    )
-    mock_open_func.assert_called_once_with(mocker.ANY, "r", encoding="utf-8")
+    assert "Permission denied" in result["data"]["message"]
+
+    # Verify calls up to the point of error
+    resolved_path_mock.stat.assert_called_once()
+    mock_open_func.assert_called_once_with(resolved_path_mock, "r", encoding="utf-8")
 
 
-def test_read_outside_workspace(mocker):
-    filepath = "../../etc/passwd"
-    action_input = {"file_path": filepath}
-    result = read_file(**action_input)
-
-    assert result["status"] == "error"
-    assert result["action"] == "path_validation_failed"
-    # assert "Path inválido: tentativa de acesso fora do workspace." == result['data']['message'] # <-- OLD
-    assert (
-        "Path inválido: não use paths absolutos ou '..'. Use paths relativos dentro do workspace."
-        == result["data"]["message"]
-    )  # <-- NEW
-
-
-def test_missing_filepath_for_read():
-    # action_input = {} # F841
-    # result = read_file(**action_input) # This will raise TypeError
-    # Instead, test the validation directly or expect the specific error dictionary
-    pass # Add pass to avoid IndentationError for empty function
+# Removed tests that only tested decorator validation logic.

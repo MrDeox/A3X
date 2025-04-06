@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a3x"
+version = "0.1.0" # You can update this as you develop
+description = "A3X Agent Project"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"} # Or choose another license
+# Add authors/maintainers if desired
+# authors = [
+#   { name="Your Name", email="you@example.com" },
+# ]
+# maintainers = [
+#   { name="Your Name", email="you@example.com" },
+# ]
+
+# Classifiers help users find your project
+# Full list: https://pypi.org/classifiers/
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # Match the license above
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # Copy dependencies from requirements.txt, pinning if desired
+    # Example format: "requests>=2.20", "numpy"
+    # From requirements.txt (add versions if known/needed):
+    "fastapi",
+    "uvicorn[standard]",
+    "requests",
+    "beautifulsoup4",
+    "python-dotenv",
+    "unstructured", # Added dependency
+    "langchain",
+    "langchain_community",
+    "langchain_core",
+    "langchain_openai", # Assuming openai is used, adjust if not
+    "tiktoken", # Often used with langchain/openai
+    "ollama", # If using Ollama locally
+    "pytest",
+    "pytest-asyncio",
+    "pytest-mock",
+    "httpx", # For async requests, often used by langchain/clients
+    "anyio", # For pytest-asyncio compatibility
+    "sqlalchemy", # Added dependency
+    "faiss-cpu", # or faiss-gpu if applicable
+    "pypdf", # Added dependency
+    "aiohttp", # Added based on llm_interface usage
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-mock",
+    "ruff", # Optional: Linter/Formatter
+    "mypy", # Optional: Static type checker
+]
+
+[project.scripts]
+# If you want to make assistant_cli.py runnable from anywhere after installation
+# assistant-cli = "a3x.cli.main:app" # Example path, adjust based on actual file/function
+assistant-cli = "a3x.assistant_cli:main" # Assuming main function exists
+
+[tool.pytest.ini_options]
+# Keep existing pytest settings if any
+# pythonpath = [".", "src"] # May need adjustment depending on structure
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.setuptools]
+# Include package data like prompts or schemas
+package-data = {"a3x" = ["py.typed", "prompts/*", "core/*.json"]}
+
+
+# --- Optional: Ruff Linter/Formatter Configuration ---
+# [tool.ruff]
+# line-length = 88
+# select = ["E", "F", "W", "I", "UP"] # Example rules
+# ignore = []
+
+# [tool.ruff.format]
+# quote-style = "double"
+
+# --- Optional: MyPy Static Type Checking Configuration ---
+# [tool.mypy]
+# python_version = "3.11"
+# warn_return_any = true
+# warn_unused_configs = true
+# exclude = ["\.venv", "build", "dist"] 

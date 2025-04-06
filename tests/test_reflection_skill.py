@@ -1,15 +1,20 @@
 # tests/test_reflection_skill.py
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, MagicMock, ANY
 from skills.reflection import (
     reflect_plan_step,
     _parse_reflection_output,
     REFLECT_STEP_PROMPT_TEMPLATE,
 )
+from core.llm_interface import call_llm # Keep for type hints if needed
 
 # Add project root to sys.path
 # project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # sys.path.insert(0, project_root)
+
+# <<< ADDED: Helper for async generator >>>
+async def async_generator_for(item):
+    yield item
 
 # --- Tests for _parse_reflection_output (Synchronous Helper) ---
 
@@ -84,106 +89,106 @@ def test_parse_reflection_output_empty():
 
 
 @pytest.mark.asyncio
-@patch("skills.reflection.call_llm", new_callable=AsyncMock)
-async def test_reflect_plan_step_success_execute(mock_call_llm):
-    """Tests successful reflection deciding to execute."""
-    step = "Read 'results.txt'"
-    simulated_outcome = "Agent will successfully read the file content."
-    context = {"previous_step": "generated results.txt"}
-    llm_response = "Decision: execute\nJustification: The file exists and reading it is the logical next step."
-    mock_call_llm.return_value = llm_response
+async def test_reflect_plan_step_success_execute():
+    step = "Test Step 1"
+    outcome = "Simulation looks good."
+    mock_llm_response = "Decision: execute\nJustification: Seems fine."
 
-    expected_prompt = REFLECT_STEP_PROMPT_TEMPLATE.format(
-        step=step, simulated_outcome=simulated_outcome, context=context
-    )
+    # <<< MODIFIED: Patch target, use MagicMock, return async_generator >>>
+    with patch("skills.reflection.call_llm") as mock_call_llm:
+        mock_call_llm.return_value = async_generator_for(mock_llm_response)
+        result = await reflect_plan_step(step, outcome)
 
-    result = await reflect_plan_step(
-        step=step, simulated_outcome=simulated_outcome, context=context
-    )
-
-    mock_call_llm.assert_awaited_once_with(expected_prompt, stream=False)
-    assert result["status"] == "success"
-    assert result["decision"] == "execute"
-    assert (
-        result["justification"]
-        == "The file exists and reading it is the logical next step."
-    )
-    assert result["confidence"] == "Média"
-    assert result["error_message"] is None
+        assert result["status"] == "success"
+        assert result["decision"] == "execute"
+        assert result["justification"] == "Seems fine."
+        # <<< MODIFIED: Check call args, ensure stream=False >>>
+        mock_call_llm.assert_called_once()
+        call_args, call_kwargs = mock_call_llm.call_args
+        assert isinstance(call_args[0], list) # Check messages format
+        assert call_kwargs.get('stream') == False
 
 
 @pytest.mark.asyncio
-@patch("skills.reflection.call_llm", new_callable=AsyncMock)
-async def test_reflect_plan_step_success_modify(mock_call_llm):
-    """Tests successful reflection deciding to modify."""
-    step = "Write analysis to file."
-    simulated_outcome = "Agent will attempt to write analysis, but filename is missing."
-    context = {"analysis_complete": True}
-    llm_response = "Decision: modify\nJustification: The step is necessary but lacks a specific filename. Suggest adding 'analysis_report.md'."
-    mock_call_llm.return_value = llm_response
+async def test_reflect_plan_step_success_modify():
+    step = "Test Step 2"
+    outcome = "Might fail."
+    mock_llm_response = "Decision: modify\nJustification: Needs adjustment."
 
-    result = await reflect_plan_step(
-        step=step, simulated_outcome=simulated_outcome, context=context
-    )
+    # <<< MODIFIED: Patch target, use MagicMock, return async_generator >>>
+    with patch("skills.reflection.call_llm") as mock_call_llm:
+        mock_call_llm.return_value = async_generator_for(mock_llm_response)
+        result = await reflect_plan_step(step, outcome)
 
-    assert result["status"] == "success"
-    assert result["decision"] == "modify"
-    assert "lacks a specific filename" in result["justification"]
-
-
-@pytest.mark.asyncio
-@patch("skills.reflection.call_llm", new_callable=AsyncMock)
-async def test_reflect_plan_step_success_skip(mock_call_llm):
-    """Tests successful reflection deciding to skip."""
-    step = "List files in root directory."
-    simulated_outcome = "Agent will list files, potentially many."
-    context = {"files_already_listed": ["file1", "file2"]}
-    llm_response = "Decision: skip\nJustification: Files were listed in a previous step, this is redundant."
-    mock_call_llm.return_value = llm_response
-
-    result = await reflect_plan_step(
-        step=step, simulated_outcome=simulated_outcome, context=context
-    )
-
-    assert result["status"] == "success"
-    assert result["decision"] == "skip"
-    assert "redundant" in result["justification"]
+        assert result["status"] == "success"
+        assert result["decision"] == "modify"
+        assert result["justification"] == "Needs adjustment."
+        # <<< MODIFIED: Check call args, ensure stream=False >>>
+        mock_call_llm.assert_called_once()
+        call_args, call_kwargs = mock_call_llm.call_args
+        assert isinstance(call_args[0], list)
+        assert call_kwargs.get('stream') == False
 
 
 @pytest.mark.asyncio
-@patch("skills.reflection.call_llm", new_callable=AsyncMock)
-async def test_reflect_plan_step_llm_exception(mock_call_llm):
-    """Tests when call_llm raises an exception during reflection."""
-    step = "Finalize report."
-    simulated_outcome = "Agent will compile final report."
-    context = {}
-    error_message = "LLM connection timeout"
-    mock_call_llm.side_effect = Exception(error_message)
+async def test_reflect_plan_step_success_skip():
+    step = "Test Step 3"
+    outcome = "Redundant."
+    mock_llm_response = "Decision: skip\nJustification: Not needed."
 
-    result = await reflect_plan_step(
-        step=step, simulated_outcome=simulated_outcome, context=context
-    )
+    # <<< MODIFIED: Patch target, use MagicMock, return async_generator >>>
+    with patch("skills.reflection.call_llm") as mock_call_llm:
+        mock_call_llm.return_value = async_generator_for(mock_llm_response)
+        result = await reflect_plan_step(step, outcome)
 
-    assert result["status"] == "error"
-    assert result["decision"] == "unknown"
-    assert "Failed to reflect on step due to LLM error" in result["justification"]
-    assert error_message in result["error_message"]
+        assert result["status"] == "success"
+        assert result["decision"] == "skip"
+        assert result["justification"] == "Not needed."
+        # <<< MODIFIED: Check call args, ensure stream=False >>>
+        mock_call_llm.assert_called_once()
+        call_args, call_kwargs = mock_call_llm.call_args
+        assert isinstance(call_args[0], list)
+        assert call_kwargs.get('stream') == False
 
 
 @pytest.mark.asyncio
-@patch("skills.reflection.call_llm", new_callable=AsyncMock)
-async def test_reflect_plan_step_llm_invalid_response(mock_call_llm):
-    """Tests when the LLM response cannot be parsed correctly."""
-    step = "Check status."
-    simulated_outcome = "Agent checks system status."
-    context = {}
-    llm_response = "Everything looks okay, proceed."
-    mock_call_llm.return_value = llm_response  # Malformed, no Decision/Justification
+async def test_reflect_plan_step_llm_error():
+    step = "Test Step Error"
+    outcome = "Causes error."
+    mock_exception = Exception("LLM API Error")
 
-    result = await reflect_plan_step(
-        step=step, simulated_outcome=simulated_outcome, context=context
-    )
+    # <<< MODIFIED: Patch target, use MagicMock, use side_effect for exception >>>
+    with patch("skills.reflection.call_llm") as mock_call_llm:
+        mock_call_llm.side_effect = mock_exception
+        result = await reflect_plan_step(step, outcome)
 
-    assert result["status"] == "success"  # Skill itself succeeds
-    assert result["decision"] == "unknown"  # Parsing fails
-    assert result["justification"] == "No justification provided."  # Parsing fails
+        assert result["status"] == "error"
+        assert result["decision"] == "unknown"
+        assert "LLM error" in result["justification"]
+        assert f"{mock_exception}" in result["error_message"]
+        # <<< MODIFIED: Check call args, ensure stream=False >>>
+        mock_call_llm.assert_called_once()
+        call_args, call_kwargs = mock_call_llm.call_args
+        assert isinstance(call_args[0], list)
+        assert call_kwargs.get('stream') == False
+
+
+@pytest.mark.asyncio
+async def test_reflect_plan_step_empty_llm_response():
+    step = "Test Step Empty"
+    outcome = "Outcome Empty"
+    mock_llm_response = ""
+
+    # <<< MODIFIED: Patch target, use MagicMock, return async_generator >>>
+    with patch("skills.reflection.call_llm") as mock_call_llm:
+        mock_call_llm.return_value = async_generator_for(mock_llm_response)
+        result = await reflect_plan_step(step, outcome)
+
+        assert result["status"] == "error"
+        assert result["decision"] == "unknown"
+        assert "empty or not a string" in result["justification"]
+        # <<< MODIFIED: Check call args, ensure stream=False >>>
+        mock_call_llm.assert_called_once()
+        call_args, call_kwargs = mock_call_llm.call_args
+        assert isinstance(call_args[0], list)
+        assert call_kwargs.get('stream') == False

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch, MagicMock, ANY
 import asyncio # Ensure asyncio is imported
 
 # <<< IMPORT parse_llm_response >>>
-from core.agent_parser import parse_llm_response
+from a3x.core.agent_parser import parse_llm_response
 
 # Import necessary components
 # Import exception types if needed
@@ -55,7 +55,7 @@ async def test_react_agent_run_handles_parsing_error(
     agent_instance, mock_db, mocker, INVALID_JSON_STRING
 ):
     """Testa se o agente lida com erro de parsing na resposta do LLM."""
-    mock_save_state = mocker.patch("core.agent.save_agent_state", return_value=None)
+    mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     agent = agent_instance
     objective = "Test objective"
 
@@ -73,13 +73,13 @@ async def test_react_agent_run_handles_parsing_error(
 
     # Mock reflector to return appropriate advice for parsing error
     mock_reflector = mocker.patch(
-        "core.agent_reflector.reflect_on_observation",
+        "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("stop_processing", "Invalid JSON response from LLM"),
     )
 
     # Mock planner to avoid planning phase issues
-    mocker.patch("core.agent.generate_plan", return_value=["Step 1"])
+    mocker.patch("a3x.core.agent.generate_plan", return_value=["Step 1"])
 
     # Execute
     results = []
@@ -114,7 +114,7 @@ async def test_react_agent_run_handles_max_iterations(
     agent_instance, mock_db, mocker
 ):
     """Testa se o agente para e YIELDS um erro ao atingir o limite TOTAL de iterações."""
-    mock_save_state = mocker.patch("core.agent.save_agent_state", return_value=None)
+    mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     agent = agent_instance
     agent.max_iterations = 1  # Max iterations PER STEP
     objective = "List files repeatedly across multiple steps"
@@ -122,7 +122,7 @@ async def test_react_agent_run_handles_max_iterations(
     max_total_iterations = agent.max_iterations * len(mock_plan) # = 3
 
     # Mock the planner to return the multi-step plan
-    mocker.patch("core.agent.generate_plan", return_value=mock_plan)
+    mocker.patch("a3x.core.agent.generate_plan", return_value=mock_plan)
 
     # <<< DEFINE LOCAL ReAct RESPONSE STRING >>>
     LLM_REACT_RESPONSE_LIST_FILES = '''
@@ -149,7 +149,7 @@ Action Input: {"directory": "."}
     # <<< CORRECT PATCH TARGET FOR execute_tool >>>
     # mock_executor = mocker.patch("core.tool_executor.execute_tool", ...)
     mock_executor = mocker.patch(
-        "core.agent.execute_tool", # <<< Use core.agent.execute_tool >>>
+        "a3x.core.agent.execute_tool", # <<< Use core.agent.execute_tool >>>
         new_callable=AsyncMock,
         return_value={
             "status": "success",
@@ -160,7 +160,7 @@ Action Input: {"directory": "."}
 
     # Mock reflector to always suggest continuing
     mock_reflector = mocker.patch(
-        "core.agent_reflector.reflect_on_observation",
+        "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("continue_processing", None),
     )
@@ -199,13 +199,13 @@ Action Input: {"directory": "."}
 @pytest.mark.asyncio
 async def test_react_agent_run_handles_failed_planning(agent_instance, mock_db, mocker):
     """Testa se o agente lida com a falha na geração do plano inicial."""
-    mock_save_state = mocker.patch("core.agent.save_agent_state", return_value=None)
+    mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     agent = agent_instance  # Use configured agent
     agent.llm_url = f"http://{TEST_SERVER_HOST}:{TEST_SERVER_PORT}/v1/chat/completions"
 
     objective = "Objective that causes planning failure"
     mock_planner = mocker.patch(
-        "core.agent.generate_plan", new_callable=AsyncMock, return_value=None
+        "a3x.core.agent.generate_plan", new_callable=AsyncMock, return_value=None
     )
 
     # <<< MOCK _process_llm_response TO RETURN THE FALLBACK ANSWER >>>
@@ -223,7 +223,7 @@ async def test_react_agent_run_handles_failed_planning(agent_instance, mock_db, 
 
     # Mock reflector (might not be strictly needed if plan fails early, but good practice)
     mock_reflector = mocker.patch(
-        "core.agent_reflector.reflect_on_observation", new_callable=AsyncMock
+        "a3x.core.agent_reflector.reflect_on_observation", new_callable=AsyncMock
     )
 
     # Execute

@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 
 # Import the skill class and relevant exceptions/constants
-from skills.file_manager import FileManagerSkill
+from a3x.skills.file_manager import FileManagerSkill
 
 # Mark all tests in this file as async
 pytestmark = pytest.mark.asyncio
@@ -34,7 +34,7 @@ async def test_create_file_success(file_manager, temp_workspace_files):
 
     # Action: Call the skill method (Explicitly pass overwrite=False)
     result = await file_manager.write_file(
-        filepath=relative_path, content=content, overwrite=False
+        path=relative_path, content=content, overwrite=False
     )
 
     # Assertions
@@ -55,7 +55,7 @@ async def test_create_file_no_content(file_manager, temp_workspace_files):
 
     # Test with content="" (Explicitly pass overwrite=False)
     result_empty = await file_manager.write_file(
-        filepath=relative_path, content="", overwrite=False
+        path=relative_path, content="", overwrite=False
     )
     assert result_empty["status"] == "success"
     assert absolute_path.exists()
@@ -80,7 +80,7 @@ async def test_create_file_overwrite_success(file_manager, temp_workspace_files)
 
     # Action: Call write_file with overwrite=True
     result = await file_manager.write_file(
-        filepath=relative_path, content=new_content, overwrite=True
+        path=relative_path, content=new_content, overwrite=True
     )
 
     # Assertions
@@ -108,14 +108,12 @@ async def test_create_file_exists_no_overwrite(file_manager, temp_workspace_file
 
     # Action: Call write_file with overwrite=False (explicitly)
     result = await file_manager.write_file(
-        filepath=relative_path, content="New content", overwrite=False
+        path=relative_path, content="New content", overwrite=False
     )
 
     # Assertions
     assert result["status"] == "error"
-    assert (
-        result["action"] == "write_file_failed"
-    )  # Check actual action name from skill
+    assert result["action"] == "write_file_failed"
     assert (
         f"File '{relative_path}' already exists. Use overwrite=True to replace it."
         == result["data"]["message"]
@@ -135,16 +133,17 @@ async def test_create_file_target_is_directory(file_manager, temp_workspace_file
 
     # Action: Attempt to create a file at the directory path (Explicitly pass overwrite=False)
     result = await file_manager.write_file(
-        filepath=relative_path, content="Some content", overwrite=False
+        path=relative_path, content="Some content", overwrite=False
     )
 
     # Assertions
     assert result["status"] == "error"
-    assert result["action"] == "write_file_failed"  # Correct expected action
+    assert result["action"] == "path_validation_failed"
     assert (
-        f"Cannot create file, a directory already exists at '{relative_path}'"
+        f"Path is not a file: '{relative_path}'"
         in result["data"]["message"]
     )
+    assert absolute_path.is_dir()  # Verify it's still a directory
 
 
 async def test_create_file_permission_error(file_manager, temp_workspace_files, mocker):
@@ -157,12 +156,12 @@ async def test_create_file_permission_error(file_manager, temp_workspace_files, 
 
     # --- Mock open WITHIN the skill module scope ---
     mock_skill_open = mocker.patch(
-        "skills.file_manager.open",
+        "a3x.skills.file_manager.open",
         side_effect=PermissionError("Mock Write Permission Denied"),
     )
 
     result = await file_manager.write_file(
-        filepath=relative_path, content=content, overwrite=False
+        path=relative_path, content=content, overwrite=False
     )
 
     assert result["status"] == "error"
@@ -196,7 +195,7 @@ async def test_append_to_file_success(file_manager, temp_workspace_files):
 
     # Action: Call the skill method with await
     result = await file_manager.append_to_file(
-        filepath=relative_path, content=content_to_append
+        path=relative_path, content=content_to_append
     )
 
     # Assertions
@@ -224,7 +223,7 @@ async def test_append_to_file_creates_if_not_exists(file_manager, temp_workspace
 
     # Action: Call the skill method with await
     result = await file_manager.append_to_file(
-        filepath=relative_path, content=content_to_append
+        path=relative_path, content=content_to_append
     )
 
     # Assertions (Expecting success after validator fix)
@@ -255,7 +254,7 @@ async def test_append_to_file_adds_newline(file_manager, temp_workspace_files):
 
     # Action: Call the skill method with await
     result = await file_manager.append_to_file(
-        filepath=relative_path, content=content_to_append
+        path=relative_path, content=content_to_append
     )
 
     # Assertions
@@ -293,7 +292,7 @@ async def test_append_to_file_permission_error(
     )
 
     result = await file_manager.append_to_file(
-        filepath=relative_path, content=content_to_append
+        path=relative_path, content=content_to_append
     )
 
     assert result["status"] == "error"
@@ -315,7 +314,7 @@ async def test_append_to_file_target_is_directory(file_manager, temp_workspace_f
 
     # Action: Attempt to append to the directory path with await
     result = await file_manager.append_to_file(
-        filepath=relative_path, content="Some content"
+        path=relative_path, content="Some content"
     )
 
     # Assertions
@@ -342,7 +341,7 @@ async def test_read_file_success(file_manager, temp_workspace_files):
     absolute_path.write_text(content, encoding="utf-8")
 
     # Action: Call the skill method with await
-    result = await file_manager.read_file(filepath=relative_path)
+    result = await file_manager.read_file(path=relative_path)
 
     # Assertions
     assert result["status"] == "success"
@@ -357,7 +356,7 @@ async def test_read_file_not_found(file_manager):
     relative_path = "non_existent_folder/missing_file.dat"
 
     # Action: Call the skill method with await
-    result = await file_manager.read_file(filepath=relative_path)
+    result = await file_manager.read_file(path=relative_path)
 
     # Assertions
     assert result["status"] == "error"
@@ -375,7 +374,7 @@ async def test_read_file_target_is_directory(file_manager, temp_workspace_files)
     absolute_path.mkdir(parents=True, exist_ok=True)
 
     # Action: Attempt to read the directory path with await
-    result = await file_manager.read_file(filepath=relative_path)
+    result = await file_manager.read_file(path=relative_path)
 
     # Assertions
     assert result["status"] == "error"
@@ -411,10 +410,10 @@ async def test_read_file_permission_error(file_manager, temp_workspace_files, mo
         return original_open(*args, **kwargs)
 
     mock_skill_open = mocker.patch(
-        "skills.file_manager.open", side_effect=mock_skill_open_read_permission
+        "a3x.skills.file_manager.open", side_effect=mock_skill_open_read_permission
     )
 
-    result = await file_manager.read_file(filepath=relative_path)
+    result = await file_manager.read_file(path=relative_path)
 
     assert result["status"] == "error"
     assert result["action"] == "read_file_failed"
@@ -433,7 +432,7 @@ async def test_read_file_invalid_path_relative_outside(file_manager):
     relative_path = "../confidential.cfg"  # Attempt to go up one level
 
     # Action: Attempt to read the file outside the allowed workspace with await
-    result = await file_manager.read_file(filepath=relative_path)
+    result = await file_manager.read_file(path=relative_path)
 
     # Assertions
     assert result["status"] == "error"
@@ -450,7 +449,7 @@ async def test_read_file_invalid_path_absolute(file_manager):
     absolute_path = "/tmp/some_other_file.log"  # Changed path for more realism
 
     # Action: Attempt to read the file using an absolute path with await
-    result = await file_manager.read_file(filepath=absolute_path)
+    result = await file_manager.read_file(path=absolute_path)
 
     # Assertions
     assert result["status"] == "error"
@@ -642,7 +641,7 @@ async def test_delete_file_success(file_manager, temp_workspace_files):
 
     # Action: Call the skill method with backup=True with await
     result = await file_manager.delete_path(
-        filepath=relative_path, backup=True
+        path=relative_path, backup=True
     )  # Pass backup=True
 
     # Assertions (Backup and delete SHOULD SUCCEED)
@@ -659,7 +658,7 @@ async def test_delete_file_not_found(file_manager):
 
     # Action: Call the skill method with await
     result = await file_manager.delete_path(
-        filepath=relative_path, backup=False
+        path=relative_path, backup=False
     )  # Renamed call
 
     # Assertions
@@ -682,7 +681,7 @@ async def test_delete_directory_success(
 
     # Action: Attempt to delete the directory with backup=True with await
     result = await file_manager.delete_path(
-        filepath=relative_path, backup=True
+        path=relative_path, backup=True
     )  # Pass backup=True
 
     # Assertions (Backup fails for directory, so operation fails)
@@ -710,7 +709,7 @@ async def test_delete_file_permission_error(file_manager, temp_workspace_files, 
 
     # Action: Attempt to delete the file with backup=True with await
     result = await file_manager.delete_path(
-        filepath=relative_path, backup=True
+        path=relative_path, backup=True
     )  # Pass backup=True
 
     # Assertions (Backup succeeds, delete fails)
@@ -731,7 +730,7 @@ async def test_delete_file_invalid_path_relative_outside(
 
     # Action with await
     result = await file_manager.delete_path(
-        filepath=relative_path, backup=False
+        path=relative_path, backup=False
     )  # Renamed call
 
     # Assertions
@@ -750,7 +749,7 @@ async def test_delete_file_invalid_path_absolute(file_manager):  # Changed fixtu
 
     # Action with await
     result = await file_manager.delete_path(
-        filepath=absolute_path, backup=False
+        path=absolute_path, backup=False
     )  # Renamed call
 
     # Assertions
