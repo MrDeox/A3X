@@ -149,7 +149,7 @@ def test_execute_timeout(mocker):
     timeout_value = 1  # Segundos para o teste
 
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mocker.patch(
+    mock_run = mocker.patch(
         "subprocess.run",
         side_effect=subprocess.TimeoutExpired(
             cmd="firejail", timeout=timeout_value
@@ -168,7 +168,7 @@ def test_execute_timeout(mocker):
     assert "stdout" not in result["data"]  # Não deve haver stdout/stderr em timeout
     assert "returncode" not in result["data"]
 
-    args, kwargs = mock_run.call_args # noqa: F821
+    args, kwargs = mock_run.call_args # Should work now
     assert (
         kwargs.get("timeout") == timeout_value
     )  # Verifica se o timeout correto foi passado
@@ -225,12 +225,12 @@ def test_execute_invalid_timeout_type(mocker):
 def test_execute_negative_timeout(mocker):
     """Testa a chamada com um timeout negativo (uses default)."""
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mocker.patch("subprocess.run", return_value=create_mock_process())
+    mock_run = mocker.patch("subprocess.run", return_value=create_mock_process())
     # Updated function call with negative timeout
     result = execute_code(code=DEFAULT_CODE, language=DEFAULT_LANGUAGE, timeout=-5)
     # A execução deve prosseguir com o timeout padrão
     assert result["status"] == "success"
-    args, kwargs = mock_run.call_args # noqa: F821
+    args, kwargs = mock_run.call_args # Should work now
     assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT  # Verifica se usou o default
 
 
@@ -294,10 +294,10 @@ def test_execute_ast_syntax_error(mocker):
 def test_execute_zero_timeout(mocker):
     """Testa a chamada com um timeout zero (uses default)."""
     mocker.patch("skills.execute_code.is_safe_ast", return_value=(True, "Safe"))
-    mocker.patch("subprocess.run", return_value=create_mock_process())
+    mock_run = mocker.patch("subprocess.run", return_value=create_mock_process())
     # Updated function call with zero timeout
     result = execute_code(code=DEFAULT_CODE, language=DEFAULT_LANGUAGE, timeout=0)
     # A execution should proceed with the default timeout
     assert result["status"] == "success"
-    args, kwargs = mock_run.call_args # noqa: F821
-    assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT  # Check if default was used
+    args, kwargs = mock_run.call_args # Should work now
+    assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT # noqa: F821

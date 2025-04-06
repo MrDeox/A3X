@@ -17,3 +17,4 @@ sentence-transformers
 pydantic
 playwright
 pytest-mock
+duckduckgo-search

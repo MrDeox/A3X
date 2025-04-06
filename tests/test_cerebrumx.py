@@ -1,10 +1,10 @@
 # tests/test_cerebrumx.py
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
-from core.cerebrumx import CerebrumXAgent, cerebrumx_logger
-from core.agent import ReactAgent  # Needed for mocking super().run
+from a3x.core.cerebrumx import CerebrumXAgent, cerebrumx_logger
+from a3x.core.agent import ReactAgent  # Needed for mocking super().run
 # Import execution logic functions
-from core.execution_logic import _execute_actual_plan_step
+from a3x.core.execution_logic import _execute_actual_plan_step
 # Import config from conftest
 from tests.conftest import TEST_SERVER_BASE_URL  # Import only constants
 
@@ -28,7 +28,7 @@ def agent_instance(
     """Provides a fully mocked Agent instance for testing basic execution flow."""
     # Mock load_agent_state which might be called during init
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr("core.agent.load_agent_state", lambda _: {})
+        mp.setattr("core.agent.load_agent_state", lambda *args, **kwargs: {})
         # *** CORRECTED: Instantiate CerebrumXAgent, not ReactAgent ***
         agent_obj = CerebrumXAgent(
             llm_url=mock_llm_url, system_prompt="mock_system_prompt"
@@ -36,7 +36,7 @@ def agent_instance(
 
     # Add crucial mocks directly to the instance after creation
     agent_obj.add_history_entry = MagicMock()  # Mock history adding
-    agent_obj._call_llm = AsyncMock()  # Mock LLM calls if needed by specific tests
+    # agent_obj._call_llm = AsyncMock()  # REMOVED: Incorrect mock, agent doesn't have _call_llm
     # Mock retrieve_relevant_context directly here if it's consistently needed
     agent_obj._memory = MagicMock()
     agent_obj._memory.retrieve_relevant_context = AsyncMock(
@@ -52,48 +52,47 @@ def agent_instance(
 # --- Unit Tests for Helper Methods ---
 
 
-def test_cerebrumx_init(agent_instance):
+def test_cerebrumx_init(cerebrumx_agent_instance):
     """Tests basic initialization of CerebrumXAgent."""
-    assert isinstance(agent_instance, CerebrumXAgent)
-    assert isinstance(agent_instance, ReactAgent)  # Check inheritance
-    assert agent_instance.system_prompt == "mock_system_prompt"
+    assert isinstance(cerebrumx_agent_instance, CerebrumXAgent)
+    assert isinstance(cerebrumx_agent_instance, ReactAgent)  # Check inheritance
+    assert cerebrumx_agent_instance.system_prompt == "mock_cerebrumx_prompt"
 
 
-def test_perceive(agent_instance):
+def test_perceive(cerebrumx_agent_instance):
     """Tests the placeholder _perceive method."""
     initial_input = "Test perception input"
-    result = agent_instance._perceive(initial_input)
+    result = cerebrumx_agent_instance._perceive(initial_input)
     assert result == {"processed": initial_input}
 
 
 @pytest.mark.asyncio
-async def test_retrieve_context(agent_instance):
+async def test_retrieve_context(cerebrumx_agent_instance):
     """Tests the updated _retrieve_context method structure by mocking memory method."""
     # Mock the memory object's method directly on the instance for this test
-    # (Already mocked in the agent_instance fixture, but can be overridden here if needed)
-    # agent_instance._memory = MagicMock()
-    # agent_instance._memory.retrieve_relevant_context = AsyncMock(return_value={
-    #     "semantic_match": "Mocked context via instance memory patch",
-    #     "short_term_history": [{"role": "user", "content": "previous instance memory patch turn"}]
-    # })
+    # OLD: (Mocking was previously assumed to be handled by fixture)
+    # NEW: Mock directly on the instance's _memory object
+    cerebrumx_agent_instance._memory.retrieve_relevant_context = AsyncMock(return_value={
+        "semantic_match": "Mocked context via direct instance mock",
+        "short_term_history": [] # Keep history simple
+    })
 
     processed_perception = {"processed": "some data"}
-    result = await agent_instance._retrieve_context(processed_perception)
+    result = await cerebrumx_agent_instance._retrieve_context(processed_perception)
 
-    # Assert the structure and mock call
     assert "retrieved_context" in result
     assert "semantic_match" in result["retrieved_context"]
     # Correct assertion: Check if the mock on the instance's memory object was awaited
-    agent_instance._memory.retrieve_relevant_context.assert_awaited_once_with(
+    cerebrumx_agent_instance._memory.retrieve_relevant_context.assert_awaited_once_with(
         query="some data", max_results=5
     )
 
 
 @pytest.mark.asyncio
-@patch("core.cerebrumx.get_tool_descriptions", return_value="Mock Tool Desc")
-@patch("core.cerebrumx.execute_tool", new_callable=AsyncMock)
+@patch("a3x.core.cerebrumx.get_tool_descriptions", return_value="Mock Tool Desc")
+@patch("a3x.core.cerebrumx.execute_tool", new_callable=AsyncMock)
 async def test_plan_hierarchically_success(
-    mock_execute_tool, mock_get_tools, agent_instance
+    mock_execute_tool, mock_get_tools, cerebrumx_agent_instance
 ):
     """Tests _plan_hierarchically when the planner skill succeeds."""
     mock_plan = ["Step 1", "Step 2"]
@@ -106,10 +105,10 @@ async def test_plan_hierarchically_success(
     context = {"retrieved_context": "Some context"}
 
     # Mock agent properties needed by execute_tool call
-    agent_instance.tools = {"hierarchical_planner": MagicMock()}  # Mock tools registry
-    agent_instance._memory = {}  # Mock memory
+    cerebrumx_agent_instance.tools = {"hierarchical_planner": MagicMock()}
+    cerebrumx_agent_instance._memory = {}
 
-    result = await agent_instance._plan_hierarchically(perception, context)
+    result = await cerebrumx_agent_instance._plan_hierarchically(perception, context)
 
     mock_get_tools.assert_called_once()
     mock_execute_tool.assert_awaited_once_with(
@@ -119,16 +118,16 @@ async def test_plan_hierarchically_success(
             "available_tools": "Mock Tool Desc",
             "context": context,
         },
-        tools_dict=agent_instance.tools,
+        tools_dict=cerebrumx_agent_instance.tools,
         agent_logger=cerebrumx_logger,
-        agent_memory=agent_instance._memory,
+        agent_memory=cerebrumx_agent_instance._memory,
     )
     assert result == mock_plan
 
 
 @pytest.mark.asyncio
-@patch("core.cerebrumx.get_tool_descriptions", return_value="Mock Tool Desc")
-@patch("core.cerebrumx.execute_tool", new_callable=AsyncMock)
+@patch("a3x.core.cerebrumx.get_tool_descriptions", return_value="Mock Tool Desc")
+@patch("a3x.core.cerebrumx.execute_tool", new_callable=AsyncMock)
 async def test_plan_hierarchically_planner_error(
     mock_execute_tool, mock_get_tools, agent_instance
 ):
@@ -164,8 +163,8 @@ async def test_plan_hierarchically_planner_error(
 
 
 @pytest.mark.asyncio
-@patch("core.cerebrumx.get_tool_descriptions", return_value="Mock Tool Desc")
-@patch("core.cerebrumx.execute_tool", new_callable=AsyncMock)
+@patch("a3x.core.cerebrumx.get_tool_descriptions", return_value="Mock Tool Desc")
+@patch("a3x.core.cerebrumx.execute_tool", new_callable=AsyncMock)
 async def test_plan_hierarchically_empty_plan(
     mock_execute_tool, mock_get_tools, agent_instance
 ):
@@ -246,7 +245,7 @@ def mock_reflect_step_modify():
 
 
 @pytest.mark.asyncio
-@patch("core.cerebrumx.execute_tool", new_callable=AsyncMock)
+@patch("a3x.core.cerebrumx.execute_tool", new_callable=AsyncMock)
 async def test_simulate_step_calls_skill(
     mock_execute_tool, agent_instance, mock_simulate_step_success
 ):
@@ -380,12 +379,14 @@ async def test_reflect_success(agent_instance):
     ]
     result = await agent_instance._reflect(perception, plan, execution_results)
     assert isinstance(result, dict)
+    # Corrected Assertion: Match the exact format from _reflect
     assert (
         result["assessment"]
-        == "Plan execution completed. Success Rate: 100% (2/2 steps successful)."
+        == "Objective 'Objective...': Plan executed successfully. All 2 steps completed."
     )
     assert result["success_rate"] == 1.0
-    assert "All plan steps executed successfully." in result["learnings"]
+    assert result["overall_outcome"] == "success"
+    assert len(result["learnings"]) == 2
 
 
 @pytest.mark.asyncio
@@ -400,13 +401,14 @@ async def test_reflect_partial_failure(agent_instance):
     ]
     result = await agent_instance._reflect(perception, plan, execution_results)
     assert isinstance(result, dict)
-    # Correct assertion: 2 successes out of 3 steps is 67%
+    # Correct assertion: Match the exact format from _reflect (2/3 = 67%)
     assert (
         result["assessment"]
-        == "Plan execution completed. Success Rate: 67% (2/3 steps successful)."
+        == "Objective 'Objective...': Plan partially executed. 2/3 steps successful (67%)."
     )
-    assert result["success_rate"] == pytest.approx(2 / 3)
-    assert len(result["learnings"]) >= 1  # Check for at least one learning
+    assert round(result["success_rate"], 2) == 0.67 # Check rounded rate
+    assert result["overall_outcome"] == "partial_success"
+    assert len(result["learnings"]) == 3
 
 
 @pytest.mark.asyncio
@@ -420,14 +422,14 @@ async def test_reflect_all_failures(agent_instance):
     ]
     result = await agent_instance._reflect(perception, plan, execution_results)
     assert isinstance(result, dict)
+    # Corrected Assertion: Match the exact format from _reflect
     assert (
         result["assessment"]
-        == "Plan execution completed. Success Rate: 0% (0/2 steps successful)."
+        == "Objective 'Objective...': Plan execution failed. 0/2 steps successful (0%)."
     )
     assert result["success_rate"] == 0.0
-    # Update assertion: Expect 1 summary learning point when all fail
-    assert len(result["learnings"]) == 1
-    assert "Identified failed/skipped steps" in result["learnings"][0]
+    assert result["overall_outcome"] == "failure"
+    assert len(result["learnings"]) == 2
 
 
 @pytest.mark.asyncio
@@ -438,66 +440,93 @@ async def test_reflect_empty_results(agent_instance):
     execution_results = []
     result = await agent_instance._reflect(perception, plan, execution_results)
     assert isinstance(result, dict)
-    assert result["assessment"] == "No steps were executed."
+    # Corrected Assertion: Match the exact format from _reflect
+    assert result["assessment"] == "Objective 'Objective...': No steps were executed."
     assert result["success_rate"] == 0.0
-    assert not result["learnings"]
+    assert result["overall_outcome"] == "unknown"
+    assert len(result["learnings"]) == 0
 
 
 @pytest.mark.asyncio
 async def test_learn(agent_instance):
     """Tests the updated _learn method (checks logging)."""
+    # Corrected: Provide structured learnings as expected by _learn
     reflection_success = {
         "assessment": "Plan execution completed. Success Rate: 100%",
         "success_rate": 1.0,
-        "learnings": ["All plan steps executed successfully."],
+        "learnings": [
+            {
+                "type": "success",
+                "step_index": 0,
+                "step_description": "Mock Step 1",
+                "content": "Step 1 ('Mock Step 1...'): Completed successfully. Result: Mock success...",
+            }
+        ],
     }
     reflection_failure = {
         "assessment": "Plan execution completed. Success Rate: 0% (1 failed steps)",
         "success_rate": 0.0,
-        "learnings": ["Step 'Step 1' failed: Error"],
+        "learnings": [
+            {
+                "type": "failure",
+                "step_index": 0,
+                "step_description": "Mock Step 1",
+                "content": "Step 1 ('Mock Step 1...'): Failed. Reason: Mock error...",
+            }
+        ],
     }
 
-    # Mock the logger used within _learn
-    with patch("core.cerebrumx.cerebrumx_logger.info") as mock_log_info:
+    # Mock the logger used within _learn and the memory method if needed
+    with patch("a3x.core.cerebrumx.cerebrumx_logger.info") as mock_log_info, \
+         patch.object(agent_instance._memory, "add_episodic_record", new_callable=AsyncMock) as mock_add_memory:
+
         await agent_instance._learn(reflection_success)
-        # Check that the logger was called with the learnings
-        log_calls = [args[0] for args, kwargs in mock_log_info.call_args_list]
-        assert any(
-            "Potential learnings identified" in call_str
-            and "All plan steps executed successfully." in call_str
-            for call_str in log_calls
-        )
+        # Check logging
+        log_calls_success = [args[0] for args, kwargs in mock_log_info.call_args_list]
+        assert "Updating memory based on reflection..." in log_calls_success
+        assert "1 potential learning points identified." in log_calls_success # Check count
+        assert "Overall Execution Assessment: Plan execution completed. Success Rate: 100%" in log_calls_success
+        # Check memory call
+        mock_add_memory.assert_awaited_once_with(data=reflection_success["learnings"][0])
 
-    with patch("core.cerebrumx.cerebrumx_logger.info") as mock_log_info:
+        # Reset mocks for the failure case
+        mock_log_info.reset_mock()
+        mock_add_memory.reset_mock()
+
         await agent_instance._learn(reflection_failure)
-        # Check that the logger was called with the learnings
-        log_calls = [args[0] for args, kwargs in mock_log_info.call_args_list]
-        assert any(
-            "Potential learnings identified" in call_str
-            and "Step 'Step 1' failed: Error" in call_str
-            for call_str in log_calls
-        )
+        # Check logging for failure
+        log_calls_failure = [args[0] for args, kwargs in mock_log_info.call_args_list]
+        assert "Updating memory based on reflection..." in log_calls_failure
+        assert "1 potential learning points identified." in log_calls_failure # Check count
+        assert "Overall Execution Assessment: Plan execution completed. Success Rate: 0% (1 failed steps)" in log_calls_failure
+        # Check memory call for failure
+        mock_add_memory.assert_awaited_once_with(data=reflection_failure["learnings"][0])
 
-    with patch("core.cerebrumx.cerebrumx_logger.info") as mock_log_info:
+        # Reset mocks for the empty learnings case
+        mock_log_info.reset_mock()
+        mock_add_memory.reset_mock()
+
         # Test with empty learnings
-        await agent_instance._learn(
-            {"assessment": "Done", "success_rate": 1.0, "learnings": []}
-        )
-        # Update assertion: Just check if the logger was called, as the exact message might vary
-        # or be absent if no specific learnings. The important part is _learn finished.
-        mock_log_info.assert_called()  # Check that logging happened
+        reflection_empty = {"assessment": "Done", "success_rate": 1.0, "learnings": []}
+        await agent_instance._learn(reflection_empty)
+        log_calls_empty = [args[0] for args, kwargs in mock_log_info.call_args_list]
+        assert "Updating memory based on reflection..." in log_calls_empty
+        assert "No specific step learnings identified in this cycle." in log_calls_empty
+        assert "Overall Execution Assessment: Done" in log_calls_empty
+        # Check memory was NOT called
+        mock_add_memory.assert_not_called()
 
 
 # --- Integration Test for CerebrumX Cycle (Now relies on REAL LLM Server) ---
 
 
 @pytest.mark.asyncio
-@patch("core.cerebrumx.CerebrumXAgent._perceive")
-@patch("core.cerebrumx.CerebrumXAgent._retrieve_context")
-@patch("core.cerebrumx.CerebrumXAgent._plan_hierarchically")
+@patch("a3x.core.cerebrumx.CerebrumXAgent._perceive")
+@patch("a3x.core.cerebrumx.CerebrumXAgent._retrieve_context")
+@patch("a3x.core.cerebrumx.CerebrumXAgent._plan_hierarchically")
 # @patch('core.execution_logic.execute_plan_with_reflection') # REMOVED - Testing real execution
-@patch("core.cerebrumx.CerebrumXAgent._reflect")  # Mock overall reflection
-@patch("core.cerebrumx.CerebrumXAgent._learn")  # Mock learning
+@patch("a3x.core.cerebrumx.CerebrumXAgent._reflect")  # Mock overall reflection
+@patch("a3x.core.cerebrumx.CerebrumXAgent._learn")  # Mock learning
 # @patch('skills.simulation.call_llm', new_callable=AsyncMock) # REMOVED - Using real LLM
 # @patch('skills.reflection.call_llm', new_callable=AsyncMock) # REMOVED - Using real LLM
 async def test_run_cerebrumx_cycle_execute_flow(

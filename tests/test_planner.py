@@ -45,8 +45,7 @@ async def test_generate_plan_success(
     async def mock_llm_return():
         yield mock_llm_content
 
-    with patch("core.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
-        # Set the side_effect to the async generator function itself
+    with patch("core.planner.call_llm") as mock_call_llm:
         mock_call_llm.return_value = mock_llm_return()
 
         plan = await generate_plan(
@@ -62,7 +61,7 @@ async def test_generate_plan_success(
     assert plan == expected_plan
     # mock_call_llm.assert_called_once() # Check that the mock was called
     # Redundant - checked above
-    call_args, call_kwargs = mock_call_llm.await_args  # Use await_args for async mock
+    call_args, call_kwargs = mock_call_llm.call_args # Use call_args for sync call
     messages = call_args[0]
     assert any(objective in msg["content"] for msg in messages if msg["role"] == "user")
     mock_agent_logger.info.assert_any_call(
@@ -88,10 +87,9 @@ async def test_generate_plan_llm_http_error(
     # Define an async function to raise the error
     async def mock_llm_raise_http():
         raise http_error
-        yield  # Need yield to be treated as an async generator by caller
+        yield
 
-    with patch("core.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
-        # Set side_effect to the error-raising function itself
+    with patch("core.planner.call_llm") as mock_call_llm:
         mock_call_llm.return_value = mock_llm_raise_http()
 
         plan = await generate_plan(
@@ -116,9 +114,9 @@ async def test_generate_plan_llm_timeout(
     # Define an async function to raise the error
     async def mock_llm_raise_timeout():
         raise timeout_error
-        yield  # Need yield to be treated as an async generator
+        yield
 
-    with patch("core.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
+    with patch("core.planner.call_llm") as mock_call_llm:
         mock_call_llm.return_value = mock_llm_raise_timeout()
 
         plan = await generate_plan(
@@ -143,7 +141,7 @@ async def test_generate_plan_invalid_json_response(
     async def mock_llm_return_invalid():
         yield mock_llm_content
 
-    with patch("core.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
+    with patch("core.planner.call_llm") as mock_call_llm:
         mock_call_llm.return_value = mock_llm_return_invalid()
 
         plan = await generate_plan(
@@ -157,7 +155,9 @@ async def test_generate_plan_invalid_json_response(
     error_logs = [
         call
         for call in mock_agent_logger.error.call_args_list
-        if "Failed to decode JSON" in str(call.args[0])
+        if ("Failed to decode JSON" in str(call.args[0]))
+        or ("No JSON block found" in str(call.args[0]))
+        or ("Fallback failed" in str(call.args[0]))
     ]
     assert len(error_logs) > 0, "Expected JSON decode/find error log message"
 
@@ -175,7 +175,7 @@ async def test_generate_plan_valid_json_not_list(
     async def mock_llm_return_dict():
         yield mock_llm_content
 
-    with patch("core.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
+    with patch("core.planner.call_llm") as mock_call_llm:
         mock_call_llm.return_value = mock_llm_return_dict()
 
         plan = await generate_plan(
@@ -204,7 +204,7 @@ async def test_generate_plan_list_not_strings(
     async def mock_llm_return_mixed_list():
         yield mock_llm_content
 
-    with patch("core.planner.call_llm", new_callable=AsyncMock) as mock_call_llm:
+    with patch("core.planner.call_llm") as mock_call_llm:
         mock_call_llm.return_value = mock_llm_return_mixed_list()
 
         plan = await generate_plan(

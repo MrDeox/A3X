@@ -8,8 +8,8 @@ import os
 import pytest_asyncio
 
 # Import necessary components (adjust paths if needed)
-from core.tools import get_tool_descriptions
-from core.agent import ReactAgent
+from a3x.core.tools import get_tool_descriptions
+from a3x.core.agent import ReactAgent
 from tests.conftest import TEST_SERVER_HOST, TEST_SERVER_PORT
 
 # Import exception type if needed for specific error tests, e.g.:
@@ -156,7 +156,7 @@ async def test_react_agent_run_list_files(
 ):
     """Testa o fluxo básico do React Agent para listar arquivos (com plano)."""
     # <<< PATCH save_agent_state AND GET THE MOCK OBJECT >>>
-    mock_save_state = mocker.patch("core.agent.save_agent_state", return_value=None)
+    mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     agent = agent_instance
 
     objective = "List the files in the current directory...."
@@ -166,7 +166,7 @@ async def test_react_agent_run_list_files(
     ]
     # <<< CORRECT PATCH TARGET FOR generate_plan >>>
     mock_planner = mocker.patch(
-        "core.agent.generate_plan", new_callable=AsyncMock, return_value=mock_plan
+        "a3x.core.agent.generate_plan", new_callable=AsyncMock, return_value=mock_plan
     )
 
     # <<< NEW MOCK STRATEGY: Use side_effect with a list of async generator *instances* >>>
@@ -184,7 +184,7 @@ Action Input: {"answer": "Plan completed successfully."}
 '''
         # Generator implicitly stops after yielding once
 
-    mock_call_llm = mocker.patch("core.agent.call_llm")
+    mock_call_llm = mocker.patch("a3x.core.agent.call_llm")
     # Assign a list containing the *results* of calling the generator functions.
     # Each call to the mocked call_llm will consume one item from the list.
     # The item itself (an async generator instance) is what `async for` iterates over.
@@ -193,13 +193,13 @@ Action Input: {"answer": "Plan completed successfully."}
 
     # <<< MOCK execute_tool WITH THE SPECIFIC MOCK FIXTURE >>>
     mock_tool_executor = mocker.patch(
-        "core.agent.execute_tool", side_effect=mock_list_files_tool.side_effect
+        "a3x.core.agent.execute_tool", side_effect=mock_list_files_tool.side_effect
     )
 
     # Mock reflector (assume it continues the plan)
     # Use AsyncMock
     mock_reflector = mocker.patch(
-        "core.agent_reflector.reflect_on_observation",
+        "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("continue_plan", None), # Continue after list_files
     )
@@ -251,7 +251,7 @@ async def test_react_agent_run_final_answer_direct(
 ):
     """Testa o caso onde o LLM retorna final_answer diretamente (agora após plano de 1 passo)."""
     # <<< PATCH save_agent_state AND GET THE MOCK OBJECT >>>
-    mock_save_state = mocker.patch("core.agent.save_agent_state", return_value=None)
+    mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     agent = agent_instance  # Use the configured agent
 
     objective = "Just say hello."
@@ -259,7 +259,7 @@ async def test_react_agent_run_final_answer_direct(
     # Use AsyncMock for planner as it's async
     # <<< CORRECT PATCH TARGET FOR generate_plan >>>
     mock_planner = mocker.patch(
-        "core.agent.generate_plan", new_callable=AsyncMock, return_value=mock_plan
+        "a3x.core.agent.generate_plan", new_callable=AsyncMock, return_value=mock_plan
     )
 
     # <<< USE ASYNC GENERATOR FOR call_llm MOCK >>>
@@ -268,7 +268,7 @@ async def test_react_agent_run_final_answer_direct(
         await asyncio.sleep(0)
 
     mock_call_llm = mocker.patch(
-        "core.agent.call_llm"
+        "a3x.core.agent.call_llm"
     )
     # Use side_effect with the generator function
     mock_call_llm.side_effect = mock_llm_hello_generator
@@ -276,7 +276,7 @@ async def test_react_agent_run_final_answer_direct(
     # Mock reflector to indicate plan completion
     # Use AsyncMock
     mock_reflector = mocker.patch(
-        "core.agent_reflector.reflect_on_observation",
+        "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("plan_complete", None),
     )
@@ -309,7 +309,7 @@ async def test_react_agent_run_handles_llm_call_error(
 ):
     """Testa se o agente lida com um erro de chamada LLM (agora com plano)."""
     # <<< PATCH save_agent_state AND GET THE MOCK OBJECT >>>
-    mock_save_state = mocker.patch("core.agent.save_agent_state", return_value=None)
+    mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     agent = agent_instance
 
     objective = "Test LLM call error handling......"
@@ -317,7 +317,7 @@ async def test_react_agent_run_handles_llm_call_error(
     # Use AsyncMock
     # <<< CORRECT PATCH TARGET FOR generate_plan >>>
     mock_planner = mocker.patch(
-        "core.agent.generate_plan", new_callable=AsyncMock, return_value=mock_plan
+        "a3x.core.agent.generate_plan", new_callable=AsyncMock, return_value=mock_plan
     )
 
     error_message = "LLM API call failed"
@@ -337,7 +337,7 @@ async def test_react_agent_run_handles_llm_call_error(
         await asyncio.sleep(0)
 
     mock_call_llm = mocker.patch(
-        "core.agent.call_llm"
+        "a3x.core.agent.call_llm"
     )
     # Use side_effect with the generator function
     mock_call_llm.side_effect = mock_llm_raise_error_generator
@@ -345,7 +345,7 @@ async def test_react_agent_run_handles_llm_call_error(
     # Mock reflector (assume it stops on LLM error for this test)
     # Use AsyncMock
     mock_reflector = mocker.patch(
-        "core.agent_reflector.reflect_on_observation",
+        "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("stop_plan", None),
     )
@@ -390,7 +390,7 @@ async def test_react_agent_run_handles_tool_execution_error(
 ):
     """Testa se o agente lida com um erro retornado pela execução de uma tool (agora com plano e reflector)."""
     # <<< PATCH save_agent_state AND GET THE MOCK OBJECT >>>
-    mock_save_state = mocker.patch("core.agent.save_agent_state", return_value=None)
+    mock_save_state = mocker.patch("a3x.core.agent.save_agent_state", return_value=None)
     
     agent = agent_instance
     # mock_execute = mock_code_tools  # F841 - Get the mock function
@@ -400,7 +400,7 @@ async def test_react_agent_run_handles_tool_execution_error(
 
     # Use AsyncMock - <<< CORRECT PATCH TARGET FOR generate_plan >>>
     mock_planner = mocker.patch(
-        "core.agent.generate_plan", new_callable=AsyncMock, return_value=expected_plan
+        "a3x.core.agent.generate_plan", new_callable=AsyncMock, return_value=expected_plan
     )
 
     # <<< CORRECTED MOCK FOR call_llm >>>
@@ -411,21 +411,21 @@ async def test_react_agent_run_handles_tool_execution_error(
 
     # Patch call_llm to *directly* return the generator object when called
     mock_call_llm = mocker.patch(
-        "core.agent.call_llm"
+        "a3x.core.agent.call_llm"
     )
     # Use side_effect with the generator function
     mock_call_llm.side_effect = mock_llm_tool_error_generator
 
     # Mock the tool executor to return the error
     mock_tool_executor = mocker.patch(
-        "core.agent.execute_tool", # <<< CORRECT PATCH TARGET >>>
+        "a3x.core.agent.execute_tool", # <<< CORRECT PATCH TARGET >>>
         return_value=EXECUTE_CODE_RESULT_ERROR
     )
     
     # Mock reflector to decide to stop on error
     # Use AsyncMock
     mock_reflector = mocker.patch(
-        "core.agent_reflector.reflect_on_observation",
+        "a3x.core.agent_reflector.reflect_on_observation",
         new_callable=AsyncMock,
         return_value=("stop_plan", None),
     )

@@ -1,6 +1,7 @@
 import sys
 import os
 import pytest
+from unittest.mock import patch, MagicMock, ANY
 
 # --- Add project root to sys.path ---
 # Ensure core modules can be found when importing skills
@@ -16,76 +17,97 @@ from skills.web_search import web_search
 pytestmark = pytest.mark.asyncio
 
 
-async def test_web_search_skill_returns_results():
-    """Verifica se a skill web_search retorna resultados para uma query simples."""
+async def async_generator_for(item):
+    yield item
+
+
+# <<< REMOVED Tavily patches >>>
+# <<< ADDED patch for DDGS class used in the skill >>>
+@patch("skills.web_search.DDGS")
+async def test_web_search_skill_returns_results(mock_ddgs):
+    """Verifica se a skill web_search retorna resultados usando DuckDuckGo."""
     query = "capital of France"
-    print(f"\nTesting web_search skill with query: '{query}'")
+    expected_max_results = 5 # Default in the skill function
 
-    # Chamar a função da skill diretamente
+    # Configure the mock DDGS instance and its text method
+    mock_ddgs_instance = MagicMock()
+    # Mock the result of DDGS().text(), ensuring it's an iterable
+    mock_ddgs_instance.text.return_value = [
+        {'title': 'Paris - Wikipedia', 'href': 'https://en.wikipedia.org/wiki/Paris', 'body': 'Paris is the capital and most populous city of France...'},
+        {'title': 'Official Website of Paris', 'href': 'https://www.paris.fr/en', 'body': 'The official website for the City of Paris.'}
+    ]
+    # Mock the context manager behavior (__enter__)
+    mock_ddgs.return_value.__enter__.return_value = mock_ddgs_instance
+
+    print(f"\nTesting web_search skill with query: '{query}' (using mocked DuckDuckGo)")
+
+    # Call the skill (uses default max_results=5)
     result_dict = web_search(query=query)
-
     print(f"Raw result Dict: {result_dict}")
 
     assert result_dict is not None
     assert isinstance(result_dict, dict)
+    assert result_dict["status"] == "success"
+    assert result_dict["action"] == "web_search_results"
+    assert "data" in result_dict
+    assert result_dict["data"].get("search_method") == "DuckDuckGo" # Check method
+    assert isinstance(result_dict["data"].get("results"), list)
+    assert len(result_dict["data"]["results"]) == 2
 
-    try:
-        print(f"Result data: {result_dict}")
-        assert "status" in result_dict
-        if result_dict["status"] == "success":
-            assert "results" in result_dict
-            # Verificar se results é uma lista (se houver resultados)
-            assert isinstance(result_dict["results"], list)
-            if result_dict["results"]:
-                assert len(result_dict["results"]) > 0  # Espera pelo menos um resultado
-                # We might get different results, so just check keys exist
-                assert "title" in result_dict["results"][0]
-                assert "url" in result_dict["results"][0]
-                assert "snippet" in result_dict["results"][0]
-            # Allow empty results list as success
-        elif result_dict["status"] == "error":
-            assert "message" in result_dict
-            # Permitir que o teste passe se houver um erro (ex: problema de rede temporário)
-            print(
-                f"Warning: Web search skill returned an error: {result_dict['message']}"
-            )
-        else:
-            pytest.fail(f"Unexpected status in result: {result_dict.get('status')}")
+    # Check mapped results
+    first_result = result_dict["data"]["results"][0]
+    assert first_result["title"] == "Paris - Wikipedia"
+    assert first_result["url"] == "https://en.wikipedia.org/wiki/Paris" # Check 'url' (mapped from 'href')
+    assert first_result["snippet"] == "Paris is the capital and most populous city of France..." # Check 'snippet' (mapped from 'body')
 
-    except AssertionError as e:
-        pytest.fail(f"Assertion failed: {e} - Result Data: {result_dict}")
-    except Exception as e:
-        pytest.fail(f"An unexpected error occurred during test execution: {e}")
+    # Verify the mocked DDGS().text() was called correctly
+    mock_ddgs_instance.text.assert_called_once_with(query, max_results=expected_max_results)
+    # Verify the context manager was used
+    mock_ddgs.return_value.__enter__.assert_called_once()
+    mock_ddgs.return_value.__exit__.assert_called_once()
 
 
 # Para rodar este teste: execute 'pytest tests/test_web_search_skill.py' no terminal
 
 
-@pytest.mark.asyncio
-async def test_web_search_skill_no_results():
-    """Verifica o comportamento quando a busca não retorna resultados."""
-    # Use a query unlikely to return results from DuckDuckGo Lite
-    # Note: DDG might still return *some* results even for nonsense strings.
+# <<< REMOVED Tavily patches >>>
+# <<< ADDED patch for DDGS class used in the skill >>>
+@patch("skills.web_search.DDGS")
+async def test_web_search_skill_no_results(mock_ddgs):
+    """Verifica o comportamento quando a busca DuckDuckGo não retorna resultados."""
     query = "alskdjfhgqowieurytalskdjfhgqowieuryt_no_results_guaranteed_maybe"
-    print(f"\nTesting web_search skill with query: '{query}'")
+    expected_max_results = 5 # Default in the skill function
 
+    # Configure the mock DDGS instance and its text method to return empty list
+    mock_ddgs_instance = MagicMock()
+    mock_ddgs_instance.text.return_value = [] # Simulate DDG returning no results
+    mock_ddgs.return_value.__enter__.return_value = mock_ddgs_instance
+
+    print(f"\nTesting web_search skill with query: '{query}' (expecting no results from DuckDuckGo)")
+
+    # Call the skill
     result_dict = web_search(query=query)
-    print(f"Raw result Dict (no results expected): {result_dict}")
+    print(f"Raw result Dict (no results expected from DuckDuckGo): {result_dict}")
 
     assert result_dict is not None
     assert isinstance(result_dict, dict)
-    assert (
-        result_dict["status"] == "success"
-    )  # Skill succeeds even if search has few/no results
-    assert "results" in result_dict
-    assert isinstance(result_dict["results"], list)
-    # Allow non-zero results, as DDG might still find *something*
-    print(f"Number of results found for unlikely query: {len(result_dict['results'])}")
+    assert result_dict["status"] == "success" # Should still be success
+    assert result_dict["action"] == "web_search_results"
+    assert "data" in result_dict
+    assert result_dict["data"].get("search_method") == "DuckDuckGo"
+    assert isinstance(result_dict["data"].get("results"), list)
+    assert len(result_dict["data"]["results"]) == 0 # Expect empty results list
 
+    # Verify the mocked DDGS().text() was called correctly
+    mock_ddgs_instance.text.assert_called_once_with(query, max_results=expected_max_results)
+    # Verify the context manager was used
+    mock_ddgs.return_value.__enter__.assert_called_once()
+    mock_ddgs.return_value.__exit__.assert_called_once()
 
 # Teste para erro de API (se pudermos simular um)
 # @pytest.mark.asyncio
-# async def test_web_search_skill_api_error():
-#     # Mock 'requests.post' or the internal HTTP client used by the search tool
-#     # to raise an exception (e.g., ConnectionError, Timeout)
+# async def test_web_search_skill_api_error(mock_ddgs):
+#     # Configure mock_ddgs_instance.text.side_effect = Exception("Simulated DDG Error")
+#     # Call web_search
+#     # Assert result_dict["status"] == "error"
 #     pass

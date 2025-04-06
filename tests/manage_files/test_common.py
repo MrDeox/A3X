@@ -27,17 +27,17 @@ def mock_workspace(tmp_path):
 
 @pytest.fixture
 def patch_workspace_root(mock_workspace):
-    """Patches the WORKSPACE_ROOT constant to use the mock workspace."""
-    # Assuming WORKSPACE_ROOT is correctly imported in skills.manage_files
-    with patch("skills.manage_files.WORKSPACE_ROOT", str(mock_workspace)):
+    """Patches the WORKSPACE_ROOT constant as used in skills.file_manager."""
+    # Corrected target: Patch the constant where it's used in the module under test
+    with patch("skills.file_manager.WORKSPACE_ROOT", str(mock_workspace)):
         yield str(mock_workspace)
 
 
 # Example common test (can be expanded)
 def test_workspace_root_patching(patch_workspace_root):
-    """Verify that the WORKSPACE_ROOT is correctly patched."""
-    # Re-import within the test to get the patched value
-    from skills.manage_files import WORKSPACE_ROOT as patched_root
+    """Verify that the WORKSPACE_ROOT is correctly patched within skills.file_manager."""
+    # Re-import within the test from the module where it's patched and used
+    from skills.file_manager import WORKSPACE_ROOT as patched_root
 
     assert patched_root == patch_workspace_root
 
