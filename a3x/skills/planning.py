@@ -1,14 +1,15 @@
 # skills/planning.py
 import logging
 import json
+import asyncio
 from typing import Dict, Any, Optional, List
 
 # from core.tools import skill
 from a3x.core.tools import skill
-from core.prompt_builder import (
+from a3x.core.prompt_builder import (
     build_planning_prompt,
 )  # Assuming this exists or will be created
-from core.llm_interface import call_llm
+from a3x.core.llm_interface import call_llm
 
 # from core.skills_utils import create_skill_response
 

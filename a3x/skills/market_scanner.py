@@ -1,7 +1,8 @@
 # skills/market_scanner.py
 import logging
-from core.tools import skill
-from core.skills_utils import create_skill_response
+# Use absolute imports
+from a3x.core.tools import skill
+from a3x.core.skills_utils import create_skill_response
 
 logger = logging.getLogger(__name__)
 

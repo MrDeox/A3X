@@ -98,3 +98,15 @@ models/
 
 # Compiled Binaries / Specific Files
 llama-server
+
+# Ignore test images and script outputs
+*.jpg
+test.txt
+
+# Ignore misplaced common dir from llama.cpp
+common/
+
+# Cache files
+__pycache__/
+*.py[cod]
+*$py.class

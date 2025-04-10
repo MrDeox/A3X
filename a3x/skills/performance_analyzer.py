@@ -2,9 +2,10 @@
 import logging
 from typing import List, Dict, Any
 
-# from core.skill_registry import register_skill
-from core.tools import skill
-from core.skills_utils import create_skill_response
+# Use absolute imports
+# from a3x.core.skill_registry import register_skill # Keep commented if not used
+from a3x.core.tools import skill
+from a3x.core.skills_utils import create_skill_response
 
 logger = logging.getLogger(__name__)
 

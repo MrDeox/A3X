@@ -1,7 +1,8 @@
 # skills/web_search.py
 import logging
+import os
 from duckduckgo_search import DDGS  # Import DDGS
-from core.tools import skill
+from a3x.core.tools import skill
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
@@ -90,26 +91,6 @@ def web_search(query: str, max_results: int = 5) -> dict:  # Added max_results p
             "results": search_results,  # This will be empty if no results were found
         },
     }
-
-
-@skill(
-    name="search_web_tavily",
-    description="Performs a web search using the Tavily API to answer a query.",
-    parameters={
-        "query": (str, ...),
-        "max_results": (int, 5),  # Default number of results
-        "include_domains": (list, None),  # REVERTED for @skill compatibility
-        "exclude_domains": (list, None),  # REVERTED for @skill compatibility
-    },
-)
-def search_web_tavily(
-    query: str,
-    max_results: int = 5,
-    include_domains: Optional[List[str]] = None,
-    exclude_domains: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    return {}  # ADDED placeholder return
-    # ... existing code ...
 
 
 # Removed the original web_search function content that used Tavily/stub
