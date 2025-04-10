@@ -27,10 +27,10 @@ O sistema consiste em:
     ```
 3.  **Instale as Dependências:**
     ```bash
-    pip install -r requirements.txt
+    pip install . # Ou use 'pip install -e .' para modo editável
     ```
 4.  **Configure o LLM Local:**
-    *   Baixe um modelo GGUF compatível (ex: Mistral 7B Instruct) e coloque-o no diretório `models/`.
+    *   Baixe um modelo GGUF compatível (ex: Google Gemma 2B) e coloque-o no diretório `models/`.
     *   Compile ou baixe o servidor `llama.cpp`. Coloque o executável `llama-server` (ou o nome correspondente) na raiz do projeto ou ajuste o caminho em `core/config.py`.
     *   *Opcional:* Rode o benchmark (`python tests/benchmark_ngl.py --ngl-values "..."`) para encontrar o melhor valor de `-ngl` para seu hardware e atualize `LLAMA_SERVER_ARGS` em `core/config.py`.
 5.  **Variáveis de Ambiente:**

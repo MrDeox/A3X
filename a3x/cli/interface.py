@@ -8,7 +8,7 @@ import logging
 import subprocess
 import atexit
 from dotenv import load_dotenv
-from typing import Optional, Tuple
+from typing import Optional, Tuple, AsyncGenerator
 import json
 import importlib
 
@@ -17,7 +17,7 @@ from rich.panel import Panel
 
 # Adiciona o diretório raiz ao sys.path para encontrar 'core' e 'skills'
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(script_dir)
+project_root = os.path.dirname(os.path.dirname(script_dir))
 sys.path.insert(0, project_root)
 
 # Imports do Core (após adicionar ao path)
@@ -43,10 +43,21 @@ try:
     # from core.tools import load_skills # F401
     # from core.logging_config import setup_logging
     from a3x.core.logging_config import setup_logging
+    from a3x.core.tool_executor import execute_tool
+    from a3x.core.llm_interface import call_llm
 except ImportError as e:
+    # <<< ADDED: Initialize logger here BEFORE using it >>>
+    # Need a basic logger config if setup_logging hasn't run yet
+    import logging
+    logging.basicConfig(level=logging.INFO) # Basic config
+    logger = logging.getLogger(__name__) # Get the logger instance
+    # <<< END ADDED >>>
+
     print(
         f"[CLI Interface FATAL] Failed to import core modules: {e}. Ensure PYTHONPATH is correct or run from project root."
     )
+    # Attempt to log the warning AFTER logger is defined
+    logger.warning(f"Could not import training module: {e}. --train command will be unavailable.")
     sys.exit(1)
 
 # <<< ADDED Import from new display module >>>
@@ -68,6 +79,19 @@ except ImportError as e:
     print(f"[CLI Interface FATAL] Failed to import logging config: {e}.")
     sys.exit(1)
 
+# <<< ADDED: Import trainer function >>>
+try:
+    from a3x.training.trainer import run_qlora_finetuning
+except ImportError as e:
+    run_qlora_finetuning = None # Define as None if import fails
+    # <<< ADDED: Initialize logger here BEFORE using it in this block >>>
+    import logging
+    # Use a basic config temporarily if full setup hasn't happened
+    logging.basicConfig(level=logging.WARNING)
+    _temp_logger = logging.getLogger(__name__) # Use temp name to avoid conflict if main logger exists later
+    _temp_logger.warning(f"Could not import training module: {e}. --train command will be unavailable.")
+    # <<< END ADDED >>>
+
 # <<< REMOVED Local Logging Setup >>>
 # logging.basicConfig(level=LOG_LEVEL, format='[%(levelname)s CLI] %(message)s')
 logger = logging.getLogger(__name__)  # Keep getting the logger for this module
@@ -85,12 +109,30 @@ console = Console()
 # <<< ADDED: Global variable for server process >>>
 _llama_server_process: Optional[subprocess.Popen] = None
 
+# <<< ADDED: Minimal Context for Direct Skill Call >>>
+from collections import namedtuple
+SkillContext = namedtuple("SkillContext", ["logger", "llm_call"])
+
+# Modified wrapper to be an async generator and pass stream=True
+async def _direct_llm_call_wrapper(prompt: str) -> AsyncGenerator[str, None]:
+    """Wrapper for call_llm to format prompt and enable streaming.
+       Yields response chunks.
+    """
+    messages = [{"role": "user", "content": prompt}]
+    logger.debug("Direct LLM Wrapper: Calling call_llm with stream=True")
+    try:
+        async for chunk in call_llm(messages, stream=True):
+            yield chunk
+    except Exception as e:
+        logger.error(f"Error in _direct_llm_call_wrapper (streaming): {e}", exc_info=True)
+        yield f"[LLM Call Error: {e}]"
+
 # --- Helper Functions ---
 
 
 def _load_system_prompt(file_path: str = "prompts/react_system_prompt.md") -> str:
     """Carrega o prompt do sistema de um arquivo."""
-    full_path = os.path.join(project_root, file_path)
+    full_path = os.path.join(project_root, "a3x", file_path)
     try:
         with open(full_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -118,18 +160,33 @@ def _parse_arguments():
         "--input-file",
         help="Arquivo para ler comandos sequencialmente (um por linha)",
     )
-    # Added interactive mode argument
     group.add_argument(
         "--interactive", action="store_true", help="Inicia o modo interativo"
     )
-    parser.add_argument(
+    group.add_argument(
         "--task",
-        help="Tarefa única a ser executada pelo agente (prioridade sobre -c, -i, --interactive)",
+        help="Tarefa única a ser executada pelo agente (substitui os modos command/input-file/interactive)",
     )
-    parser.add_argument(
+    group.add_argument(
         "--stream-direct", help="Prompt direto para o LLM em modo streaming"
     )
-    # <<< ADDED model and gpu_layers arguments >>>
+    group.add_argument(
+        "--train",
+        action="store_true",
+        help="Executa um ciclo de fine-tuning QLoRA usando dados do buffer de experiências."
+    )
+    # <<< ADDED: Temporary direct skill execution arguments >>>
+    group.add_argument(
+        "--run-skill",
+        help="(TESTING) Nome da skill a ser executada diretamente."
+    )
+    parser.add_argument(
+        "--skill-args",
+        default="{}",
+        help="(TESTING) Argumentos para a skill em formato JSON string (usado com --run-skill). Ex: '{\"param\":\"value\"}'"
+    )
+    # <<< END ADDED >>>
+
     parser.add_argument(
         "--model",
         help="Path para o arquivo do modelo GGUF a ser usado (sobrescreve config/default)",
@@ -412,11 +469,8 @@ def _start_llama_server(
     """Starts the llama.cpp server as a background process."""
     global _llama_server_process
 
-    # Find the llama-server executable relative to the project root
-    # Assumes it's at project_root/llama.cpp/build/bin/llama-server
-    server_executable = os.path.join(
-        project_root, "llama.cpp", "build", "bin", "llama-server"
-    )
+    # Correct the path to the NEWLY COMPILED llama-server executable
+    server_executable = os.path.join(project_root, "llama.cpp", "build", "bin", "llama-server") # Updated path
 
     if not os.path.exists(server_executable):
         logger.error(f"llama-server executable not found at: {server_executable}")
@@ -424,6 +478,9 @@ def _start_llama_server(
             f"[bold red][Error][/] llama-server not found at expected location: {server_executable}. Please build llama.cpp."
         )
         return None, None
+
+    # ADDED: Log the exact model path being checked
+    logger.info(f"Checking existence of model file at absolute path: {os.path.abspath(model_path)}")
 
     if not os.path.exists(model_path):
         logger.error(f"Model file not found at: {model_path}")
@@ -453,16 +510,31 @@ def _start_llama_server(
     logger.debug(f"Server command: {' '.join(command)}")
 
     try:
-        # Use Popen for background process, redirect stdout/stderr to PIPE or DEVNULL
-        # Redirecting to DEVNULL to keep CLI clean, check server logs if needed
+        # Get current environment and add LD_LIBRARY_PATH for the new build location
+        env = os.environ.copy()
+        lib_path = os.path.join(project_root, "llama.cpp", "build", "bin") # Updated path to bin dir
+        # Handle existing LD_LIBRARY_PATH
+        env['LD_LIBRARY_PATH'] = f"{lib_path}:{env.get('LD_LIBRARY_PATH', '')}".rstrip(':')
+        logger.info(f"Setting LD_LIBRARY_PATH for subprocess: {env['LD_LIBRARY_PATH']}")
+
+        # Open log files for server output
+        stdout_log_path = os.path.join(project_root, "llama_server_stdout.log")
+        stderr_log_path = os.path.join(project_root, "llama_server_stderr.log")
+        stdout_log = open(stdout_log_path, 'wb')
+        stderr_log = open(stderr_log_path, 'wb')
+        logger.info(f"Redirecting llama-server stdout to: {stdout_log_path}")
+        logger.info(f"Redirecting llama-server stderr to: {stderr_log_path}")
+
+        # Use Popen for background process, redirecting to log files
         _llama_server_process = subprocess.Popen(
             command,
-            stdout=subprocess.DEVNULL,  # Or subprocess.PIPE to capture logs
-            stderr=subprocess.PIPE,  # Capture errors to check for startup issues
+            env=env, # Pass the modified environment
+            stdout=stdout_log,  # Redirect stdout to file
+            stderr=stderr_log,  # Redirect stderr to file
         )
 
-        # Short pause to allow server to start and potentially fail
-        time.sleep(3)
+        # Short pause to allow server to start and potentially fail - INCREASED DELAY
+        time.sleep(15) # Increased from 3 to 15 seconds
 
         # Check if the process terminated unexpectedly
         if _llama_server_process.poll() is not None:
@@ -527,94 +599,128 @@ def _stop_llama_server():
 
 # <<< REFACTORED run_cli Function >>>
 def run_cli():
-    """Função principal que configura e executa a interface de linha de comando."""
-    load_dotenv()
-    setup_logging()
-    change_to_project_root()
-
+    """Função principal da CLI."""
+    setup_logging() # Ensure logging is setup
     args = _parse_arguments()
+    change_to_project_root()
+    initialize_database() # Ensure DB is ready
 
-    # --- Determine LLM Server URL ---
-    llm_server_url_to_use = None
     server_process = None
+    llm_url = DEFAULT_SERVER_URL # Use default from config initially
 
-    if not args.no_server:
-        # Determine model path (CLI arg > config > default)
-        model_path_to_use = args.model or DEFAULT_MODEL_PATH
-        # Determine GPU layers (CLI arg > default)
-        gpu_layers_to_use = args.gpu_layers  # Default is -1 in parser
+    # >>> LLM Server Management <<<
+    if not args.no_server and not args.stream_direct and not args.train:
+        model_path = args.model or DEFAULT_MODEL_PATH
+        if not os.path.isabs(model_path):
+            model_path = os.path.join(project_root, model_path)
 
-        server_process, internal_server_url = _start_llama_server(
-            model_path=model_path_to_use,
-            gpu_layers=gpu_layers_to_use,
-            port=args.port,
-            context_size=DEFAULT_CONTEXT_SIZE,
+        server_process, llm_url_from_server = _start_llama_server(
+            model_path=model_path,
+            gpu_layers=args.gpu_layers,
+            port=args.port
         )
-        if not server_process:
-            logger.critical("Failed to start internal LLM server. Exiting.")
-            sys.exit(1)
-        llm_server_url_to_use = internal_server_url
-    else:
-        # Use external server URL (config > default)
-        llm_server_url_to_use = DEFAULT_SERVER_URL  # Rely on config/env var or default
-        logger.info(f"Using external LLM server configured at: {llm_server_url_to_use}")
-
-    # --- Initialize DB ---
-    logger.info("Initializing database...")
-    initialize_database()
-
-    # --- Handle stream-direct (might need URL override if using internal server) ---
-    if args.stream_direct:
-        logger.info(f"Streaming direct from LLM at {llm_server_url_to_use}...")
-        # TODO: Modify stream_direct_llm if it needs the URL passed explicitly
-        try:
-            asyncio.run(
-                stream_direct_llm(
-                    args.stream_direct, llm_url_override=llm_server_url_to_use
-                )
-            )  # Pass URL
-        except Exception as stream_err:
-            logger.exception("Error during direct streaming:")
-            console.print(f"[bold red]Error during direct streaming: {stream_err}[/]")
-        finally:
-            # Ensure server stops if started internally
-            if server_process:
-                _stop_llama_server()
-        return
-
-    # --- Agent Initialization (Common for other modes) ---
-    system_prompt = _load_system_prompt()
-    # Pass the determined URL to the agent initializer
-    agent = _initialize_agent(system_prompt, llm_url_override=llm_server_url_to_use)
-
-    if not agent:
-        logger.error("Agent initialization failed. Exiting.")
-        if server_process:
-            _stop_llama_server()  # Stop server if agent fails
-        sys.exit(1)
-
-    # --- Dispatch based on arguments ---
-    try:
-        if args.task:
-            asyncio.run(_handle_task_argument(agent, args.task))
-        elif args.command:
-            asyncio.run(_handle_command_argument(agent, args.command))
-        elif args.input_file:
-            asyncio.run(_handle_file_argument(agent, args.input_file))
-        elif args.interactive or not (args.command or args.input_file or args.task):
-            asyncio.run(_handle_interactive_argument(agent))
+        if server_process and llm_url_from_server:
+            llm_url = llm_url_from_server # Override with internal server URL
+            # Ensure server is stopped on exit
+            atexit.register(_stop_llama_server)
         else:
-            logger.error(
-                "Inconsistent argument state. Cannot determine execution mode. Exiting."
-            )
+            console.print("[bold red][Error][/] Failed to start internal LLM server. Exiting.")
             sys.exit(1)
-    except Exception as main_run_err:
-        logger.exception("An error occurred during the main execution loop:")
-        console.print(f"[bold red][Runtime Error][/] {main_run_err}")
-    finally:
-        # Ensure server stops if started internally, regardless of execution outcome
-        if server_process:
-            _stop_llama_server()
+    elif args.no_server:
+        logger.info(f"Skipping internal server start, using configured URL: {llm_url}")
+    # >>> End LLM Server Management <<<
+
+    # --- Mode Handling ---
+    system_prompt = _load_system_prompt()
+    agent = _initialize_agent(system_prompt, llm_url_override=llm_url)
+
+    if agent is None:
+        sys.exit(1) # Agent initialization failed
+
+    if args.run_skill:
+        try:
+            skill_args_dict = json.loads(args.skill_args)
+            if not isinstance(skill_args_dict, dict):
+                 raise ValueError("Skill arguments must be a JSON object (dictionary).")
+
+            logger.info(f"Attempting direct execution of skill: '{args.run_skill}' with args: {skill_args_dict}")
+
+            # Get skill function directly
+            skill_info = agent.tools.get(args.run_skill)
+            if not skill_info or not callable(skill_info.get("function")):
+                logger.error(f"Skill '{args.run_skill}' not found or function is not callable.")
+                console.print(f"[bold red]Error:[/bold red] Skill '{args.run_skill}' not found or invalid.")
+                sys.exit(1)
+
+            skill_function = skill_info["function"]
+
+            # Create minimal context using the streaming wrapper
+            skill_ctx = SkillContext(logger=agent.agent_logger, llm_call=_direct_llm_call_wrapper)
+
+            # Call the skill function directly
+            async def run_the_skill_directly():
+                if asyncio.iscoroutinefunction(skill_function):
+                    # Skill is async, call it. It should internally handle the stream from ctx.llm_call
+                    result = await skill_function(ctx=skill_ctx, **skill_args_dict)
+                else:
+                    # This path is less likely now, as simulate_... is async
+                    logger.error(f"Skill '{args.run_skill}' is synchronous but the context provides an async generator llm_call. This might not work as expected.")
+                    # Attempting anyway, but it will likely fail if it tries to call llm_call without await
+                    result = skill_function(ctx=skill_ctx, **skill_args_dict)
+
+                console.print("[bold green]Skill Result:[/]")
+                console.print_json(data=result)
+
+            asyncio.run(run_the_skill_directly())
+
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON string provided for --skill-args: {args.skill_args}")
+            console.print(f"[bold red]Error:[/bold red] Invalid JSON provided for --skill-args.")
+            sys.exit(1)
+        except ValueError as ve:
+             logger.error(f"Error in skill arguments: {ve}")
+             console.print(f"[bold red]Error:[/bold red] {ve}")
+             sys.exit(1)
+        except TypeError as te:
+            logger.exception(f"TypeError during direct skill execution ('{args.run_skill}'): Likely context issue or wrong args.")
+            console.print(f"[bold red]Error:[/bold red] TypeError executing skill: {te}")
+            sys.exit(1)
+        except Exception as e:
+            logger.exception(f"Error during direct skill execution ('{args.run_skill}'):")
+            console.print(f"[bold red]Error:[/bold red] Failed to execute skill directly: {e}")
+            sys.exit(1)
+
+    elif args.train:
+        # <<< ADDED: Handle Train Argument >>>
+        if run_qlora_finetuning:
+            logger.info("Starting QLoRA Fine-tuning process...")
+            try:
+                # Ensure necessary args are passed if needed, for now assume defaults are handled
+                run_qlora_finetuning()
+                logger.info("QLoRA Fine-tuning process completed.")
+            except Exception as train_err:
+                logger.exception("Error during QLoRA fine-tuning:")
+                console.print(f"[bold red][Error][/] Fine-tuning failed: {train_err}")
+        else:
+            logger.error("Training module not available. Cannot execute --train.")
+            console.print("[bold red][Error][/] Training functionality is not available.")
+        # <<< END ADDED >>>
+    elif args.stream_direct:
+        # Handle direct streaming mode
+        asyncio.run(stream_direct_llm(args.stream_direct, llm_url))
+    elif args.task:
+        asyncio.run(_handle_task_argument(agent, args.task))
+    elif args.command:
+        asyncio.run(_handle_command_argument(agent, args.command))
+    elif args.input_file:
+        asyncio.run(_handle_file_argument(agent, args.input_file))
+    else: # Default to interactive if no other mode specified
+        asyncio.run(_handle_interactive_argument(agent))
+
+    logger.info("CLI run finished.")
+    # Explicitly stop server if it was started by this run
+    if server_process:
+        _stop_llama_server()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import logging  # Usar logging é melhor que print para debug
+import json
 
 # Configurar logging básico
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s DB] %(message)s")
@@ -146,6 +147,24 @@ def initialize_database():
             )
         # --- Fim Bloco Semantic Memory ---
 
+        # --- Criação Tabela Experience Buffer ---
+        logger.info("Verificando/Criando tabela 'experience_buffer'...")
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experience_buffer (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context TEXT,              -- Prompt ou situação que levou à ação
+                action TEXT,               -- Ação realizada (código, comando, resposta)
+                outcome TEXT,              -- Resultado (success, failure, error_log, user_feedback)
+                priority REAL DEFAULT 1.0, -- Prioridade calculada para amostragem (default 1.0)
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Quando ocorreu
+                metadata TEXT              -- JSON para infos extras (skill usada, confiança, etc.)
+            )
+        """
+        )
+        logger.info("Tabela 'experience_buffer' verificada/criada.")
+        # --- Fim Bloco Experience Buffer ---
+
         conn.commit()  # Commit final para knowledge, semantic_memory, VSS
         logger.info("Estrutura completa do banco de dados verificada/atualizada.")
 
@@ -214,6 +233,84 @@ def load_agent_state(agent_id: str) -> dict:
         if conn:
             conn.close()
     return state
+
+
+# --- Funções para Experience Buffer --- #
+
+def record_experience(context: str, action: str, outcome: str, metadata: dict | None = None):
+    """Registra uma nova experiência no buffer."""
+    conn = None
+    try:
+        # Lógica inicial simples de prioridade: falhas/erros têm prioridade maior
+        initial_priority = 2.0 if "failure" in outcome.lower() or "error" in outcome.lower() else 1.0
+
+        metadata_json = json.dumps(metadata) if metadata else None
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO experience_buffer (context, action, outcome, priority, metadata)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (context, action, outcome, initial_priority, metadata_json)
+        )
+        conn.commit()
+        logger.info(f"Experiência registrada no buffer (Priority: {initial_priority:.1f}).")
+
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao registrar experiência: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def sample_experiences(batch_size: int) -> list[sqlite3.Row]:
+    """Amostra experiências do buffer, ponderadas pela prioridade."""
+    conn = None
+    experiences = []
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # 1. Obter todas as experiências com suas prioridades
+        cursor.execute("SELECT id, priority FROM experience_buffer ORDER BY timestamp DESC") # Limitar opcionalmente?
+        all_experiences = cursor.fetchall()
+
+        if not all_experiences:
+            logger.info("Buffer de experiências vazio, nenhuma amostra retirada.")
+            return []
+
+        # 2. Preparar IDs e Pesos para amostragem
+        ids = [row['id'] for row in all_experiences]
+        # Normalizar prioridades para que somem 1 (se não forem todas 0)
+        priorities = [max(0.0, row['priority']) for row in all_experiences] # Garante não negativo
+        total_priority = sum(priorities)
+        weights = [p / total_priority for p in priorities] if total_priority > 0 else None
+
+        # 3. Amostrar IDs usando random.choices
+        import random
+        # Garante que não tentamos amostrar mais do que temos
+        sample_size = min(batch_size, len(ids))
+        sampled_ids = random.choices(ids, weights=weights, k=sample_size)
+
+        # 4. Buscar as experiências completas correspondentes aos IDs amostrados
+        # Usar placeholders para segurança e eficiência
+        placeholders = ', '.join('?' * len(sampled_ids))
+        query = f"SELECT * FROM experience_buffer WHERE id IN ({placeholders})"
+        cursor.execute(query, sampled_ids)
+        experiences = cursor.fetchall()
+
+        logger.info(f"Amostradas {len(experiences)} experiências do buffer.")
+
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao amostrar experiências: {e}")
+    except ImportError:
+        logger.error("Módulo 'random' não encontrado para amostragem.")
+    finally:
+        if conn:
+            conn.close()
+    return experiences
 
 
 # Comentado para evitar execução automática na importação.

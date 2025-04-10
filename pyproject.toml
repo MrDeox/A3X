@@ -52,6 +52,21 @@ dependencies = [
     "faiss-cpu", # or faiss-gpu if applicable
     "pypdf", # Added dependency
     "aiohttp", # Added based on llm_interface usage
+    "peft", # Added for QLoRA
+    "accelerate", # Added for Hugging Face Trainer/optimization
+    "datasets", # Added for preparing data for Trainer
+    "pyperclip",
+    "pyautogui",
+    "mss",
+    "lxml", # Already implied by beautifulsoup4 often, but good to be explicit
+    "readability-lxml",
+    "rich",
+    "pytesseract",
+    "ultralytics",
+    "sentence-transformers",
+    "pydantic", # Already present via fastapi usually
+    "playwright",
+    "duckduckgo-search",
 ]
 
 [project.optional-dependencies]
