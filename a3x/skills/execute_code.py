@@ -4,6 +4,7 @@ import logging
 from a3x.core.config import PYTHON_EXEC_TIMEOUT  # Default timeout
 from a3x.core.code_safety import is_safe_ast
 from a3x.core.tools import skill  # Import skill decorator
+from a3x.core.db_utils import record_experience # <<< Importar a função
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -81,6 +82,13 @@ def execute_code(
     is_safe, safety_message = is_safe_ast(code_to_execute)
     if not is_safe:
         logger.warning(f"Execution blocked by AST analysis: {safety_message}")
+        outcome = f"failure: AST analysis blocked - {safety_message}"
+        metadata = {"reason": "ast_block", "message": safety_message}
+        # <<< Registrar Experiência >>>
+        try:
+            record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+        except Exception as db_err:
+            logger.error(f"Failed to record AST block experience: {db_err}")
         return {
             "status": "error",
             "action": "execution_failed",
@@ -133,6 +141,13 @@ def execute_code(
 
         # --- Return Result ---
         if exit_code == 0:
+            outcome = "success"
+            metadata = {"returncode": exit_code, "stdout_len": len(stdout_result), "stderr_len": len(stderr_result)}
+            # <<< Registrar Experiência >>>
+            try:
+                record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+            except Exception as db_err:
+                logger.error(f"Failed to record success experience: {db_err}")
             return {
                 "status": "success",
                 "action": "code_executed",
@@ -150,6 +165,13 @@ def execute_code(
             elif "Traceback (most recent call last):" in stderr_result:
                 error_cause = "erro de runtime"
 
+            outcome = f"failure: {error_cause}"
+            metadata = {"returncode": exit_code, "error_cause": error_cause, "stderr_preview": stderr_result[:200]}
+            # <<< Registrar Experiência >>>
+            try:
+                record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+            except Exception as db_err:
+                logger.error(f"Failed to record failure experience: {db_err}")
             return {
                 "status": "error",
                 "action": "execution_failed",
@@ -163,6 +185,13 @@ def execute_code(
 
     except subprocess.TimeoutExpired:
         logger.warning(f"Timeout ({timeout_sec}s) atingido durante a execução.")
+        outcome = f"failure: timeout ({timeout_sec}s)"
+        metadata = {"timeout_value": timeout_sec}
+        # <<< Registrar Experiência >>>
+        try:
+            record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+        except Exception as db_err:
+            logger.error(f"Failed to record timeout experience: {db_err}")
         return {
             "status": "error",
             "action": "execution_failed",
@@ -175,6 +204,13 @@ def execute_code(
             "Comando 'firejail' ou 'python3' não encontrado. Verifique a instalação e o PATH.",
             exc_info=True,
         )
+        outcome = "failure: environment error (firejail/python3 not found)"
+        metadata = {"error_type": "FileNotFoundError"}
+        # <<< Registrar Experiência >>>
+        try:
+            record_experience(context="execute_code skill", action="N/A - Environment Error", outcome=outcome, metadata=metadata)
+        except Exception as db_err:
+            logger.error(f"Failed to record environment error experience: {db_err}")
         return {
             "status": "error",
             "action": "execution_failed",
@@ -184,6 +220,13 @@ def execute_code(
         }
     except Exception as e:
         logger.exception("Erro inesperado ao tentar executar código:")
+        outcome = f"failure: unexpected error - {type(e).__name__}"
+        metadata = {"error_type": type(e).__name__, "error_message": str(e)[:200]}
+        # <<< Registrar Experiência >>>
+        try:
+            record_experience(context="execute_code skill", action=code_to_execute if 'code_to_execute' in locals() else "N/A - Early Error", outcome=outcome, metadata=metadata)
+        except Exception as db_err:
+            logger.error(f"Failed to record unexpected error experience: {db_err}")
         return {
             "status": "error",
             "action": "execution_failed",

@@ -4,6 +4,7 @@ import json
 import datetime
 import os
 from typing import List, Dict, Optional, AsyncGenerator
+import time
 
 # Initialize logger for this module *before* first use
 llm_logger = logging.getLogger(__name__)
@@ -38,196 +39,141 @@ REACT_SCHEMA = {
     "required": ["Thought", "Action"],
 }
 
+DEFAULT_TIMEOUT = 600 # Increased default timeout
+
+def _determine_llm_url(provided_url: Optional[str]) -> str:
+    """Determines the LLM URL to use, checking environment variables and defaults."""
+    if provided_url:
+        return provided_url
+    env_url = os.getenv("LLM_API_URL")
+    if env_url:
+        return env_url
+    return _DEFAULT_LLM_URL
 
 # <<< MODIFIED: Make it an async generator and add stream param >>>
 async def call_llm(
-    messages: List[Dict[str, str]], llm_url: Optional[str] = None, stream: bool = False
+    messages: List[Dict[str, str]],
+    llm_url: Optional[str] = None,
+    stream: bool = False,
+    timeout: int = DEFAULT_TIMEOUT,
 ) -> AsyncGenerator[str, None]:
     """
-    Chama a API do LLM (Llama.cpp server) com a lista de mensagens.
-    Pode operar em modo normal (retorna string completa) ou streaming (gera chunks).
+    Chama a API do LLM (compatível com OpenAI Chat Completions) de forma assíncrona.
 
     Args:
-        messages: Lista de dicionários de mensagens (formato OpenAI).
-        llm_url: URL opcional da API LLM (padrão para LLAMA_SERVER_URL de config).
-        stream: Se True, ativa o modo streaming e gera chunks de texto.
+        messages: Lista de dicionários de mensagens (role/content).
+        llm_url: URL da API do LLM (opcional, usa config/env/default).
+        stream: Se True, retorna um gerador assíncrono para streaming.
+                Se False, acumula a resposta e retorna como gerador de um único item.
+        timeout: Timeout em segundos para a requisição.
 
     Yields:
-        Chunks de texto (string) se stream=True.
+        str: Chunks da resposta do LLM (se stream=True) ou a resposta completa (se stream=False).
 
     Raises:
-        requests.exceptions.RequestException: Se houver erro na chamada HTTP.
-        ValueError: Se a resposta da API não for JSON válido (modo não-streaming) ou se stream falhar.
-        StopAsyncIteration: Quando o stream termina (se stream=True).
+        requests.exceptions.RequestException: Para erros de conexão/HTTP.
+        requests.exceptions.Timeout: Se o timeout for atingido.
+        Exception: Para outros erros inesperados.
     """
-    # <<< MODIFIED: Determine target URL robustly >>>
-    # 1. Use llm_url if provided directly
-    # 2. Use LLAMA_SERVER_URL from config if imported successfully
-    # 3. Use the in-module default _DEFAULT_LLM_URL
-    # 4. Use os.getenv as a final fallback (redundant if config loads .env, but safe)
-    target_url = (
-        llm_url or _CONFIG_LLAMA_URL or os.getenv("LLAMA_SERVER_URL", _DEFAULT_LLM_URL)
-    )
+    target_url = _determine_llm_url(llm_url)
+    headers = {"Content-Type": "application/json"}
+    payload = {"messages": messages, "stream": stream}
 
-    if not target_url:
-        llm_logger.error("LLM API URL could not be determined. Check config and .env.")
-        raise ValueError("LLM API URL could not be determined.")
+    llm_logger.debug(f"Enviando para LLM. URL: {target_url}, Stream: {stream}")
+    llm_logger.debug(f"Payload (sem stream key): { {k:v for k,v in payload.items() if k != 'stream'} }")
 
-    payload = {
-        "messages": messages,
-        "temperature": 0.7,  # Ajuste conforme necessário
-        "max_tokens": 2048,  # Ajuste conforme necessário
-        # <<< ADD stream parameter >>>
-        "stream": stream,
-        # Adicione outros parâmetros suportados pelo servidor Llama.cpp se necessário
-        # "stop": ["Observation:"] # Exemplo, se o servidor suportar
-    }
-    headers = LLAMA_DEFAULT_HEADERS  # Use global default directly
-
-    llm_logger.debug(
-        f"Enviando para LLM: URL={target_url}, Stream={stream}, Payload Messages Count={len(messages)}"
-    )
-    if llm_logger.isEnabledFor(logging.DEBUG):
-        try:
-            # Log detalhado apenas se DEBUG estiver ativo
-            detailed_payload_log = json.dumps(payload, indent=2, ensure_ascii=False)
-            llm_logger.debug(f"Payload Detalhado:\n{detailed_payload_log}")
-        except Exception as log_e:
-            llm_logger.warning(
-                f"Falha ao serializar payload para log detalhado: {log_e}"
-            )
-
-    start_time = datetime.datetime.now()
+    full_response_content = ""
+    start_time = time.time()
     try:
-        # <<< MODIFIED: Add stream=stream to request >>>
-        # Using sync requests for now, async version would need aiohttp
-        # TODO: Consider switching to aiohttp for full async compatibility
         response = requests.post(
-            target_url, headers=headers, json=payload, timeout=300, stream=stream
+            target_url,
+            headers=headers,
+            json=payload,
+            stream=stream,
+            timeout=timeout,
         )
+        duration = time.time() - start_time
         response.raise_for_status()  # Levanta erro para status HTTP 4xx/5xx
 
         if stream:
             llm_logger.info(
-                f"LLM stream started. Duration to first byte: {(datetime.datetime.now() - start_time).total_seconds():.3f}s"
+                f"LLM stream started. Duration to first byte: {duration:.3f}s"
             )
             # Handle streaming response (Server-Sent Events)
-            full_response_text = ""
+            lines_processed = 0
             for line in response.iter_lines():
                 if line:
                     decoded_line = line.decode("utf-8")
                     if decoded_line.startswith("data: "):
+                        json_str = decoded_line[len("data: ") :].strip()
+                        if json_str == "[DONE]":
+                            llm_logger.debug("LLM stream finished marker [DONE] received.")
+                            break
                         try:
-                            # Remove 'data: ' prefix and parse JSON
-                            json_data = json.loads(decoded_line[6:])
-                            # Extract content chunk (adjust based on actual server response structure)
-                            if "choices" in json_data and json_data["choices"]:
-                                delta = json_data["choices"][0].get("delta", {})
-                                chunk = delta.get("content")
-                                if chunk:
-                                    full_response_text += chunk
-                                    yield chunk  # Yield the content chunk
-                            elif (
-                                "content" in json_data
-                            ):  # Handle direct content if needed
-                                chunk = json_data.get("content")
-                                if chunk and isinstance(chunk, str):
-                                    full_response_text += chunk
-                                    yield chunk
-                            # Handle potential stop reason if needed
-                            # finish_reason = json_data['choices'][0].get('finish_reason')
-                            # if finish_reason:
-                            #    llm_logger.info(f"LLM stream finished with reason: {finish_reason}")
-                            #    break
+                            data = json.loads(json_str)
+                            choices = data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content")
+                                if content:
+                                    lines_processed += 1
+                                    yield content
                         except json.JSONDecodeError:
                             llm_logger.warning(
-                                f"Failed to decode JSON chunk from stream: {decoded_line}"
+                                f"LLM stream: Failed to decode JSON line: {json_str}"
                             )
-                            continue  # Skip malformed lines
-            end_time = datetime.datetime.now()
-            duration = (end_time - start_time).total_seconds()
-            llm_logger.info(f"LLM stream finished. Total duration: {duration:.3f}s")
+                    elif decoded_line.strip(): # Log other non-empty lines
+                         llm_logger.warning(f"LLM stream: Received unexpected line: {decoded_line}")
+                # Timeout check within stream loop could be added if needed
+            duration = time.time() - start_time # Recalculate total duration
+            llm_logger.info(f"LLM stream finished. Lines processed: {lines_processed}. Total duration: {duration:.3f}s")
             # For stream=True, we don't return, we just yield.
-            # We could potentially return the full concatenated text after the loop if needed,
-            # but the generator pattern implies yielding is the primary output.
-            # return full_response_text # Optional: return full text if needed after stream
 
-        else:  # Non-streaming mode (existing logic)
-            end_time = datetime.datetime.now()
-            duration = (end_time - start_time).total_seconds()
+        else:  # Non-streaming mode
             llm_logger.info(
                 f"LLM call successful (non-streaming). Duration: {duration:.3f}s"
             )
             try:
                 response_data = response.json()
+                choices = response_data.get("choices", [])
+                if choices:
+                    message = choices[0].get("message", {})
+                    full_response_content = message.get("content", "")
+                    llm_logger.debug(f"Non-streaming response content length: {len(full_response_content)}")
+                else:
+                    llm_logger.warning("LLM non-streaming response missing 'choices'.")
             except json.JSONDecodeError as json_err:
-                llm_logger.error(
-                    f"Falha ao decodificar JSON da resposta LLM. Status: {response.status_code}, Raw Response: {response.text[:500]}..."
-                )
-                raise ValueError(
-                    f"Resposta LLM não é JSON válido: {json_err}"
-                ) from json_err
+                llm_logger.error(f"Failed to decode non-streaming JSON response: {json_err}")
+                llm_logger.debug(f"Raw non-streaming response text: {response.text}")
+                # Yield an error message or raise?
+                yield f"[LLM Response Error: Failed to parse JSON - {json_err}]"
+                return # Stop generation
 
-            if (
-                "choices" in response_data
-                and isinstance(response_data["choices"], list)
-                and len(response_data["choices"]) > 0
-            ):
-                message = response_data["choices"][0].get("message", {})
-                llm_content = message.get("content")
-                if llm_content:
-                    # In non-streaming, yield a single item (the full response) then stop
-                    yield llm_content.strip()
-                    return  # Necessary to stop the generator
-                else:
-                    llm_logger.error(
-                        f"Estrutura de resposta LLM inesperada (sem 'content' em 'message'). Data: {response_data}"
-                    )
-                    raise ValueError("Resposta LLM não contém 'content' esperado.")
-            elif "content" in response_data:
-                llm_content = response_data.get("content")
-                if llm_content and isinstance(llm_content, str):
-                    yield llm_content.strip()
-                    return
-                else:
-                    llm_logger.error(
-                        f"Estrutura de resposta LLM inesperada (campo 'content' não é string ou vazio). Data: {response_data}"
-                    )
-                    raise ValueError(
-                        "Resposta LLM não contém 'content' string esperado."
-                    )
-            else:
-                llm_logger.error(
-                    f"Estrutura de resposta LLM inesperada (sem 'choices' ou 'content'). Data: {response_data}"
-                )
-                raise ValueError(
-                    "Resposta LLM não tem a estrutura esperada ('choices' ou 'content')."
-                )
+            yield full_response_content # Yield the single full response
 
     except requests.exceptions.Timeout as e:
-        end_time = datetime.datetime.now()
-        duration = (end_time - start_time).total_seconds()
+        duration = time.time() - start_time
         llm_logger.error(f"LLM call timed out after {duration:.3f}s. URL: {target_url}")
         raise requests.exceptions.Timeout(
             f"Timeout na chamada LLM ({duration:.3f}s)"
         ) from e
     except requests.exceptions.RequestException as e:
-        end_time = datetime.datetime.now()
-        duration = (end_time - start_time).total_seconds()
+        duration = time.time() - start_time
         llm_logger.exception(
             f"Erro na chamada HTTP para LLM ({duration:.3f}s). URL: {target_url}. Erro: {e}"
         )
-        # Logar a resposta se disponível
-        if e.response is not None:
-            llm_logger.error(f"LLM Error Response Status: {e.response.status_code}")
-            llm_logger.error(
-                f"LLM Error Response Body: {e.response.text[:500]}..."
-            )  # Limita o tamanho do log
+        # Adicionar log do corpo da resposta, se disponível e útil
+        try:
+            if e.response is not None:
+                 llm_logger.error(f"LLM Error Response Status: {e.response.status_code}")
+                 llm_logger.error(f"LLM Error Response Body: {e.response.text[:500]}...") # Log first 500 chars
+        except Exception as log_err:
+             llm_logger.error(f"Failed to log error response body: {log_err}")
+
         raise e  # Re-levanta a exceção original
     except Exception as e:  # Captura outras exceções inesperadas
-        end_time = datetime.datetime.now()
-        duration = (end_time - start_time).total_seconds()
+        duration = time.time() - start_time
         llm_logger.exception(
             f"Erro inesperado durante o processamento da chamada LLM ({duration:.3f}s). Erro: {e}"
         )
-        raise e  # Re-levanta a exceção
+        raise e # Re-levanta para tratamento no nível superior

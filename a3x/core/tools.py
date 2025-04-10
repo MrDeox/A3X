@@ -84,6 +84,7 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
             "resolved_path",
             "original_path_str",
             "kwargs",
+            "ctx",
         }
         # <<< END NEW >>>
 

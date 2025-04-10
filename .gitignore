@@ -31,6 +31,7 @@ MANAGE_DIR/
 venv/
 env/
 ENV/
+a3x_venv/
 
 # IDE
 .idea/

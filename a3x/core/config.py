@@ -88,8 +88,8 @@ AGENT_STATE_ID = os.getenv(
 # Caminho para o arquivo do modelo GGUF
 LLAMA_MODEL_PATH = os.environ.get(
     "LLAMA_MODEL_PATH",
-    os.path.join(project_root, "models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"),
-)  # <<< Using Llama 3, ensure path relative to project_root (corrected variable name)
+    os.path.join(project_root, "models", "gemma-3-4b-it-Q4_K_M.gguf"), # Correct full path using project_root
+)
 # Argumentos adicionais para passar ao servidor llama.cpp
 # Ex: número de camadas GPU, tamanho do contexto, etc.
 # IMPORTANTE: Garanta que o tamanho do contexto (-c) aqui seja consistente ou maior que o usado nos prompts.
@@ -110,3 +110,25 @@ MAX_TOKENS_FALLBACK = int(os.environ.get("MAX_TOKENS_FALLBACK", 1024))
 
 # Tamanho do contexto do modelo LLM (deve ser compatível com o modelo carregado)
 CONTEXT_SIZE = int(os.environ.get("CONTEXT_SIZE", 4096))
+
+# --- Configurações de Treinamento QLoRA ---
+BASE_MODEL_NAME = os.getenv("BASE_MODEL_NAME", "google/gemma-2b")
+QLORA_R = int(os.getenv("QLORA_R", "8"))
+QLORA_ALPHA = int(os.getenv("QLORA_ALPHA", "16"))
+QLORA_DROPOUT = float(os.getenv("QLORA_DROPOUT", "0.05"))
+TRAINING_OUTPUT_DIR = os.getenv("TRAINING_OUTPUT_DIR", os.path.join(project_root, "a3x_training_output/qlora_adapters"))
+TRAINING_BATCH_SIZE = int(os.getenv("TRAINING_BATCH_SIZE", "1"))
+TRAINING_GRAD_ACCUMULATION = int(os.getenv("TRAINING_GRAD_ACCUMULATION", "4"))
+TRAINING_EPOCHS = int(os.getenv("TRAINING_EPOCHS", "1"))
+TRAINING_LEARNING_RATE = float(os.getenv("TRAINING_LEARNING_RATE", "2e-4"))
+# Outras configurações de BnB/LoRA podem ser adicionadas aqui se necessário
+# Ex: BNB_COMPUTE_DTYPE = os.getenv("BNB_COMPUTE_DTYPE", "bfloat16")
+# Ex: LORA_TARGET_MODULES = os.getenv("LORA_TARGET_MODULES", '["q_proj","v_proj"]') # Ler como string e parsear
+
+# --- FIM Configurações QLoRA ---
+
+# Garantir que o diretório de output do treino exista
+try:
+    os.makedirs(TRAINING_OUTPUT_DIR, exist_ok=True)
+except OSError as e:
+    print(f"Erro ao criar diretório de output do treinamento {TRAINING_OUTPUT_DIR}: {e}")

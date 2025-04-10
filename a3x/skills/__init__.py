@@ -46,3 +46,13 @@ except Exception as e:
         f"Failed to explicitly import consolidated skill module 'file_manager': {e}",
         exc_info=True,
     )
+
+# Explicitly import the simulate sub-package to ensure its skills are registered.
+try:
+    importlib.import_module(".simulate", __package__)
+    logger.debug("Explicitly imported simulate skill sub-package.")
+except Exception as e:
+    logger.error(
+        f"Failed to explicitly import skill sub-package 'simulate': {e}",
+        exc_info=True,
+    )
