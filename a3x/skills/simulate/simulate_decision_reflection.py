@@ -15,7 +15,7 @@ except ImportError:
 
 from a3x.core.tools import skill
 from a3x.core.config import LLAMA_MODEL_PATH
-from a3x.core.skills_utils import safe_llm_call
+from a3x.core.llm_interface import call_llm
 
 # Configuration constants (adjust paths as needed)
 try:
@@ -424,22 +424,26 @@ async def simulate_decision_reflection(ctx, user_input: str):
         llm_start_time = time.time()
         # Removed debug prints
         try:
-            simulated_reflection_content = await safe_llm_call(ctx, final_prompt, timeout=150)
-            if simulated_reflection_content.startswith("[Erro]"):
-                 ctx.logger.error(f"Safe LLM call failed: {simulated_reflection_content}")
-                 return {"error": f"Falha na chamada segura ao LLM: {simulated_reflection_content}"}
+            # <<< Use call_llm directly >>>
+            # We assume the LLM will follow the prompt and provide the full reflection.
+            # Stream=True is used, but we accumulate the result.
+            async for chunk in call_llm(messages=[{"role": "user", "content": final_prompt}], stream=True, timeout=180): # Increased timeout
+                simulated_reflection_content += chunk
+
+            # Check if the response is empty after streaming
+            if not simulated_reflection_content or not simulated_reflection_content.strip():
+                ctx.logger.error("LLM returned an empty simulation response.")
+                raise ValueError("LLM returned empty response")
+            # Check for explicit error markers that might come from call_llm or its handling
+            if simulated_reflection_content.startswith("[LLM Call Error:"):
+                ctx.logger.error(f"LLM call failed: {simulated_reflection_content}")
+                raise ValueError(simulated_reflection_content) # Propagate error
+
             llm_duration = time.time() - llm_start_time
             logger.info(f"LLM simulation finished. Total length: {len(simulated_reflection_content)}. Duration: {llm_duration:.3f}s")
         except Exception as e:
             logger.exception("Error during LLM call or processing:")
             return {"error": f"Erro ao chamar LLM ou processar resposta: {e}"}
-
-        if not simulated_reflection_content or not simulated_reflection_content.strip():
-             logger.warning("LLM returned empty response after streaming.")
-             return {"simulated_reflection": "[Simulação falhou: O modelo não gerou reflexão]"}
-        if simulated_reflection_content.startswith("[LLM Call Error:"):
-            logger.error(f"LLM call failed within stream: {simulated_reflection_content}")
-            return {"error": simulated_reflection_content}
 
         logger.info(f"LLM simulation finished. Total length: {len(simulated_reflection_content)}")
 

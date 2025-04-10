@@ -7,6 +7,9 @@ import inspect
 from typing import Dict, Any, Callable, Optional
 from pydantic import BaseModel, create_model  # Import Pydantic
 
+# <<< ADD LOG HERE >>>
+print(f"\n*** Executing module: a3x.core.tools (ID: {id(sys.modules.get('a3x.core.tools'))}) ***\n")
+
 # <<< START PROJECT ROOT PATH CORRECTION >>>
 # Calculate the project root (two levels up from core/tools.py)
 _current_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 # --- Novo Registro de Skills e Decorador ---
 SKILL_REGISTRY: Dict[str, Dict[str, Any]] = {}
+# <<< ADD LOG HERE >>>
+print(f"\n*** Initializing SKILL_REGISTRY in a3x.core.tools (ID: {id(SKILL_REGISTRY)}) ***\n")
 
 
 class SkillInputSchema(BaseModel):
@@ -139,12 +144,21 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
     return decorator
 
 
-def load_skills(skill_directory: str = "skills"):
+def load_skills(skill_package_name: str = "a3x.skills"):
     """
     Importa dinamicamente o PACOTE de skills para garantir que __init__.py
     seja executado e registre as skills nele importadas.
+
+    Args:
+        skill_package_name (str): The Python package name for skills (e.g., 'a3x.skills').
     """
-    logger.info(f"Attempting to load skills package: {skill_directory}")
+    # <<< ADDED: Prevent re-loading if already populated >>>
+    if SKILL_REGISTRY:
+        logger.debug("Skill registry already populated. Skipping load_skills.")
+        return
+    # <<< END ADDED >>>
+
+    logger.info(f"Attempting to load skills package: {skill_package_name}")
     # # DEBUG: Print project_root and sys.path before import attempt # REMOVED DEBUGGING
     # # print(f"DEBUG: project_root in load_skills: {project_root}") # REMOVED DEBUGGING
     # # print(f"DEBUG: sys.path BEFORE import in load_skills: {sys.path}") # REMOVED DEBUGGING
@@ -159,26 +173,24 @@ def load_skills(skill_directory: str = "skills"):
 
     try:
         # Importa o pacote skills; seu __init__.py deve importar os módulos individuais.
-        # Usar importlib.invalidate_caches() pode ser útil se as skills mudarem dinamicamente
-        # importlib.invalidate_caches()
-        # module = importlib.import_module(skill_directory) # F841
-        importlib.import_module(skill_directory)  # Just import, don't assign
+        # Use the package name for import
+        importlib.import_module(skill_package_name)  # Just import, don't assign
         # Recarregar o módulo se ele já foi importado, para pegar novas skills/mudanças
         # importlib.reload(module)
         count_after = len(SKILL_REGISTRY)
         newly_registered = count_after - count_before
         logger.info(
-            f"Finished loading skills package '{skill_directory}'. Newly registered skills: {newly_registered}. Total registry size: {count_after}"
+            f"Finished loading skills package '{skill_package_name}'. Newly registered skills: {newly_registered}. Total registry size: {count_after}"
         )
     except ModuleNotFoundError as e:
         # Adicionar mais detalhes ao log de erro
         logger.error(
-            f"Could not find skills package '{skill_directory}'. Check PYTHONPATH ({sys.path}) and directory structure. Error: {e}",
+            f"Could not find skills package '{skill_package_name}'. Check PYTHONPATH ({sys.path}) and directory structure. Error: {e}",
             exc_info=True,
         )
     except Exception as e:
         logger.error(
-            f"Failed to import or process skills package '{skill_directory}': {e}",
+            f"Failed to import or process skills package '{skill_package_name}': {e}",
             exc_info=True,
         )
 
@@ -191,34 +203,33 @@ def get_skill_registry() -> Dict[str, Dict[str, Any]]:
     # Garante que as skills foram carregadas pelo menos uma vez
     # Chamada explícita de load_skills é preferível no ponto de entrada da aplicação (ex: Agent.__init__)
     # para controlar quando o carregamento ocorre. Remover o carregamento automático daqui.
+    # <<< REMOVED Implicit Load Block >>>
+    # # Se o registro estiver vazio, TENTAR carregar (útil para testes ou execuções diretas)
     # if not SKILL_REGISTRY:
-    #     logger.warning("Skill registry is empty. Attempting to load skills now.")
+    #     logger.warning(
+    #         "Skill registry accessed while empty. Attempting to load skills implicitly."
+    #     )
     #     load_skills()
-    # Se o registro estiver vazio, TENTAR carregar (útil para testes ou execuções diretas)
-    if not SKILL_REGISTRY:
-        logger.warning(
-            "Skill registry accessed while empty. Attempting to load skills implicitly."
-        )
-        load_skills()
 
     return SKILL_REGISTRY
 
 
 def get_tool_descriptions() -> str:
     """Retorna uma string formatada com as descrições de todas as ferramentas registradas."""
-    registry = get_skill_registry()  # Pega o registro atual
+    # <<< MODIFIED: Directly get registry, assume it's loaded explicitly elsewhere >>>
+    registry = SKILL_REGISTRY # Directly access the global registry
     if not registry:
-        # Tenta carregar se estiver vazio (pode ser útil em alguns cenários de teste/uso direto)
-        logger.warning(
-            "Tool description requested but registry is empty. Attempting to load skills."
+        # <<< REMOVED Implicit Load Attempt >>>
+        # logger.warning(
+        #     "Tool description requested but registry is empty. Attempting to load skills."
+        # )
+        # load_skills()
+        # registry = get_skill_registry() # Tenta novamente
+        # if not registry:
+        logger.error(
+            "Skill registry is empty when requesting tool descriptions. Skills should be loaded explicitly at startup."
         )
-        load_skills()
-        registry = get_skill_registry()  # Tenta novamente
-        if not registry:
-            logger.error(
-                "Skill registry still empty after attempting load. No tools available."
-            )
-            return "No tools available."
+        return "No tools available (registry empty)."
 
     descriptions = []
     for name, skill_info in registry.items():

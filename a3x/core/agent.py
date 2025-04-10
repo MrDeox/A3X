@@ -46,11 +46,11 @@ def _is_simple_list_files_task(objective: str) -> bool:
 
 # --- Classe ReactAgent ---
 class ReactAgent:
-    def __init__(self, system_prompt: str, llm_url: Optional[str] = None):
+    def __init__(self, system_prompt: str, llm_url: Optional[str] = None, tools_dict: Optional[Dict[str, Dict[str, Any]]] = None):
         """Inicializa o Agente ReAct."""
         self.llm_url = llm_url
         self.system_prompt = system_prompt
-        self.tools = get_skill_registry()
+        self.tools = tools_dict if tools_dict is not None else get_skill_registry()
         self._history = []  # Histórico de Thought, Action, Observation
         self.agent_id = "1"  # TODO: Make agent ID configurable/dynamic
         self.agent_logger = agent_logger

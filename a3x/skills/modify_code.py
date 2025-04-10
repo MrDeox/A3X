@@ -3,6 +3,8 @@ import requests
 import logging
 import json
 import re
+import os
+import ast
 from typing import Dict, Any
 
 # from core.tools import skill
@@ -11,17 +13,19 @@ from typing import Dict, Any
 
 # from core.code_safety import is_safe_ast # Import safety check
 
-# Use configurações centralizadas
+# Use absolute import for config, handle potential ImportError
 try:
-    from core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
+    from a3x.core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
 except ImportError:
-    # Fallback se rodando fora do contexto principal ou erro de importação
-    logging.warning("Could not import config from core.config. Using default LLM URL.")
-    LLAMA_SERVER_URL = "http://127.0.0.1:8080/v1/chat/completions"
-    LLAMA_DEFAULT_HEADERS = {"Content-Type": "application/json"}
+    # logging.warning("Could not import config from core.config. Using default LLM URL.") # Logged below
+    LLAMA_SERVER_URL = "http://127.0.0.1:8080/v1/chat/completions" # Provide a default
+    LLAMA_DEFAULT_HEADERS = { "Content-Type": "application/json" }
 
-# Configure logger para esta skill
+# Re-enable logger after potential config import
 logger = logging.getLogger(__name__)
+# Log warning here if import failed
+if 'LLAMA_SERVER_URL' not in globals():
+     logging.warning("Could not import config from a3x.core.config. Using default LLM URL.")
 
 
 def skill_modify_code(

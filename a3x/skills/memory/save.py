@@ -4,9 +4,9 @@ import struct  # Para converter vetor float em bytes
 import logging
 from typing import Dict, Any
 
-# Importar utils
-from core.db_utils import get_db_connection
-from core.embeddings import get_embedding, EMBEDDING_DIM  # Importa dimensão também
+# Importar utils - Use absolute paths
+from a3x.core.db_utils import get_db_connection
+from a3x.core.embeddings import get_embedding, EMBEDDING_DIM  # Importa dimensão também
 
 logger = logging.getLogger(__name__)  # Usar logger específico do módulo
 
@@ -58,10 +58,10 @@ def skill_save_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
         if current_embedding_dim is None:
             # Tenta forçar o carregamento se ainda não ocorreu (embora get_embedding devesse ter feito)
             # Isso indica um problema maior se ocorrer, mas tentamos contornar.
-            from core.embeddings import _load_model_internal
+            from a3x.core.embeddings import _load_model_internal
 
             _load_model_internal()
-            from core.embeddings import (
+            from a3x.core.embeddings import (
                 EMBEDDING_DIM as current_embedding_dim,
             )  # Tenta de novo
 

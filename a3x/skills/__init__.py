@@ -18,23 +18,28 @@ SKIPPED_MODULES = {
     "read_file",
     "list_files",
     "delete_file",
+    # "perception", # Restore - let's see if it crashes first
+    # "web_search", # Restore - let's see if it crashes first
 }
 
+# Restore automatic discovery
 for loader, module_name, is_pkg in pkgutil.walk_packages(__path__):
-    # Ignore modules starting with _ or those being consolidated
-    if not module_name.startswith("_") and module_name not in SKIPPED_MODULES:
+    # Ignore modules starting with _, those being consolidated, or modules within the core directory
+    if not module_name.startswith("_") and module_name not in SKIPPED_MODULES and not module_name.startswith("core."):
+        logger.info(f"---> Attempting to import skill module: {module_name} (is_pkg={is_pkg})") # Log BEFORE
         try:
             _module = importlib.import_module(f".{module_name}", __package__)
             # Optionally, add module names to __all__ if needed
             # __all__.append(module_name)
-            # logger.debug(f"Successfully imported skill module: {module_name}")
+            logger.info(f"---> Successfully imported skill module: {module_name}") # Log AFTER success
+            # logger.debug(f"Successfully imported skill module: {module_name}") # Original debug log
         except Exception as e:
             logger.error(
-                f"Failed to import skill module '{module_name}': {e}", exc_info=True
+                f"---> Failed to import skill module '{module_name}': {e}", exc_info=True # Log Exception
             )
 
 # Optional: Log the final list of discovered modules if needed
-# logger.debug(f"Skills package initialized. Autodiscovered modules (approx): {__all__}")
+logger.debug(f"Skills package initialized. Autodiscovered modules (via walk_packages).")
 
 # Explicitly import the consolidated module to ensure its class is instantiated
 # and its @skill methods are registered.
@@ -56,3 +61,14 @@ except Exception as e:
         f"Failed to explicitly import skill sub-package 'simulate': {e}",
         exc_info=True,
     )
+
+# Remove the explicit import block for perception
+# logger.info("Attempting explicit import of .perception...") # Log BEFORE trying
+# try:
+#     importlib.import_module(".perception", __package__)
+#     logger.debug("Explicitly imported perception skill sub-package.") # Log AFTER success
+# except Exception as e:
+#     logger.error(
+#         f"Failed to explicitly import skill sub-package 'perception': {e}",
+#         exc_info=True,
+#     )

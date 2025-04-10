@@ -28,9 +28,9 @@ class CerebrumXAgent(ReactAgent):  # Inheriting from ReactAgent for now
     Expande o ReactAgent com percepção, planejamento hierárquico, simulação e reflexão.
     """
 
-    def __init__(self, system_prompt: str, llm_url: Optional[str] = None):
+    def __init__(self, system_prompt: str, llm_url: Optional[str] = None, tools_dict: Optional[Dict[str, Dict[str, Any]]] = None):
         """Inicializa o Agente CerebrumX."""
-        super().__init__(system_prompt, llm_url)
+        super().__init__(system_prompt, llm_url, tools_dict=tools_dict)
         self.initial_perception = (
             None  # Store initial perception for potential replanning
         )
