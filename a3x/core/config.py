@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+import platform # Add platform import
 
 # <<< ADDED: Define project_root >>>
 # Assume config.py is in the 'core' directory, so go up one level
@@ -54,8 +55,8 @@ if LLAMA_API_KEY and LLAMA_API_KEY.lower() not in ["none", "nokey", ""]:
 # Configurações do Banco de Dados (SQLite)
 # DATABASE_PATH = os.getenv("DATABASE_PATH", "a3x_memory.db") # Deprecated or unused? - REMOVED
 MEMORY_DB_PATH = os.getenv(
-    "MEMORY_DB_PATH", os.path.join(project_root, "memory.db")
-)  # <<< Usa project_root >>>
+    "MEMORY_DB_PATH", os.path.join(PROJECT_ROOT, "a3x", "memory.db") # <<< Corrigido para apontar para dentro de a3x/ >>>
+)
 
 # Configurações de Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()  # Keep first definition
@@ -132,3 +133,47 @@ try:
     os.makedirs(TRAINING_OUTPUT_DIR, exist_ok=True)
 except OSError as e:
     print(f"Erro ao criar diretório de output do treinamento {TRAINING_OUTPUT_DIR}: {e}")
+
+# --- LLM Server (llama.cpp) Configuration ---
+LLAMA_CPP_DIR = os.path.join(PROJECT_ROOT, "llama.cpp")
+LLAMA_SERVER_BINARY = os.path.join(LLAMA_CPP_DIR, "build", "bin", "llama-server")
+LLAMA_SERVER_MODEL_PATH = os.getenv(
+    "LLAMA_SERVER_MODEL_PATH",
+    os.path.join(PROJECT_ROOT, "models", "gemma-3-4b-it-Q4_K_M.gguf") # <<< AJUSTE ESTE CAMINHO PARA O SEU MODELO! >>>
+)
+LLAMA_SERVER_HOST = "127.0.0.1"
+LLAMA_SERVER_PORT = 8080
+LLAMA_SERVER_URL_BASE = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
+LLAMA_HEALTH_ENDPOINT = f"{LLAMA_SERVER_URL_BASE}/health"
+LLAMA_CHAT_ENDPOINT = f"{LLAMA_SERVER_URL_BASE}/v1/chat/completions"
+LLAMA_SERVER_ARGS = [
+    "-m", LLAMA_SERVER_MODEL_PATH,
+    "-c", "4096", # <<< AJUSTE O TAMANHO DO CONTEXTO CONFORME NECESSÁRIO >>>
+    "--port", str(LLAMA_SERVER_PORT),
+    "--host", LLAMA_SERVER_HOST,
+    # Adicione outros argumentos necessários aqui (ex: --ngl 35, --temp 0.7)
+    # "--ngl", "35",
+]
+LLAMA_SERVER_STARTUP_TIMEOUT = 120 # seconds
+
+# --- Stable Diffusion Server (a3x/servers/sd_api_server.py) Configuration ---
+SD_SERVER_MODULE = "a3x.servers.sd_api_server"
+SD_WEBUI_DEFAULT_PATH_CONFIG = os.getenv(
+    "SD_WEBUI_PATH",
+    os.path.join(PROJECT_ROOT, "stable-diffusion-webui") # Default path
+)
+SD_API_HOST = "127.0.0.1"
+SD_API_PORT = 7860
+SD_API_URL_BASE = f"http://{SD_API_HOST}:{SD_API_PORT}"
+SD_API_CHECK_ENDPOINT = f"{SD_API_URL_BASE}/docs" # Endpoint to check if API is ready
+SD_SERVER_STARTUP_TIMEOUT = 180 # seconds, can take longer to start
+
+# --- General Server Manager Config ---
+SERVER_CHECK_INTERVAL = 5 # seconds
+SERVER_LOG_FILE = os.path.join(PROJECT_ROOT, "logs", "servers.log")
+
+# Garantir que o diretório de logs exista
+os.makedirs(os.path.dirname(SERVER_LOG_FILE), exist_ok=True)
+
+# URL do servidor LLAMA (agora usa as constantes acima)
+LLAMA_SERVER_URL = LLAMA_CHAT_ENDPOINT # Usado por llm_interface.py
