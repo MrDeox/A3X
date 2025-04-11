@@ -7,6 +7,8 @@ import time
 import logging
 import subprocess
 import atexit
+import signal
+import platform
 from dotenv import load_dotenv
 from typing import Optional, Tuple, AsyncGenerator, Set, Dict, Any
 import json
@@ -58,6 +60,8 @@ try:
     from a3x.core.logging_config import setup_logging
     from a3x.core.tool_executor import execute_tool
     from a3x.core.llm_interface import call_llm
+    # <<< ADDED: Import server manager functions >>>
+    from a3x.core.server_manager import start_llama_server, start_sd_server, stop_all_servers, managed_processes
 except ImportError as e:
     # <<< ADDED: Initialize logger here BEFORE using it >>>
     # Need a basic logger config if setup_logging hasn't run yet
@@ -1041,7 +1045,9 @@ def validate_registered_skills(expected_skills: Set[str], registered_skills_dict
 
 def run_cli():
     """Função principal da CLI."""
-    setup_logging() # Ensure logging is setup
+    # <<< MOVED: Logging setup to very beginning >>>
+    setup_logging() # Ensure logging is setup FIRST
+
     args = _parse_arguments()
     change_to_project_root()
     initialize_database() # Ensure DB is ready
@@ -1049,130 +1055,152 @@ def run_cli():
     # <<< ADDED: Log sys.path at the start of run_cli >>>
     logger.debug(f"sys.path at start of run_cli: {sys.path}")
 
-    # <<< MOVED: Load Skills Explicitly BEFORE Agent Init >>>
-    # Determine skills directory path (still potentially useful for discovery)
-    skills_dir_path = os.path.join(project_root, "a3x", "skills")
-    # Pass the package name string, not the directory path
-    load_skills("a3x.skills") # Explicit call here
-    # <<< Get the registry AFTER loading skills >>>
-    loaded_skill_registry = get_skill_registry()
+    # --- Server Management --- 
+    # <<< NEW: Use Server Manager >>>
+    # Determine if servers should be managed by this CLI instance
+    manage_servers = not args.no_server and not args.train # Don't manage if --no-server or --train
+    
+    # Register cleanup function to stop servers on exit
+    # Use run_until_complete in atexit handler
+    def cleanup_servers():
+        logger.info("CLI exiting. Stopping managed servers...")
+        try:
+            # Ensure loop exists if called late
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Schedule cleanup if loop is running
+                asyncio.ensure_future(stop_all_servers())
+            else:
+                # Run cleanup directly if loop is closed
+                asyncio.run(stop_all_servers())
+            logger.info("Server cleanup process initiated.")
+        except Exception as e:
+             logger.error(f"Error during server cleanup: {e}", exc_info=True)
+             
+    if manage_servers:
+         atexit.register(cleanup_servers)
+         # Also register signal handlers to trigger cleanup
+         def signal_handler(sig, frame):
+              print(f'\nSignal {sig} received, initiating shutdown...')
+              # Directly call atexit handlers
+              sys.exit(0) # sys.exit triggers atexit
+              
+         signal.signal(signal.SIGINT, signal_handler) # Ctrl+C
+         signal.signal(signal.SIGTERM, signal_handler)
+         if platform.system() != "Windows":
+              signal.signal(signal.SIGHUP, signal_handler)
+              signal.signal(signal.SIGQUIT, signal_handler)
 
-    # --- Initialize Agent FIRST ---
-    logger.info("Initializing Agent and loading skills BEFORE server start...")
-    system_prompt = _load_system_prompt()
-    # Initialize agent with the default URL for now. The actual URL for calls might
-    # be determined later if the internal server starts.
-    # <<< Pass the loaded registry to the agent constructor >>>
-    agent = _initialize_agent(system_prompt, llm_url_override=DEFAULT_SERVER_URL, tools_dict=loaded_skill_registry)
+    # Use an async function to handle server startup and main logic
+    async def main_async():
+        servers_ready = True # Assume ready if not managing
+        if manage_servers:
+            logger.info("Attempting to start and manage LLM and SD servers...")
+            # Start servers concurrently
+            start_tasks = [
+                start_llama_server(), 
+                start_sd_server()
+            ]
+            results = await asyncio.gather(*start_tasks, return_exceptions=True)
+            
+            # Check results
+            servers_ready = True
+            if isinstance(results[0], Exception) or results[0] is None:
+                 logger.error("LLM server failed to start or was already running with issues.")
+                 # servers_ready = False # Decide if we should stop if one fails
+            if isinstance(results[1], Exception) or results[1] is None:
+                 logger.error("SD server failed to start or was already running with issues.")
+                 # servers_ready = False 
+            
+            if not managed_processes:
+                 logger.warning("No server processes were started by the manager (might be running externally).")
+                 # If we expect the manager to start them, this might be an error
+                 # servers_ready = False 
+            elif not all(p is not None for p in managed_processes.values()):
+                 logger.warning("One or more servers failed to start correctly or were already running.")
+                 # servers_ready = False
+            else:
+                 logger.info("Both LLM and SD servers are managed and reported ready.")
 
-    if agent is None:
-        logger.error("Agent initialization returned None. Critical failure.")
-        sys.exit(1) # Agent initialization failed
-
-    # <<< Validate skills registration AFTER agent init >>>
-    expected_skills_set = discover_expected_skills(skills_dir_path)
-    validate_registered_skills(expected_skills_set, agent.tools) # Pass agent.tools directly
-    # <<< END Validation >>>
-
-    # --- Server Management and Execution Modes --- 
-    server_process = None
-    llm_url = DEFAULT_SERVER_URL # Start with default
-    server_needed_and_started_main = False # Track if main logic starts server
-
-    # >>> LLM Server Management (excluding --run-skill and --train) <<<
-    should_start_server_main = not args.no_server and not args.run_skill and not args.train and not args.stream_direct
-
-    if should_start_server_main:
-        model_path = args.model or DEFAULT_MODEL_PATH
-        if not os.path.isabs(model_path):
-            model_path = os.path.join(project_root, model_path)
-
-        logger.info("Attempting to start internal LLM server...") # Added log
-        server_process, llm_url_from_server = _start_llama_server(
-            model_path=model_path,
-            gpu_layers=args.gpu_layers,
-            port=args.port
-        )
-        if server_process and llm_url_from_server:
-            llm_url = llm_url_from_server # Update URL if server started
-            server_needed_and_started_main = True # We started it
-            logger.info(f"Internal server started for main run. LLM URL set to: {llm_url}")
-            # Ensure server is stopped on exit - register only if started
-            atexit.register(_stop_llama_server)
+        if not servers_ready and manage_servers:
+             console.print("[bold red]Error:[/bold red] One or more required servers failed to start. Check logs/servers.log for details. Exiting.")
+             sys.exit(1)
+        elif not servers_ready and not manage_servers:
+             logger.warning("Proceeding without managed servers. Ensure external servers are running if needed by skills.")
         else:
-            logger.error("Failed to start internal LLM server. Agent functionality may be limited.")
-    elif args.no_server:
-        logger.info(f"Skipping internal server start, using configured URL: {llm_url}")
-    # >>> End LLM Server Management <<<
+             logger.info("Servers ready (or not managed). Proceeding with CLI operation.")
+             
+        # --- Load Skills & Initialize Agent (AFTER potential server start) ---
+        logger.info("Loading skills...")
+        skills_dir_path = os.path.join(project_root, "a3x", "skills")
+        load_skills("a3x.skills")
+        loaded_skill_registry = get_skill_registry()
 
-    # --- Mode Execution ---
-    agent_initialized_for_mode = False # Track if agent was needed and initialized
+        logger.info("Initializing Agent...")
+        system_prompt = _load_system_prompt()
+        # Agent uses the default configured URL, which server_manager aims to make available
+        agent = _initialize_agent(system_prompt, llm_url_override=None, tools_dict=loaded_skill_registry)
 
-    try:
+        if agent is None:
+            logger.critical("Agent initialization returned None. Exiting.")
+            sys.exit(1)
+
+        logger.info("Validating skills registration...")
+        expected_skills_set = discover_expected_skills(skills_dir_path)
+        try:
+             validate_registered_skills(expected_skills_set, agent.tools)
+        except CriticalSkillRegistrationError as e:
+             logger.critical(f"Skill registration failed: {e}. Exiting.")
+             console.print(f"[bold red]Critical Error:[/bold red] {e}")
+             sys.exit(1)
+        logger.info("Skills validation passed.")
+
+        # --- Determine Execution Mode --- 
+        # (Pass agent and args to handler functions)
         if args.run_skill:
-            # <<< CALL the async handler using asyncio.run >>>
-            logger.debug(f"Routing to _handle_run_skill_argument for skill: {args.run_skill}")
-            # Pass the determined llm_url for the health check inside the handler
-            asyncio.run(_handle_run_skill_argument(args, llm_url))
-        elif args.train:
-            # <<< ADDED: Handle Train Argument >>>
-            if run_qlora_finetuning:
-                logger.info("Starting QLoRA Fine-tuning process...")
-                try:
-                    # Ensure necessary args are passed if needed, for now assume defaults are handled
-                    run_qlora_finetuning()
-                    logger.info("QLoRA Fine-tuning process completed.")
-                except Exception as train_err:
-                    logger.exception("Error during QLoRA fine-tuning:")
-                    console.print(f"[bold red][Error][/] Fine-tuning failed: {train_err}")
-            else:
-                logger.error("Training module not available. Cannot execute --train.")
-                console.print("[bold red][Error][/] Training functionality is not available.")
+            await _handle_run_skill_argument(args, agent.llm_url) # Pass agent's configured URL
         elif args.stream_direct:
-            # Handle direct streaming mode
-            asyncio.run(stream_direct_llm(args.stream_direct, llm_url))
-        else:
-            # Modes requiring the full agent
-            if not agent: # Initialize agent if not done (should be done above)
-                logger.warning("Agent not initialized before entering agent modes. Re-initializing.")
-                agent = _initialize_agent(system_prompt, llm_url_override=llm_url, tools_dict=loaded_skill_registry)
-                if not agent:
-                    logger.critical("Agent re-initialization failed. Exiting.")
-                    sys.exit(1)
-            else:
-                # Ensure agent uses the potentially updated llm_url
-                # This might require an agent method like agent.set_llm_url(llm_url) or re-init
-                logger.debug(f"Ensuring agent uses LLM URL: {llm_url}")
-                agent.llm_url = llm_url # Directly update if possible (depends on Agent impl)
+            await stream_direct_llm(args.stream_direct)
+        elif args.train:
+             if run_qlora_finetuning:
+                  console.print("[bold cyan]Starting QLoRA Fine-tuning...[/]")
+                  try:
+                       run_qlora_finetuning() # Call the imported function
+                       console.print("[bold green]Fine-tuning finished.[/]")
+                  except Exception as train_e:
+                       logger.exception("Error during training:")
+                       console.print(f"[bold red]Training Error:[/bold red] {train_e}")
+             else:
+                  console.print("[bold yellow]Training module not available. Cannot run --train.[/]")
+        elif args.command:
+            await _handle_command_argument(agent, args.command)
+        elif args.input_file:
+            await _handle_file_argument(agent, args.input_file)
+        elif args.task:
+            await _handle_task_argument(agent, args.task)
+        else: # Default to interactive if no other mode specified
+            await _handle_interactive_argument(agent)
+            
+        # <<< NOTE: Servers will be stopped by the atexit handler >>>
 
-            agent_initialized_for_mode = True # Mark agent as used
-
-            if args.task:
-                asyncio.run(_handle_task_argument(agent, args.task))
-            elif args.command:
-                asyncio.run(_handle_command_argument(agent, args.command))
-            elif args.input_file:
-                asyncio.run(_handle_file_argument(agent, args.input_file))
-            else: # Default to interactive
-                asyncio.run(_handle_interactive_argument(agent))
-
+    # Run the main async function
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received by main loop. Cleanup should trigger.")
+        # atexit handler should still run via sys.exit() or natural exit
+    except Exception as e:
+        logger.exception("An unexpected error occurred in the main async loop:")
     finally:
-        # Stop the internal server only if it was started by the main logic (not by --run-skill)
-        if server_needed_and_started_main:
-            logger.info("Stopping LLaMA server that was started for this run...")
-            _stop_llama_server()
-            logger.info("LLaMA server stopped.")
-        elif server_process: # If process exists but wasn't marked, still try stopping?
-            logger.warning("Server process exists but wasn't marked as started by main logic. Attempting stop anyway.")
-            _stop_llama_server()
+        # Explicitly call cleanup just in case atexit doesn't fire correctly in all scenarios
+        logger.info("Main CLI function finished or errored, ensuring server cleanup...")
+        # cleanup_servers() # Call the synchronous cleanup wrapper
+        pass # Relying on atexit/signal handler primarily
+        
 
+# <<< Make sure setup_logging() is called before run_cli if run as main >>>
+# If assistant_cli.py imports and calls run_cli, ensure setup_logging is called there first.
 
 if __name__ == "__main__":
-    # Ensure clean exit on Ctrl+C
-    try:
-        run_cli()
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received. Stopping server(s) if running...")
-        _stop_llama_server()  # Attempt graceful shutdown for llama.cpp
-        print("\nExiting cleanly.")
-        sys.exit(0)
+    setup_logging() # Call logging setup if this script is run directly
+    run_cli()
