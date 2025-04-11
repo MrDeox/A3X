@@ -13,9 +13,15 @@ import json
 import importlib
 import ast
 import requests
+import inspect
 
 from rich.console import Console
 from rich.panel import Panel
+
+# <<< ADDED: Log Python environment at script start >>>
+print(f"DEBUG: Running with Python Executable: {sys.executable}")
+print(f"DEBUG: Initial sys.path: {sys.path}")
+# --- End Added Log ---
 
 # Adiciona o diretório raiz ao sys.path para encontrar 'core' e 'skills'
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -136,7 +142,7 @@ LLAVA_MODEL_DIR_RELATIVE = "LLaVA/llava-v1.5-7b" # Relative to project root
 
 # <<< ADDED: Minimal Context for Direct Skill Call >>>
 from collections import namedtuple
-SkillContext = namedtuple("SkillContext", ["logger", "llm_call"])
+SkillContext = namedtuple("SkillContext", ["logger", "llm_call", "is_test"])
 
 # Modified wrapper to be an async generator and pass stream=True
 async def _direct_llm_call_wrapper(prompt: str) -> AsyncGenerator[str, None]:
@@ -484,6 +490,140 @@ async def _handle_interactive_argument(agent: CerebrumXAgent):
     await _run_interactive_mode(agent)
 
 
+# <<< MOVED Skill Execution Logic into Async Function >>>
+async def _handle_run_skill_argument(args, llm_url: str):
+    logger.debug(f"Starting _handle_run_skill_argument for skill: {args.run_skill}")
+    skill_name = args.run_skill
+    try:
+        skill_args_dict = json.loads(args.skill_args)
+        logger.debug(f"Parsed skill args: {skill_args_dict}")
+        if not isinstance(skill_args_dict, dict):
+            raise ValueError("Skill arguments must be a JSON object (dictionary).")
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Invalid JSON or format in --skill-args: {e}")
+        console.print(f"[bold red]Error:[/bold red] Invalid JSON/format for --skill-args: {e}")
+        return # Exit this async function
+
+    # Ensure skills are loaded and registry is populated
+    logger.debug("Ensuring SkillRegistry is populated...")
+    if not SKILL_REGISTRY: # Check if dict is empty
+        logger.warning("SkillRegistry is empty before direct call. Attempting to load...")
+        # Assuming load_skills was called earlier in run_cli or upon import
+        pass
+
+    logger.debug(f"Attempting to retrieve skill '{skill_name}' from registry.")
+    skill_info = SKILL_REGISTRY.get(skill_name)
+
+    if not skill_info:
+        logger.error(f"Skill '{skill_name}' not found in registry.")
+        console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
+        registered_skills = list(SKILL_REGISTRY.keys()) # Use dict keys directly
+        console.print(f"Available skills: {', '.join(registered_skills) if registered_skills else 'None'}")
+        return
+
+    skill_func = skill_info.get("function")
+    if not skill_func or not callable(skill_func):
+        logger.error(f"Skill '{skill_name}' found but has no callable function.")
+        console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' is improperly registered.")
+        return
+
+    logger.debug(f"Retrieved skill function '{skill_name}' directly from registry.")
+
+    # Create a minimal context for the skill with the test flag
+    skill_context = SkillContext(logger=logger, llm_call=_direct_llm_call_wrapper, is_test=True)
+    logger.debug(f"Created minimal SkillContext for '{skill_name}' with is_test=True.")
+
+    # <<< Server Check/Start Logic moved here >>>
+    server_type = "LLaMA" # Default server type
+    server_check_func = _check_llm_server_health
+    server_start_func = _start_llama_server
+    server_stop_func = _stop_llama_server
+    server_port = args.port # Default port from args
+    server_model_path = args.model or DEFAULT_MODEL_PATH
+    server_gpu_layers = args.gpu_layers # Default GPU layers
+    server_mmproj_path = None # Default to no mmproj
+    server_start_success = False # Flag to track if start was successful
+    server_needed_and_started = False # Track if WE started it
+
+    # Determine model and potentially mmproj based on skill
+    # TODO: Move this skill-specific logic to a config or better place
+    if skill_name == "visual_perception":
+        logger.info(f"Configuring server for multimodal skill: {skill_name}")
+        # Example paths, adjust as needed
+        obsidian_model_rel = "models/obsidian-q6.gguf"
+        obsidian_mmproj_rel = "models/mmproj-obsidian-f16.gguf"
+        server_model_path = os.path.join(project_root, obsidian_model_rel)
+        server_mmproj_path = os.path.join(project_root, obsidian_mmproj_rel)
+        server_gpu_layers = 27 # Example override
+        logger.info(f"Using model: {server_model_path}")
+        logger.info(f"Using mmproj: {server_mmproj_path}")
+        logger.info(f"Setting GPU layers: {server_gpu_layers}")
+    else:
+        logger.info(f"Skill '{skill_name}' requires default text LLM server (llama.cpp).")
+        if not os.path.isabs(server_model_path):
+            server_model_path = os.path.join(project_root, server_model_path)
+
+    # Prepare arguments for the unified server start function
+    server_specific_start_args = {
+        "model_path": server_model_path,
+        "gpu_layers": server_gpu_layers,
+        "port": server_port,
+        "mmproj_path": server_mmproj_path
+    }
+
+    # Check if server is running, start if needed
+    # Use the determined llm_url for health check if available, otherwise construct from port
+    health_check_url = llm_url.replace("/v1/chat/completions", "/health") if llm_url else f"http://127.0.0.1:{server_port}/health"
+    if not _check_llm_server_health(url=health_check_url):
+        logger.info(f"--run-skill mode: {server_type} server (port {server_port}) not detected. Attempting to start...")
+        local_server_process, server_url_from_start = server_start_func(**server_specific_start_args)
+        if local_server_process and server_url_from_start:
+            logger.info(f"Internal {server_type} server started successfully for --run-skill. URL: {server_url_from_start}")
+            server_needed_and_started = True # Mark that we started it
+            # Update the URL used by the llm_call wrapper if possible? Requires refactor.
+            # For now, assume wrapper uses default or env var correctly.
+        else:
+            logger.error(f"Failed to start internal {server_type} server for --run-skill. Skill execution will likely fail.")
+            console.print(f"[bold red]Warning:[/bold red] Failed to start {server_type} server. The skill might fail.")
+    else:
+        logger.info(f"{server_type} server already running on port {server_port}.")
+    # <<< End Server Check/Start Logic >>>
+
+    # <<< Actual Skill Execution >>>
+    result = None
+    try:
+        logger.info(f"Executing skill '{skill_name}' with params: {skill_args_dict}")
+        if inspect.iscoroutinefunction(skill_func):
+            logger.debug(f"Executing async skill '{skill_name}'")
+            result = await skill_func(ctx=skill_context, **skill_args_dict)
+        else:
+            logger.debug(f"Executing sync skill '{skill_name}'")
+            loop = asyncio.get_event_loop() # Get loop inside async function
+            result = await loop.run_in_executor(None, lambda: skill_func(ctx=skill_context, **skill_args_dict)) # Use lambda for executor
+
+        logger.info(f"Skill '{skill_name}' execution finished.")
+        console.print("[bold green]Skill Result:[/]")
+        try:
+            # Attempt pretty print JSON
+            console.print(json.dumps(result, indent=2))
+        except (TypeError, OverflowError):
+            # Fallback for non-serializable or large results
+            console.print(result)
+
+    except TypeError as te:
+        # Catch argument mismatches specifically
+        logger.exception(f"TypeError executing skill '{skill_name}': Likely incorrect arguments provided. {te}")
+        console.print(f"[bold red]Error:[/bold red] TypeError executing skill '{skill_name}'. Check arguments. Error: {te}")
+    except Exception as e:
+        logger.exception(f"Error executing skill '{skill_name}':")
+        console.print(f"[bold red]Error executing skill '{skill_name}':[/] {e}")
+    finally:
+        # Stop server if we started it specifically for this run
+        if server_needed_and_started:
+            logger.info(f"Stopping {server_type} server that was started for --run-skill...")
+            server_stop_func() # Call the correct stop function
+# <<< END Moved Logic >>>
+
 # <<< ADDED: Function to start llama.cpp server >>>
 def _start_llama_server(
     model_path: str,
@@ -801,245 +941,15 @@ def _check_llava_api_health(url: str = LLAVA_API_URL, timeout: float = 5.0) -> b
 
 # --- End LLaVA Server Management ---
 
-def run_cli():
-    """Função principal da CLI."""
-    setup_logging() # Ensure logging is setup
-    args = _parse_arguments()
-    change_to_project_root()
-    initialize_database() # Ensure DB is ready
+# <<< START: Skill Validation Helpers (MOVED UP) >>>
 
-    # <<< MOVED: Load Skills Explicitly BEFORE Agent Init >>>
-    # Determine skills directory path (still potentially useful for discovery)
-    skills_dir_path = os.path.join(project_root, "a3x", "skills")
-    # Pass the package name string, not the directory path
-    load_skills("a3x.skills") # Explicit call here
-    # <<< Get the registry AFTER loading skills >>>
-    loaded_skill_registry = get_skill_registry()
-
-    # --- Initialize Agent FIRST ---
-    logger.info("Initializing Agent and loading skills BEFORE server start...")
-    system_prompt = _load_system_prompt()
-    # Initialize agent with the default URL for now. The actual URL for calls might
-    # be determined later if the internal server starts.
-    # <<< Pass the loaded registry to the agent constructor >>>
-    agent = _initialize_agent(system_prompt, llm_url_override=DEFAULT_SERVER_URL, tools_dict=loaded_skill_registry)
-
-    if agent is None:
-        logger.error("Agent initialization returned None. Critical failure.")
-        sys.exit(1) # Agent initialization failed
-
-    # <<< Validate skills registration AFTER agent init >>>
-    expected_skills_set = discover_expected_skills(skills_dir_path)
-    validate_registered_skills(expected_skills_set, agent.tools) # Pass agent.tools directly
-    # <<< END Validation >>>
-
-    # --- Server Management and Execution Modes --- 
-    server_process = None
-    llm_url = DEFAULT_SERVER_URL # Start with default
-
-    # >>> LLM Server Management <<<
-    # Only start server if needed and not running a skill directly or training
-    # (Direct skill runs might use a minimal context or mock, training doesn't need agent server)
-    should_start_server = not args.no_server and not args.run_skill and not args.train and not args.stream_direct
-
-    if should_start_server:
-        model_path = args.model or DEFAULT_MODEL_PATH
-        if not os.path.isabs(model_path):
-            model_path = os.path.join(project_root, model_path)
-
-        logger.info("Attempting to start internal LLM server...") # Added log
-        server_process, llm_url_from_server = _start_llama_server(
-            model_path=model_path,
-            gpu_layers=args.gpu_layers,
-            port=args.port
-        )
-        if server_process and llm_url_from_server:
-            llm_url = llm_url_from_server # Update URL if server started
-            logger.info(f"Internal server started. LLM URL set to: {llm_url}")
-            # Ensure server is stopped on exit - register only if started
-            atexit.register(_stop_llama_server)
-        else:
-            logger.error("Failed to start internal LLM server. Continuing with default URL if possible, but agent may fail.")
-            # Don't exit here, allow modes that might not need server (though agent likely will)
-            # console.print("[bold red][Error][/] Failed to start internal LLM server. Exiting.")
-            # sys.exit(1)
-    elif args.no_server:
-        logger.info(f"Skipping internal server start, using configured URL: {llm_url}")
-    # >>> End LLM Server Management <<<
-
-    # --- Mode Execution ---
-    # Agent is already initialized, but we might need to pass the potentially updated llm_url?
-    # For now, assume agent reads URL dynamically or was configured sufficiently at init.
-
-    if args.run_skill:
-        # <<< MODIFIED: Server Check/Start Logic for --run-skill >>>
-        server_type = "LLaMA" # Default server type
-        server_check_func = _check_llm_server_health
-        server_start_func = _start_llama_server
-        server_stop_func = _stop_llama_server
-        server_port = args.port # Default port from args
-        server_model_path = args.model or DEFAULT_MODEL_PATH
-        server_gpu_layers = args.gpu_layers # Default GPU layers
-        server_mmproj_path = None # Default to no mmproj
-        server_start_success = False # Flag to track if start was successful
-
-        # Determine model and potentially mmproj based on skill
-        if args.run_skill == "visual_perception":
-            logger.info(f"Skill is '{args.run_skill}', configuring for Obsidian multimodal model.")
-            # Override model and add mmproj path for visual_perception
-            # Ideally, these would come from config, but hardcoding for now
-            obsidian_model_rel = "models/obsidian-3b/obsidian-q6.gguf"
-            obsidian_mmproj_rel = "models/obsidian-3b/mmproj-obsidian-f16.gguf"
-            # Correct paths based on user-attached directory structure
-            obsidian_model_rel = "models/obsidian-q6.gguf"
-            obsidian_mmproj_rel = "models/mmproj-obsidian-f16.gguf"
-            server_model_path = os.path.join(project_root, obsidian_model_rel)
-            server_mmproj_path = os.path.join(project_root, obsidian_mmproj_rel)
-            server_port = args.port # Use the potentially user-specified port for unified server
-            logger.info(f"Using model: {server_model_path}")
-            logger.info(f"Using mmproj: {server_mmproj_path}")
-            # <<< Override GPU layers specifically for Obsidian >>>
-            server_gpu_layers = 27 # Hardcoded override based on user input
-            logger.info(f"Setting GPU layers specifically to {server_gpu_layers} for Obsidian.")
-        else:
-            logger.info(f"Skill '{args.run_skill}' requires default text LLM server (llama.cpp).")
-            # Ensure default model path is absolute
-            if not os.path.isabs(server_model_path):
-                server_model_path = os.path.join(project_root, server_model_path)
-            # No mmproj for standard skills
-            server_mmproj_path = None
-            # Use GPU layers from command line args for other skills
-            server_gpu_layers = args.gpu_layers
-
-        # Prepare arguments for the unified server start function
-        server_specific_start_args = {
-            "model_path": server_model_path,
-            "gpu_layers": server_gpu_layers,
-            "port": server_port,
-            "mmproj_path": server_mmproj_path # Pass mmproj path (will be None if not needed)
-        }
-
-        # <<< SERVER CHECK/START LOGIC (Unified) >>>
-        server_needed_and_started = False
-        # Check health on the correct port for the potentially multimodal server
-        if not _check_llm_server_health(url=f"http://127.0.0.1:{server_port}/v1/chat/completions"):
-            logger.info(f"--run-skill mode: {server_type} server (port {server_port}) not detected. Attempting to start...")
-            # Attempt to start the server
-            local_server_process, server_url_from_start = server_start_func(**server_specific_start_args)
-
-            if local_server_process and server_url_from_start:
-                logger.info(f"Internal {server_type} server started successfully for --run-skill.")
-                server_needed_and_started = True # Mark that we started it
-            else:
-                # This else belongs to the inner if (start attempt check)
-                logger.error(f"Failed to start internal {server_type} server for --run-skill. Skill execution will likely fail.")
-                console.print(f"[bold red]Warning:[/bold red] Failed to start {server_type} server. The skill might fail.")
-        # <<< END SERVER CHECK/START LOGIC >>>
-
-        # <<< SKILL EXECUTION BLOCK >>>
-        try:
-            skill_args_dict = json.loads(args.skill_args)
-            if not isinstance(skill_args_dict, dict):
-                 raise ValueError("Skill arguments must be a JSON object (dictionary).")
-
-            logger.info(f"Attempting direct execution of skill: '{args.run_skill}' with args: {skill_args_dict}")
-
-            # Get skill function directly
-            skill_info = agent.tools.get(args.run_skill)
-            if not skill_info or not callable(skill_info.get("function")):
-                logger.error(f"Skill '{args.run_skill}' not found or function is not callable.")
-                console.print(f"[bold red]Error:[/bold red] Skill '{args.run_skill}' not found or invalid.")
-                sys.exit(1) # Correctly indented
-
-            skill_function = skill_info["function"]
-
-            # Create minimal context using the streaming wrapper
-            skill_ctx = SkillContext(logger=agent.agent_logger, llm_call=_direct_llm_call_wrapper)
-
-            # Call the skill function directly
-            async def run_the_skill_directly():
-                if asyncio.iscoroutinefunction(skill_function):
-                    # Skill is async, call it.
-                    result = await skill_function(ctx=skill_ctx, **skill_args_dict)
-                else:
-                    # Handle sync skill case if necessary, though visual_perception is async
-                    logger.warning(f"Attempting to run synchronous skill '{args.run_skill}' in async context.")
-                    loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(None, skill_function, ctx=skill_ctx, **skill_args_dict)
-
-                console.print("[bold green]Skill Result:[/]")
-                console.print_json(data=result)
-
-            asyncio.run(run_the_skill_directly())
-
-        except json.JSONDecodeError:
-            logger.error(f"Invalid JSON string provided for --skill-args: {args.skill_args}")
-            console.print(f"[bold red]Error:[/bold red] Invalid JSON provided for --skill-args.")
-        sys.exit(1)
-        except ValueError as ve:
-             logger.error(f"Error in skill arguments: {ve}")
-             console.print(f"[bold red]Error:[/bold red] {ve}")
-             sys.exit(1)
-        except TypeError as te:
-            logger.exception(f"TypeError during direct skill execution ('{args.run_skill}'): Likely context issue or wrong args.")
-            console.print(f"[bold red]Error:[/bold red] TypeError executing skill: {te}")
-            sys.exit(1)
-        except Exception as e:
-            logger.exception(f"Error during direct skill execution ('{args.run_skill}'):")
-            console.print(f"[bold red]Error:[/bold red] Failed to execute skill directly: {e}")
-            sys.exit(1)
-        finally:
-             # Stop server if we started it for this run
-             if server_needed_and_started:
-                 logger.info(f"Stopping {server_type} server that was started for --run-skill...")
-                 _stop_llama_server() # Always stop the llama_server process
-        # <<< END SKILL EXECUTION BLOCK >>>
-
-    elif args.train:
-        # <<< ADDED: Handle Train Argument >>>
-        if run_qlora_finetuning:
-            logger.info("Starting QLoRA Fine-tuning process...")
-            try:
-                # Ensure necessary args are passed if needed, for now assume defaults are handled
-                run_qlora_finetuning()
-                logger.info("QLoRA Fine-tuning process completed.")
-            except Exception as train_err:
-                logger.exception("Error during QLoRA fine-tuning:")
-                console.print(f"[bold red][Error][/] Fine-tuning failed: {train_err}")
-        else:
-            logger.error("Training module not available. Cannot execute --train.")
-            console.print("[bold red][Error][/] Training functionality is not available.")
-        # <<< END ADDED >>>
-    elif args.stream_direct:
-        # Handle direct streaming mode
-        asyncio.run(stream_direct_llm(args.stream_direct, llm_url))
-    elif args.task:
-            asyncio.run(_handle_task_argument(agent, args.task))
-        elif args.command:
-            asyncio.run(_handle_command_argument(agent, args.command))
-        elif args.input_file:
-            asyncio.run(_handle_file_argument(agent, args.input_file))
-    else: # Default to interactive if no other mode specified
-            asyncio.run(_handle_interactive_argument(agent))
-
-    # This logging and server stop should be outside the specific mode blocks
-        logger.info("CLI run finished.")
-    # Explicitly stop server if it was started by this run (only applies to non --run-skill modes)
-    if server_process:
-        _stop_llama_server()
-
-
-if __name__ == "__main__":
-    # Ensure clean exit on Ctrl+C
-    try:
-        run_cli()
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received. Stopping server(s) if running...")
-        _stop_llama_server()  # Attempt graceful shutdown for llama.cpp
-        print("\nExiting cleanly.")
-        sys.exit(0)
-
-# <<< START: Skill Validation Helpers >>>
+# <<< ADDED: Custom Exception for Critical Skill Registration Errors >>>
+class CriticalSkillRegistrationError(Exception):
+    """Custom exception raised when essential skills fail to register."""
+    def __init__(self, message, missing_skills=None):
+        super().__init__(message)
+        self.missing_skills = missing_skills if missing_skills is not None else set()
+# <<< END ADDED >>>
 
 def discover_expected_skills(skills_dir: str) -> Set[str]:
     """Scans the skills directory, parses .py files, and extracts skill names from @skill decorators."""
@@ -1097,41 +1007,172 @@ def discover_expected_skills(skills_dir: str) -> Set[str]:
     return expected_skills
 
 def validate_registered_skills(expected_skills: Set[str], registered_skills_dict: Dict[str, Any]):
-    """Compares expected skills (from files) with actually registered skills.
+    """Compares expected skills (discovered from files) with actually registered skills."""
+    registered_skill_names = set(registered_skills_dict.keys())
 
-    Args:
-        expected_skills (Set[str]): Set of skill names expected from file discovery.
-        registered_skills_dict (Dict[str, Any]): The dictionary of registered skills (agent.tools).
-    """
-    logger.info("Validating registered skills...")
-    # expected_skills = discover_expected_skills(skills_dir) # No longer needed here
-
-    try:
-        # Use the provided dictionary keys
-        registered_skills = set(registered_skills_dict.keys())
-        logger.debug(f"Found {len(registered_skills)} registered skills: {registered_skills}")
-    except AttributeError as ae:
-        logger.error(f"Could not get keys from registered_skills_dict: {ae}. Skipping validation.")
-        return
-    except Exception as e:
-        logger.error(f"Error processing registered_skills_dict: {e}. Skipping validation.", exc_info=True)
-        return
-
-    missing_skills = expected_skills - registered_skills
+    missing_skills = expected_skills - registered_skill_names
+    unexpected_skills = registered_skill_names - expected_skills
 
     if missing_skills:
-        error_msg = (
-            f"🛑 FALHA CRÍTICA NO BOOT: Uma ou mais skills não foram registradas corretamente.\n"
-            f"🔍 Causa provável: erro silencioso durante a importação de skills (ex: problema de sistema, dependência ausente, erro no código).\n"
-            f"🧩 Skills ausentes detectadas: {sorted(list(missing_skills))}\n"
-            f"✅ Sugestão: valide se os arquivos estão corretos e se não há erro de importação no módulo correspondente."
-        )
-        logger.critical(error_msg)
-        console.print(f"[bold red]{error_msg}[/]")
-        # Attempt graceful server shutdown if possible before exiting
-        _stop_llama_server()
-        sys.exit(1)
+        # Critical Error: Skills defined in code but not registered via import
+        logger.critical("🧩 Skills missing registration detected!")
+        for skill_name in missing_skills:
+            logger.critical(f"  - Skill '{skill_name}' defined but NOT imported/registered.")
+            logger.critical(f"    Check the __init__.py file in the skill's directory (e.g., a3x/skills/category/__init__.py)")
+            logger.critical(f"    Ensure 'from . import {skill_name}' (or the module name) exists.")
+        # Raise critical exception to prevent startup
+        raise CriticalSkillRegistrationError(f"Skills missing registration: {missing_skills}")
     else:
-        logger.info(f"✅ Skill Registration Validation Passed: All {len(expected_skills)} expected skills are registered.")
+        logger.debug("✅ All discovered skills appear to be registered.")
+
+    if unexpected_skills:
+        # Warning: Skills registered but not found by discovery (e.g., old file deleted but import remains)
+        logger.warning("🧩 Potentially stale skill registrations detected!")
+        for skill_name in unexpected_skills:
+            logger.warning(f"  - Skill '{skill_name}' registered but NOT found by file discovery.")
+            logger.warning(f"    This might indicate an old skill file was deleted but the import in __init__.py remains.")
+            logger.warning(f"    Consider removing the import for '{skill_name}' if it's no longer used.")
+        # This is just a warning, allow startup
+    else:
+        logger.debug("✅ No unexpected/stale skill registrations found.")
 
 # <<< END: Skill Validation Helpers >>>
+
+
+def run_cli():
+    """Função principal da CLI."""
+    setup_logging() # Ensure logging is setup
+    args = _parse_arguments()
+    change_to_project_root()
+    initialize_database() # Ensure DB is ready
+
+    # <<< ADDED: Log sys.path at the start of run_cli >>>
+    logger.debug(f"sys.path at start of run_cli: {sys.path}")
+
+    # <<< MOVED: Load Skills Explicitly BEFORE Agent Init >>>
+    # Determine skills directory path (still potentially useful for discovery)
+    skills_dir_path = os.path.join(project_root, "a3x", "skills")
+    # Pass the package name string, not the directory path
+    load_skills("a3x.skills") # Explicit call here
+    # <<< Get the registry AFTER loading skills >>>
+    loaded_skill_registry = get_skill_registry()
+
+    # --- Initialize Agent FIRST ---
+    logger.info("Initializing Agent and loading skills BEFORE server start...")
+    system_prompt = _load_system_prompt()
+    # Initialize agent with the default URL for now. The actual URL for calls might
+    # be determined later if the internal server starts.
+    # <<< Pass the loaded registry to the agent constructor >>>
+    agent = _initialize_agent(system_prompt, llm_url_override=DEFAULT_SERVER_URL, tools_dict=loaded_skill_registry)
+
+    if agent is None:
+        logger.error("Agent initialization returned None. Critical failure.")
+        sys.exit(1) # Agent initialization failed
+
+    # <<< Validate skills registration AFTER agent init >>>
+    expected_skills_set = discover_expected_skills(skills_dir_path)
+    validate_registered_skills(expected_skills_set, agent.tools) # Pass agent.tools directly
+    # <<< END Validation >>>
+
+    # --- Server Management and Execution Modes --- 
+    server_process = None
+    llm_url = DEFAULT_SERVER_URL # Start with default
+    server_needed_and_started_main = False # Track if main logic starts server
+
+    # >>> LLM Server Management (excluding --run-skill and --train) <<<
+    should_start_server_main = not args.no_server and not args.run_skill and not args.train and not args.stream_direct
+
+    if should_start_server_main:
+        model_path = args.model or DEFAULT_MODEL_PATH
+        if not os.path.isabs(model_path):
+            model_path = os.path.join(project_root, model_path)
+
+        logger.info("Attempting to start internal LLM server...") # Added log
+        server_process, llm_url_from_server = _start_llama_server(
+            model_path=model_path,
+            gpu_layers=args.gpu_layers,
+            port=args.port
+        )
+        if server_process and llm_url_from_server:
+            llm_url = llm_url_from_server # Update URL if server started
+            server_needed_and_started_main = True # We started it
+            logger.info(f"Internal server started for main run. LLM URL set to: {llm_url}")
+            # Ensure server is stopped on exit - register only if started
+            atexit.register(_stop_llama_server)
+        else:
+            logger.error("Failed to start internal LLM server. Agent functionality may be limited.")
+    elif args.no_server:
+        logger.info(f"Skipping internal server start, using configured URL: {llm_url}")
+    # >>> End LLM Server Management <<<
+
+    # --- Mode Execution ---
+    agent_initialized_for_mode = False # Track if agent was needed and initialized
+
+    try:
+        if args.run_skill:
+            # <<< CALL the async handler using asyncio.run >>>
+            logger.debug(f"Routing to _handle_run_skill_argument for skill: {args.run_skill}")
+            # Pass the determined llm_url for the health check inside the handler
+            asyncio.run(_handle_run_skill_argument(args, llm_url))
+        elif args.train:
+            # <<< ADDED: Handle Train Argument >>>
+            if run_qlora_finetuning:
+                logger.info("Starting QLoRA Fine-tuning process...")
+                try:
+                    # Ensure necessary args are passed if needed, for now assume defaults are handled
+                    run_qlora_finetuning()
+                    logger.info("QLoRA Fine-tuning process completed.")
+                except Exception as train_err:
+                    logger.exception("Error during QLoRA fine-tuning:")
+                    console.print(f"[bold red][Error][/] Fine-tuning failed: {train_err}")
+            else:
+                logger.error("Training module not available. Cannot execute --train.")
+                console.print("[bold red][Error][/] Training functionality is not available.")
+        elif args.stream_direct:
+            # Handle direct streaming mode
+            asyncio.run(stream_direct_llm(args.stream_direct, llm_url))
+        else:
+            # Modes requiring the full agent
+            if not agent: # Initialize agent if not done (should be done above)
+                logger.warning("Agent not initialized before entering agent modes. Re-initializing.")
+                agent = _initialize_agent(system_prompt, llm_url_override=llm_url, tools_dict=loaded_skill_registry)
+                if not agent:
+                    logger.critical("Agent re-initialization failed. Exiting.")
+                    sys.exit(1)
+            else:
+                # Ensure agent uses the potentially updated llm_url
+                # This might require an agent method like agent.set_llm_url(llm_url) or re-init
+                logger.debug(f"Ensuring agent uses LLM URL: {llm_url}")
+                agent.llm_url = llm_url # Directly update if possible (depends on Agent impl)
+
+            agent_initialized_for_mode = True # Mark agent as used
+
+            if args.task:
+                asyncio.run(_handle_task_argument(agent, args.task))
+            elif args.command:
+                asyncio.run(_handle_command_argument(agent, args.command))
+            elif args.input_file:
+                asyncio.run(_handle_file_argument(agent, args.input_file))
+            else: # Default to interactive
+                asyncio.run(_handle_interactive_argument(agent))
+
+    finally:
+        # Stop the internal server only if it was started by the main logic (not by --run-skill)
+        if server_needed_and_started_main:
+            logger.info("Stopping LLaMA server that was started for this run...")
+            _stop_llama_server()
+            logger.info("LLaMA server stopped.")
+        elif server_process: # If process exists but wasn't marked, still try stopping?
+            logger.warning("Server process exists but wasn't marked as started by main logic. Attempting stop anyway.")
+            _stop_llama_server()
+
+
+if __name__ == "__main__":
+    # Ensure clean exit on Ctrl+C
+    try:
+        run_cli()
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received. Stopping server(s) if running...")
+        _stop_llama_server()  # Attempt graceful shutdown for llama.cpp
+        print("\nExiting cleanly.")
+        sys.exit(0)

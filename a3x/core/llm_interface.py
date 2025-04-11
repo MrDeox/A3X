@@ -5,6 +5,7 @@ import datetime
 import os
 from typing import List, Dict, Optional, AsyncGenerator
 import time
+import httpx
 
 # Initialize logger for this module *before* first use
 llm_logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def _determine_llm_url(provided_url: Optional[str]) -> str:
         return env_url
     return _DEFAULT_LLM_URL
 
-# <<< MODIFIED: Make it an async generator and add stream param >>>
+# <<< REPLACE the entire call_llm function body >>>
 async def call_llm(
     messages: List[Dict[str, str]],
     llm_url: Optional[str] = None,
@@ -58,122 +59,63 @@ async def call_llm(
     timeout: int = DEFAULT_TIMEOUT,
 ) -> AsyncGenerator[str, None]:
     """
-    Chama a API do LLM (compatível com OpenAI Chat Completions) de forma assíncrona.
-
-    Args:
-        messages: Lista de dicionários de mensagens (role/content).
-        llm_url: URL da API do LLM (opcional, usa config/env/default).
-        stream: Se True, retorna um gerador assíncrono para streaming.
-                Se False, acumula a resposta e retorna como gerador de um único item.
-        timeout: Timeout em segundos para a requisição.
-
-    Yields:
-        str: Chunks da resposta do LLM (se stream=True) ou a resposta completa (se stream=False).
-
-    Raises:
-        requests.exceptions.RequestException: Para erros de conexão/HTTP.
-        requests.exceptions.Timeout: Se o timeout for atingido.
-        Exception: Para outros erros inesperados.
+    Async LLM call using httpx (supports both streaming and non-streaming modes).
     """
     target_url = _determine_llm_url(llm_url)
     headers = {"Content-Type": "application/json"}
     payload = {"messages": messages, "stream": stream}
 
-    llm_logger.debug(f"Enviando para LLM. URL: {target_url}, Stream: {stream}")
-    llm_logger.debug(f"Payload (sem stream key): { {k:v for k,v in payload.items() if k != 'stream'} }")
+    llm_logger.debug(f"[LLM] Sending to {target_url} | Stream: {stream}")
+    llm_logger.debug(f"[LLM] Payload (trimmed): {str(payload)[:500]}")
 
-    full_response_content = ""
-    start_time = time.time()
-    try:
-        response = requests.post(
-            target_url,
-            headers=headers,
-            json=payload,
-            stream=stream,
-            timeout=timeout,
-        )
-        duration = time.time() - start_time
-        response.raise_for_status()  # Levanta erro para status HTTP 4xx/5xx
-
-        if stream:
-            llm_logger.info(
-                f"LLM stream started. Duration to first byte: {duration:.3f}s"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            response = await client.post(
+                url=target_url,
+                headers=headers,
+                json=payload,
             )
-            # Handle streaming response (Server-Sent Events)
-            lines_processed = 0
-            for line in response.iter_lines():
-                if line:
-                    decoded_line = line.decode("utf-8")
-                    if decoded_line.startswith("data: "):
-                        json_str = decoded_line[len("data: ") :].strip()
+
+            response.raise_for_status()
+
+            if stream:
+                llm_logger.info(f"[LLM] Streaming response started.")
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        json_str = line[len("data: "):].strip()
                         if json_str == "[DONE]":
-                            llm_logger.debug("LLM stream finished marker [DONE] received.")
+                            llm_logger.debug("[LLM] Stream finished ([DONE])")
                             break
                         try:
                             data = json.loads(json_str)
+                            # Safe access to nested content
                             choices = data.get("choices", [])
-                            if choices:
+                            if choices and isinstance(choices, list) and len(choices) > 0:
                                 delta = choices[0].get("delta", {})
-                                content = delta.get("content")
-                                if content:
-                                    lines_processed += 1
-                                    yield content
-                        except json.JSONDecodeError:
-                            llm_logger.warning(
-                                f"LLM stream: Failed to decode JSON line: {json_str}"
-                            )
-                    elif decoded_line.strip(): # Log other non-empty lines
-                         llm_logger.warning(f"LLM stream: Received unexpected line: {decoded_line}")
-                # Timeout check within stream loop could be added if needed
-            duration = time.time() - start_time # Recalculate total duration
-            llm_logger.info(f"LLM stream finished. Lines processed: {lines_processed}. Total duration: {duration:.3f}s")
-            # For stream=True, we don't return, we just yield.
-
-        else:  # Non-streaming mode
-            llm_logger.info(
-                f"LLM call successful (non-streaming). Duration: {duration:.3f}s"
-            )
-            try:
-                response_data = response.json()
-                choices = response_data.get("choices", [])
-                if choices:
+                                if isinstance(delta, dict):
+                                    content = delta.get("content")
+                                    if content:
+                                        yield content
+                        except (json.JSONDecodeError, IndexError, KeyError, TypeError) as e:
+                            llm_logger.warning(f"[LLM] Streaming decode/access error: {e} | line: {json_str}")
+            else:
+                data = response.json()
+                # Safe access to nested content
+                choices = data.get("choices", [])
+                content = ""
+                if choices and isinstance(choices, list) and len(choices) > 0:
                     message = choices[0].get("message", {})
-                    full_response_content = message.get("content", "")
-                    llm_logger.debug(f"Non-streaming response content length: {len(full_response_content)}")
-                else:
-                    llm_logger.warning("LLM non-streaming response missing 'choices'.")
-            except json.JSONDecodeError as json_err:
-                llm_logger.error(f"Failed to decode non-streaming JSON response: {json_err}")
-                llm_logger.debug(f"Raw non-streaming response text: {response.text}")
-                # Yield an error message or raise?
-                yield f"[LLM Response Error: Failed to parse JSON - {json_err}]"
-                return # Stop generation
+                    if isinstance(message, dict):
+                        content = message.get("content", "")
+                llm_logger.debug(f"[LLM] Non-streaming response content length: {len(content)}")
+                yield content
 
-            yield full_response_content # Yield the single full response
-
-    except requests.exceptions.Timeout as e:
-        duration = time.time() - start_time
-        llm_logger.error(f"LLM call timed out after {duration:.3f}s. URL: {target_url}")
-        raise requests.exceptions.Timeout(
-            f"Timeout na chamada LLM ({duration:.3f}s)"
-        ) from e
-    except requests.exceptions.RequestException as e:
-        duration = time.time() - start_time
-        llm_logger.exception(
-            f"Erro na chamada HTTP para LLM ({duration:.3f}s). URL: {target_url}. Erro: {e}"
-        )
-        # Adicionar log do corpo da resposta, se disponível e útil
-        try:
-            if e.response is not None:
-                 llm_logger.error(f"LLM Error Response Status: {e.response.status_code}")
-                 llm_logger.error(f"LLM Error Response Body: {e.response.text[:500]}...") # Log first 500 chars
-        except Exception as log_err:
-             llm_logger.error(f"Failed to log error response body: {log_err}")
-
-        raise e  # Re-levanta a exceção original
-    except Exception as e:  # Captura outras exceções inesperadas
-        duration = time.time() - start_time
-        llm_logger.exception(
-            f"Erro inesperado durante o processamento da chamada LLM ({duration:.3f}s). Erro: {e}"
-        )
-        raise e # Re-levanta para tratamento no nível superior
+        except httpx.RequestError as e:
+            llm_logger.exception(f"[LLM] Request error: {e}")
+            yield f"[LLM Error: Request failed - {e}]"
+        except httpx.HTTPStatusError as e:
+            llm_logger.error(f"[LLM] HTTP error {e.response.status_code}: {e.response.text}")
+            yield f"[LLM Error: HTTP {e.response.status_code}]"
+        except Exception as e:
+            llm_logger.exception(f"[LLM] Unexpected error: {e}")
+            yield f"[LLM Error: Unexpected failure - {e}]"

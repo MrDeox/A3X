@@ -28,7 +28,7 @@ for loader, module_name, is_pkg in pkgutil.walk_packages(__path__):
     if not module_name.startswith("_") and module_name not in SKIPPED_MODULES and not module_name.startswith("core."):
         logger.info(f"---> Attempting to import skill module: {module_name} (is_pkg={is_pkg})") # Log BEFORE
         try:
-            _module = importlib.import_module(f".{module_name}", __package__)
+            _module = importlib.import_module(f"{__package__}.{module_name}")
             # Optionally, add module names to __all__ if needed
             # __all__.append(module_name)
             logger.info(f"---> Successfully imported skill module: {module_name}") # Log AFTER success
