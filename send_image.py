@@ -2,8 +2,8 @@ import requests
 import sys
 
 # --- Configuração ---
-IMAGE_PATH = "cachorro.jpg"  # Ou dog.jpg, ou o caminho completo
-PROMPT_TEXT = "<image> Describe this image"
+IMAGE_PATH = "dog.jpg"  # Ou dog.jpg, ou o caminho completo
+PROMPT_TEXT = "USER: <image>\nDescribe this image.\nASSISTANT:" # LLaVA 1.5 Prompt Format
 SERVER_URL = "http://localhost:8080/completion"
 # --- Fim Configuração ---
 
@@ -24,10 +24,11 @@ files = {
     'file0': (IMAGE_PATH, image_content, 'image/jpeg') # Envia como image/jpeg, ajuste se necessário
 }
 data = {
-    'prompt': PROMPT_TEXT
+    'prompt': PROMPT_TEXT,
+    'n_predict': 128  # Limitar tokens de saída
 }
 
-print(f"Enviando requisição para {SERVER_URL} com a imagem {IMAGE_PATH}...")
+print(f"Enviando requisição para {SERVER_URL} com a imagem {IMAGE_PATH} e n_predict=128...")
 
 try:
     response = requests.post(SERVER_URL, files=files, data=data)

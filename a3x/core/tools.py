@@ -111,12 +111,45 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
             )
 
         # Criar schema Pydantic dinamicamente
+        param_details = {}
+        for param_name, param_info in parameters.items():
+            # Handle both (type,) and (type, default) formats
+            if isinstance(param_info, (list, tuple)):
+                if len(param_info) == 1:
+                    param_type = param_info[0]
+                    default_value = inspect.Parameter.empty # Indicate no default
+                elif len(param_info) == 2:
+                    param_type, default_value = param_info
+                else:
+                    logger.warning(f"Invalid parameter format for '{param_name}' in skill '{name}'. Expected (type,) or (type, default).")
+                    continue
+            else:
+                 logger.warning(f"Invalid parameter format for '{param_name}' in skill '{name}'. Expected tuple or list.")
+                 continue
+
+            # Validate against function signature if possible (optional but good practice)
+            if param_name not in func_params:
+                logger.warning(f"Parameter '{param_name}' defined in @skill for '{name}' but not found in function signature.")
+                # Continue registering, but log warning
+
+            param_details[param_name] = {
+                # Store the actual type object, not its string representation
+                "type_obj": param_type,
+                "type_str": str(param_type.__name__) if hasattr(param_type, '__name__') else str(param_type), # Keep string for logging/display
+                "required": default_value is inspect.Parameter.empty,
+                "default": default_value if default_value is not inspect.Parameter.empty else None
+            }
+
+        # Criar schema Pydantic dinamicamente
         pydantic_fields = {}
-        for param_name, (param_type, default_value) in parameters.items():
-            pydantic_fields[param_name] = (param_type, default_value)
+        for param_name, param_info in param_details.items():
+            # Use the actual type object for Pydantic model creation
+            field_type = param_info["type_obj"]
+            field_default = param_info["default"] if not param_info["required"] else ... # Use Ellipsis for required fields
+            pydantic_fields[param_name] = (field_type, field_default)
 
         # Nome do schema dinâmico (para melhor debug/docs)
-        schema_name = f"{name.capitalize().replace('_', '')}InputSchema"
+        schema_name = f"{name.capitalize()}SkillSchema"
         try:
             # Usar Ellipsis diretamente para campos obrigatórios
             dynamic_schema = create_model(
