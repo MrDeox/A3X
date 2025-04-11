@@ -62,6 +62,16 @@ except Exception as e:
         exc_info=True,
     )
 
+# Explicitly import the monetization sub-package to ensure its skills are registered.
+try:
+    importlib.import_module(".monetization", __package__)
+    logger.debug("Explicitly imported monetization skill sub-package.")
+except Exception as e:
+    logger.error(
+        f"Failed to explicitly import skill sub-package 'monetization': {e}",
+        exc_info=True,
+    )
+
 # Remove the explicit import block for perception
 # logger.info("Attempting explicit import of .perception...") # Log BEFORE trying
 # try:
