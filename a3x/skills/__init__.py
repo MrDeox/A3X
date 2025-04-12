@@ -82,3 +82,16 @@ except Exception as e:
 #         f"Failed to explicitly import skill sub-package 'perception': {e}",
 #         exc_info=True,
 #     )
+
+# Explicitly import the auto_generated sub-package to ensure its skills are registered.
+try:
+    importlib.import_module(".auto_generated", __package__)
+    logger.debug("Explicitly imported auto_generated skill sub-package.")
+except ModuleNotFoundError:
+    # Expected if the directory doesn't exist or has no __init__.py yet
+    logger.debug("Sub-package 'auto_generated' not found or not yet initialized, skipping import.")
+except Exception as e:
+    logger.error(
+        f"Failed to explicitly import skill sub-package 'auto_generated': {e}",
+        exc_info=True,
+    )

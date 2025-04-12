@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Core A3X imports
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 
 # Dependencies for OCR - require installation:
 # pip install pytesseract Pillow

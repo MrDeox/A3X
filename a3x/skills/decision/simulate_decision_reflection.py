@@ -1,8 +1,11 @@
+import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 # Core imports
-from a3x.core.tools import skill
+from a3x.core.skills import skill
+from a3x.core.llm import get_model
+from a3x.core.prompt_builder import build_simulation_prompt
 # from a3x.core.llm_interface import wait_for_llm_ready # <-- REMOVIDO
 
 # Constants

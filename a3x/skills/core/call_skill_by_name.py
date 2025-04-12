@@ -4,9 +4,12 @@ Skill para chamar dinamicamente outra skill registrada pelo nome.
 
 import logging
 from typing import Dict, Any, Optional
+import inspect # Added for async check
+import asyncio
+from a3x.core.context import Context
 
 # Core imports
-from a3x.core.tools import skill, get_tool
+from a3x.core.skills import skill, get_skill
 
 # Removed assumption comment about SkillContext
 
@@ -17,7 +20,8 @@ logger = logging.getLogger(__name__)
     description="Executa outra skill registrada dinamicamente pelo seu nome, passando argumentos.",
     parameters={
         "skill_name": (str, ...), # Nome da skill a ser chamada
-        "skill_args": (Optional[Dict[str, Any]], None) # Argumentos (dicionário JSON) para a skill
+        "skill_args": (Optional[Dict[str, Any]], None), # Argumentos (dicionário JSON) para a skill
+        "ctx": (Context, None) # Added ctx parameter declaration
     }
 )
 async def call_skill_by_name(ctx, skill_name: str, skill_args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -37,18 +41,18 @@ async def call_skill_by_name(ctx, skill_name: str, skill_args: Optional[Dict[str
     if skill_args is None:
         skill_args = {} # Default to empty dict if None
 
-    # Use the global skills registry function get_tool
-    skill_info = get_tool(skill_name)
+    # Use the global skills registry function get_skill
+    skill_info = get_skill(skill_name)
 
     if not skill_info:
-        logger.error(f"Skill '{skill_name}' not found in the global registry via get_tool.")
+        logger.error(f"Skill '{skill_name}' not found in the global registry via get_skill.")
         return {"error": f"Skill '{skill_name}' not found in the global registry."}
 
     skill_func = skill_info.get("function")
     skill_instance = skill_info.get("instance")
 
     if not callable(skill_func):
-        logger.error(f"Skill '{skill_name}' function found via get_tool is not callable.")
+        logger.error(f"Skill '{skill_name}' function found via get_skill is not callable.")
         return {"error": f"Skill '{skill_name}' implementation is invalid (not callable)."}
 
     try:

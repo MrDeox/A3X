@@ -8,8 +8,11 @@ import time
 import asyncio # Needed for potential concurrent individual analyses
 from typing import List, Dict, Any, AsyncGenerator
 
-# Import the skill decorator
-from a3x.core.tools import skill
+from a3x.core.llm_interface import call_llm
+from a3x.core.skills import skill
+# Config import removed as LLM_DEFAULT_MODEL was the only import and is not defined
+
+logger = logging.getLogger(__name__)
 
 # Context stub for type hinting (can be replaced by actual SkillContext if available globally)
 class SkillContext:

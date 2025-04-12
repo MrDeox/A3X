@@ -1,15 +1,13 @@
 import os
 from dotenv import load_dotenv
 import platform # Add platform import
+from pathlib import Path
 
-# <<< ADDED: Define project_root >>>
-# Assume config.py is in the 'core' directory, so go up one level
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# <<< EXPORTING project_root as PROJECT_ROOT >>>
-PROJECT_ROOT = project_root
+# Define project root based on this file's location
+PROJECT_ROOT = Path(__file__).parent.parent.parent # Go up 3 levels from core/config.py
 
 # Carregar variáveis de ambiente do arquivo .env
-load_dotenv(os.path.join(project_root, ".env"))  # Load from project root
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))  # Load from project root
 
 # <<< ADDED BACK Commented LLAMA_SERVER_URL for reference/potential use >>>
 # URL do servidor LLAMA (Ollama, LM Studio, etc.)
@@ -89,7 +87,7 @@ AGENT_STATE_ID = os.getenv(
 # Caminho para o arquivo do modelo GGUF
 LLAMA_MODEL_PATH = os.environ.get(
     "LLAMA_MODEL_PATH",
-    os.path.join(project_root, "models", "gemma-3-4b-it-Q4_K_M.gguf"), # Correct full path using project_root
+    os.path.join(PROJECT_ROOT, "models", "gemma-3-4b-it-Q4_K_M.gguf"), # Correct full path using project_root
 )
 # Argumentos adicionais para passar ao servidor llama.cpp
 # Ex: número de camadas GPU, tamanho do contexto, etc.
@@ -117,7 +115,7 @@ BASE_MODEL_NAME = os.getenv("BASE_MODEL_NAME", "google/gemma-2b")
 QLORA_R = int(os.getenv("QLORA_R", "8"))
 QLORA_ALPHA = int(os.getenv("QLORA_ALPHA", "16"))
 QLORA_DROPOUT = float(os.getenv("QLORA_DROPOUT", "0.05"))
-TRAINING_OUTPUT_DIR = os.getenv("TRAINING_OUTPUT_DIR", os.path.join(project_root, "a3x_training_output/qlora_adapters"))
+TRAINING_OUTPUT_DIR = os.getenv("TRAINING_OUTPUT_DIR", os.path.join(PROJECT_ROOT, "a3x_training_output/qlora_adapters"))
 TRAINING_BATCH_SIZE = int(os.getenv("TRAINING_BATCH_SIZE", "1"))
 TRAINING_GRAD_ACCUMULATION = int(os.getenv("TRAINING_GRAD_ACCUMULATION", "4"))
 TRAINING_EPOCHS = int(os.getenv("TRAINING_EPOCHS", "1"))
@@ -135,12 +133,13 @@ except OSError as e:
     print(f"Erro ao criar diretório de output do treinamento {TRAINING_OUTPUT_DIR}: {e}")
 
 # --- LLM Server (llama.cpp) Configuration ---
-LLAMA_CPP_DIR = os.path.join(PROJECT_ROOT, "llama.cpp")
-LLAMA_SERVER_BINARY = os.path.join(LLAMA_CPP_DIR, "build", "bin", "llama-server")
-LLAMA_SERVER_MODEL_PATH = os.getenv(
-    "LLAMA_SERVER_MODEL_PATH",
-    os.path.join(PROJECT_ROOT, "models", "gemma-3-4b-it-Q4_K_M.gguf") # <<< AJUSTE ESTE CAMINHO PARA O SEU MODELO! >>>
-)
+LLAMA_CPP_DIR = str(PROJECT_ROOT / "llama.cpp")
+# Correct path: Directly join PROJECT_ROOT with the relative path to the binary
+LLAMA_SERVER_BINARY_NAME = "llama-server"
+LLAMA_SERVER_BINARY = str(PROJECT_ROOT / "llama.cpp/build/bin" / LLAMA_SERVER_BINARY_NAME) if platform.system() != "Windows" else str(PROJECT_ROOT / "llama.cpp/build/bin/Release" / f"{LLAMA_SERVER_BINARY_NAME}.exe")
+LLAMA_SERVER_MODEL_DIR = str(PROJECT_ROOT / "models")
+LLAMA_SERVER_MODEL_NAME = "google_gemma-3-4b-it-Q4_K_S.gguf" # Corrected model name
+LLAMA_SERVER_MODEL_PATH = os.getenv('LLAMA_SERVER_MODEL_PATH', str(Path(LLAMA_SERVER_MODEL_DIR) / LLAMA_SERVER_MODEL_NAME))
 LLAMA_SERVER_HOST = "127.0.0.1"
 LLAMA_SERVER_PORT = 8080
 LLAMA_SERVER_URL_BASE = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
@@ -158,10 +157,8 @@ LLAMA_SERVER_STARTUP_TIMEOUT = 120 # seconds
 
 # --- Stable Diffusion Server (a3x/servers/sd_api_server.py) Configuration ---
 SD_SERVER_MODULE = "a3x.servers.sd_api_server"
-SD_WEBUI_DEFAULT_PATH_CONFIG = os.getenv(
-    "SD_WEBUI_PATH",
-    os.path.join(PROJECT_ROOT, "stable-diffusion-webui") # Default path
-)
+# Correct path: Directly join PROJECT_ROOT with the relative path to the SD WebUI directory
+SD_WEBUI_DEFAULT_PATH_CONFIG = os.getenv('SD_WEBUI_PATH', str(PROJECT_ROOT / "stable-diffusion-webui")) # Use PROJECT_ROOT
 SD_API_HOST = "127.0.0.1"
 SD_API_PORT = 7860
 SD_API_URL_BASE = f"http://{SD_API_HOST}:{SD_API_PORT}"

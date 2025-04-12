@@ -3,12 +3,13 @@ import logging
 from pathlib import Path
 import shutil
 from typing import Dict, Optional
+import os
 
 # Corrected absolute import using alias
 from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT
 
 # Importar usando paths relativos
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from a3x.core.validators import validate_workspace_path
 
 # Initialize logger
@@ -434,13 +435,16 @@ class FileManagerSkill:
     async def append_to_file(
         self,
         content: str,
+        path: str,
+        *,
         resolved_path: Path,
         original_path_str: str,
-        path: str,
         **kwargs,
     ) -> dict:
-        """Appends content to file. Path validation via decorator."""
-        logger.debug(f"Skill 'append_to_file' requested. Path: '{original_path_str}'")
+        """Appends content to a file. Path validation/resolution via decorator."""
+        logger.debug(
+            f"Skill 'append_to_file' requested for: '{original_path_str}', Resolved: '{resolved_path}'"
+        )
 
         if not isinstance(content, str):
             return {

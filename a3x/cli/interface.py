@@ -10,15 +10,19 @@ import atexit
 import signal
 import platform
 from dotenv import load_dotenv
-from typing import Optional, Tuple, AsyncGenerator, Set, Dict, Any
+from typing import Optional, Tuple, AsyncGenerator, Set, Dict, Any, Callable
 import json
 import importlib
 import ast
 import requests
 import inspect
+from pathlib import Path
+from collections import namedtuple
+import yaml
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 # <<< ADDED: Log Python environment at script start >>>
 print(f"DEBUG: Running with Python Executable: {sys.executable}")
@@ -41,6 +45,9 @@ try:
         LLAMA_MODEL_PATH as DEFAULT_MODEL_PATH,
         LLAMA_SERVER_URL as DEFAULT_SERVER_URL,
         CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE,
+        PROJECT_ROOT,
+        # DEFAULT_MMPROJ_PATH, # Removed unused import
+        # ENABLE_LLAMA_SERVER_AUTOSTART, # Removed unused import
     )
 
     # from core.db_utils import initialize_database
@@ -50,11 +57,12 @@ try:
     from a3x.core.cerebrumx import CerebrumXAgent
 
     # <<< Replace commented out/incorrect tool import >>>
-    from a3x.core.tools import (
+    from a3x.core.skills import (
         load_skills,
-        get_skill_registry,
-        get_tool_descriptions,
-        SKILL_REGISTRY, # Import the registry itself if needed directly
+        get_skill,
+        get_skill_descriptions,
+        SKILL_REGISTRY, # Import the registry itself
+        # SkillContext, # Removed import, using local definition
     )
     # from core.logging_config import setup_logging
     from a3x.core.logging_config import setup_logging
@@ -62,6 +70,7 @@ try:
     from a3x.core.llm_interface import call_llm
     # <<< ADDED: Import server manager functions >>>
     from a3x.core.server_manager import start_llama_server, start_sd_server, stop_all_servers, managed_processes
+    from a3x.core.agent import DEFAULT_REACT_SYSTEM_PROMPT # <<< Import the new prompt
 except ImportError as e:
     # <<< ADDED: Initialize logger here BEFORE using it >>>
     # Need a basic logger config if setup_logging hasn't run yet
@@ -135,18 +144,16 @@ LLAVA_CONTROLLER_PORT = 10000 # Default LLaVA controller port
 LLAVA_WORKER_PORT = 21002   # Default LLaVA worker port
 LLAVA_API_PORT = 9999       # Target OpenAI API port
 LLAVA_API_URL = f"http://localhost:{LLAVA_API_PORT}/v1"
-LLAVA_MODEL_DIR_RELATIVE = "llava-1.5-7b" # Directory name for downloaded model
+LLAVA_MODEL_DIR_RELATIVE = "LLaVA/llava-v1.5-7b" # Relative to project root
 LLAVA_REPO_DIR_RELATIVE = "LLaVA" # Directory name for cloned LLaVA repo
 _llava_controller_process: Optional[subprocess.Popen] = None
 _llava_worker_process: Optional[subprocess.Popen] = None
 _llava_api_server_process: Optional[subprocess.Popen] = None
 # <<< END NEW LLaVA Stack Config >>>
 
-LLAVA_MODEL_DIR_RELATIVE = "LLaVA/llava-v1.5-7b" # Relative to project root
-
-# <<< ADDED: Minimal Context for Direct Skill Call >>>
-from collections import namedtuple
-SkillContext = namedtuple("SkillContext", ["logger", "llm_call", "is_test"])
+# <<< REMOVED: Old, simpler SkillContext definition >>>
+# from collections import namedtuple
+# SkillContext = namedtuple("SkillContext", ["logger", "llm_call", "is_test"])
 
 # Modified wrapper to be an async generator and pass stream=True
 async def _direct_llm_call_wrapper(prompt: str) -> AsyncGenerator[str, None]:
@@ -219,6 +226,11 @@ def _parse_arguments():
         "--skill-args",
         default="{}",
         help="(TESTING) Argumentos para a skill em formato JSON string (usado com --run-skill). Ex: '{\"param\":\"value\"}'"
+    )
+    # <<< ADDED: Argument for skill args file >>>
+    parser.add_argument(
+        "--skill-args-file",
+        help="(TESTING) Path para um arquivo JSON contendo argumentos para a skill (usado com --run-skill, tem precedência sobre --skill-args).",
     )
     # <<< END ADDED >>>
 
@@ -333,126 +345,122 @@ async def _process_input_file(agent: CerebrumXAgent, file_path: str):
 
 # <<< NEW: Argument Handler Functions >>>
 async def _handle_task_argument(agent: CerebrumXAgent, task_arg: str):
-    """Handles the --task argument logic."""
-    if task_arg.strip().endswith(".json") and os.path.exists(task_arg):
+    """Handles the --task argument (either a JSON file or a direct objective string)."""
+    if task_arg.lower().endswith('.json') or task_arg.lower().endswith('.jsonl'):
         logger.info(f"Loading structured task(s) from JSON: {task_arg}")
         try:
-            with open(task_arg, "r", encoding="utf-8") as f:
-                tasks_input = json.load(f)
+            with open(task_arg, 'r', encoding='utf-8') as f:
+                # <<< START MODIFICATION: Handle objective or list >>>
+                tasks_data = json.load(f)
 
-            tasks = []
-            if isinstance(tasks_input, dict):  # Single task
-                tasks.append(tasks_input)
-            elif isinstance(tasks_input, list):  # List of tasks
-                tasks = tasks_input
-            else:
-                raise TypeError(
-                    "Task JSON must contain a single object or a list of objects."
-                )
+            if isinstance(tasks_data, dict) and 'objective' in tasks_data:
+                # Handle JSON containing a single objective for the agent
+                objective = tasks_data['objective']
+                if not isinstance(objective, str) or not objective:
+                    logger.error(f"Invalid 'objective' format in task file {task_arg}. Must be a non-empty string.")
+                    console.print(f"[bold red]Erro:[/bold red] Formato inválido para 'objective' no arquivo JSON.")
+                    return
 
-            # Process each task in the list
-            for task_index, task in enumerate(tasks):
-                logger.info(
-                    f"Processing task {task_index + 1}/{len(tasks)}: ID '{task.get('id', 'N/A')}'"
-                )
+                logger.info(f"Processing single objective from JSON: '{objective[:100]}...'")
+                # Pass the objective to the agent's main interaction handler
+                await handle_agent_interaction(agent, objective, []) # Pass empty history
 
-                skill_name = task.get("skill")
-                # action_name = task.get("action") # Not used in this dynamic logic path
-                params = task.get("parameters", {})
+            elif isinstance(tasks_data, list):
+                # Handle the original list-of-skills format
+                logger.info(f"Processing list of {len(tasks_data)} predefined skill calls from JSON.")
+                for task_index, task in enumerate(tasks_data):
+                    if not isinstance(task, dict) or not all(k in task for k in ['skill_name', 'function_name', 'params']):
+                        logger.error(f"Invalid task format at index {task_index} in {task_arg}. Required keys: skill_name, function_name, params.")
+                        console.print(f"[bold red]Erro:[/bold red] Formato inválido para tarefa no índice {task_index}.")
+                        continue # Skip this invalid task
 
-                # --- Dynamic Skill Execution Logic ---
-                # Determine module name (simple heuristic)
-                # This logic might need better refinement or a central registry lookup
-                if skill_name in [
-                    "open_url",
-                    "click_element",
-                    "fill_form_field",
-                    "get_page_content",
-                    "close_browser",
-                ]:
-                    module_name = "browser_skill"
-                elif skill_name == "auto_publisher":
-                    module_name = "auto_publisher"
-                # Add more mappings if needed
-                else:
-                    module_name = skill_name  # Assume module name matches skill name
+                    skill_name = task.get('skill_name')
+                    function_name = task.get('function_name')
+                    params = task.get('params', {})
 
-                module_path = f"skills.{module_name}"
-                function_name = skill_name  # Assume function name matches skill name
+                    logger.info(f"--- Executing Task {task_index + 1}/{len(tasks_data)}: Skill '{skill_name}', Function '{function_name}' ---")
 
-                result = {
-                    "status": "error",
-                    "message": f"Skill '{skill_name}' could not be executed.",
-                }
-                try:
-                    skill_module = importlib.import_module(module_path)
-                    if hasattr(skill_module, function_name):
-                        skill_function = getattr(skill_module, function_name)
+                    # WARNING: This direct execution path bypasses agent planning/context.
+                    # It might be prone to errors if skills rely on agent state or complex context.
+                    # Consider removing or refactoring this path if agent execution is preferred.
+                    module_path = f"skills.{skill_name}"
+                    result = None
+                    try:
+                        # Ensure the skill module is loaded
+                        if module_path not in sys.modules:
+                            importlib.import_module(module_path)
+                        skill_module = sys.modules[module_path]
 
-                        if asyncio.iscoroutinefunction(skill_function):
-                            logger.info(
-                                f"Executing async skill '{skill_name}' with params: {params}"
-                            )
-                            result = await skill_function(**params)  # Use await
+                        # Check if function exists
+                        if hasattr(skill_module, function_name):
+                            skill_function = getattr(skill_module, function_name)
+
+                            if asyncio.iscoroutinefunction(skill_function):
+                                logger.info(
+                                    f"Executing async skill '{skill_name}' with params: {params}"
+                                )
+                                result = await skill_function(**params)  # Use await
+                            else:
+                                logger.info(
+                                    f"Executing sync skill '{skill_name}' with params: {params}"
+                                )
+                                loop = asyncio.get_event_loop()
+                                result = await loop.run_in_executor(
+                                    None, skill_function, **params
+                                )
+
+                            if not isinstance(result, dict):
+                                logger.warning(
+                                    f"Skill '{skill_name}' did not return a dict. Wrapping output."
+                                )
+                                result = {"status": "success", "message": str(result)}
+
                         else:
-                            logger.info(
-                                f"Executing sync skill '{skill_name}' with params: {params}"
+                            logger.error(
+                                f"Function '{function_name}' not found in module '{module_path}'. Skill execution failed."
                             )
-                            # Run sync function in executor to avoid blocking asyncio loop
-                            loop = asyncio.get_event_loop()
-                            result = await loop.run_in_executor(
-                                None, skill_function, **params
+                            raise AttributeError(
+                                f"Function '{function_name}' not found in '{module_path}'."
                             )
 
-                        # Ensure result is a dict for consistent processing
-                        if not isinstance(result, dict):
-                            logger.warning(
-                                f"Skill '{skill_name}' did not return a dict. Wrapping output."
-                            )
-                            result = {"status": "success", "message": str(result)}
-
-                    else:
-                        # Fallback logic (e.g., for class-based skills like AutoPublisher) might go here
-                        # or raise an error.
-                        logger.error(
-                            f"Function '{function_name}' not found in module '{module_path}'. Skill execution failed."
+                    except ModuleNotFoundError:
+                        logger.error(f"Skill module not found: {module_path}")
+                        result = {
+                            "status": "error",
+                            "message": f"Skill module '{module_path}' not found.",
+                        }
+                    except AttributeError as e:
+                        logger.error(str(e))
+                        result = {"status": "error", "message": str(e)}
+                    except Exception as e:
+                        logger.exception(
+                            f"Error executing skill '{skill_name}' dynamically:"
                         )
-                        raise AttributeError(
-                            f"Function '{function_name}' not found in '{module_path}'."
+                        result = {
+                            "status": "error",
+                            "message": f"Failed to execute skill: {e}",
+                        }
+
+                    # Display result
+                    logger.info(
+                        f"Task {task_index + 1} result: {result.get('status', 'N/A')}"
+                    )
+                    console.print(
+                        Panel(
+                            json.dumps(result, indent=2, ensure_ascii=False),
+                            title=f"Task {task_index + 1} ({skill_name}) Result",
+                            border_style=(
+                                "green" if result.get("status") == "success" else "red"
+                            ),
                         )
-
-                except ModuleNotFoundError:
-                    logger.error(f"Skill module not found: {module_path}")
-                    result = {
-                        "status": "error",
-                        "message": f"Skill module '{module_path}' not found.",
-                    }
-                except AttributeError as e:
-                    logger.error(str(e))
-                    result = {"status": "error", "message": str(e)}
-                except Exception as e:
-                    logger.exception(
-                        f"Error executing skill '{skill_name}' dynamically:"
                     )
-                    result = {
-                        "status": "error",
-                        "message": f"Failed to execute skill: {e}",
-                    }
-
-                # Display result
-                logger.info(
-                    f"Task {task_index + 1} result: {result.get('status', 'N/A')}"
-                )
-                console.print(
-                    Panel(
-                        json.dumps(result, indent=2, ensure_ascii=False),
-                        title=f"Task {task_index + 1} ({skill_name}) Result",
-                        border_style=(
-                            "green" if result.get("status") == "success" else "red"
-                        ),
-                    )
-                )
-                console.rule()  # Separator between tasks
+                    console.rule()  # Separator between tasks
+            else:
+                # Invalid top-level JSON structure
+                logger.error(f"Invalid JSON structure in task file {task_arg}. Expected a list of skill calls or a dictionary with an 'objective' key.")
+                console.print(f"[bold red]Erro:[/bold red] Estrutura JSON inválida no arquivo de tarefa.")
+                return
+            # <<< END MODIFICATION >>>
 
         except FileNotFoundError:
             logger.error(f"Task JSON file not found: {task_arg}")
@@ -494,26 +502,66 @@ async def _handle_interactive_argument(agent: CerebrumXAgent):
     await _run_interactive_mode(agent)
 
 
-# <<< MOVED Skill Execution Logic into Async Function >>>
+# <<< REPLACED Function >>>
 async def _handle_run_skill_argument(args, llm_url: str):
+    """Handles the --run-skill argument, detecting and executing functions or class methods."""
     logger.debug(f"Starting _handle_run_skill_argument for skill: {args.run_skill}")
     skill_name = args.run_skill
-    try:
-        skill_args_dict = json.loads(args.skill_args)
-        logger.debug(f"Parsed skill args: {skill_args_dict}")
-        if not isinstance(skill_args_dict, dict):
-            raise ValueError("Skill arguments must be a JSON object (dictionary).")
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Invalid JSON or format in --skill-args: {e}")
-        console.print(f"[bold red]Error:[/bold red] Invalid JSON/format for --skill-args: {e}")
-        return # Exit this async function
+    skill_args_dict = {}
+    error_occurred = False
 
-    # Ensure skills are loaded and registry is populated
+    # <<< MOVED: Define SkillContext locally >>>
+    # Define SkillContext named tuple robustly within this function's scope
+    _ConcreteSkillContext = namedtuple("SkillContext", ["logger", "llm_call", "is_test", "workspace_root", "task"])
+    # <<< END MOVED >>>
+
+    # 1. Load Skill Arguments (same as before)
+    if args.skill_args_file:
+        logger.info(f"Attempting to load skill args from file: {args.skill_args_file}")
+        try:
+            with open(args.skill_args_file, 'r') as f:
+                skill_args_dict = json.load(f)
+            if not isinstance(skill_args_dict, dict):
+                raise ValueError("JSON file content must be a dictionary.")
+            logger.info(f"Successfully loaded skill args from {args.skill_args_file}.")
+            logger.debug(f"Loaded args: {skill_args_dict}")
+        except FileNotFoundError:
+            logger.error(f"Skill arguments file not found: {args.skill_args_file}")
+            console.print(f"[bold red]Error:[/bold red] Skill arguments file not found: {args.skill_args_file}")
+            error_occurred = True
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Invalid JSON or format in --skill-args-file ({args.skill_args_file}): {e}")
+            console.print(f"[bold red]Error:[/bold red] Invalid JSON/format in --skill-args-file ({args.skill_args_file}): {e}")
+            error_occurred = True
+        except Exception as e:
+            logger.error(f"Unexpected error reading skill args file {args.skill_args_file}: {e}", exc_info=True)
+            console.print(f"[bold red]Error:[/bold red] Unexpected error reading skill args file: {e}")
+            error_occurred = True
+    elif args.skill_args:
+        logger.info("Attempting to load skill args from --skill-args string.")
+        try:
+            skill_args_dict = json.loads(args.skill_args)
+            logger.debug(f"Parsed skill args: {skill_args_dict}")
+            if not isinstance(skill_args_dict, dict):
+                raise ValueError("Skill arguments must be a JSON object (dictionary).")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Invalid JSON or format in --skill-args: {e}")
+            console.print(f"[bold red]Error:[/bold red] Invalid JSON/format for --skill-args: {e}")
+            error_occurred = True
+        except Exception as e:
+            logger.error(f"Unexpected error parsing --skill-args: {e}", exc_info=True)
+            console.print(f"[bold red]Error:[/bold red] Unexpected error parsing --skill-args: {e}")
+            error_occurred = True
+    else:
+        logger.info("No skill arguments provided via file or string, using empty dict.")
+        skill_args_dict = {}
+
+    if error_occurred:
+        return # Exit if loading args failed
+
+    # 2. Get Skill Function/Method from Registry
     logger.debug("Ensuring SkillRegistry is populated...")
-    if not SKILL_REGISTRY: # Check if dict is empty
-        logger.warning("SkillRegistry is empty before direct call. Attempting to load...")
-        # Assuming load_skills was called earlier in run_cli or upon import
-        pass
+    # Assuming load_skills was called earlier in run_cli or upon import
 
     logger.debug(f"Attempting to retrieve skill '{skill_name}' from registry.")
     skill_info = SKILL_REGISTRY.get(skill_name)
@@ -521,112 +569,162 @@ async def _handle_run_skill_argument(args, llm_url: str):
     if not skill_info:
         logger.error(f"Skill '{skill_name}' not found in registry.")
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        registered_skills = list(SKILL_REGISTRY.keys()) # Use dict keys directly
+        registered_skills = list(SKILL_REGISTRY.keys())
         console.print(f"Available skills: {', '.join(registered_skills) if registered_skills else 'None'}")
         return
 
-    skill_func = skill_info.get("function")
-    if not skill_func or not callable(skill_func):
-        logger.error(f"Skill '{skill_name}' found but has no callable function.")
+    func_obj = skill_info.get("function")
+    if not func_obj or not callable(func_obj):
+        logger.error(f"Skill '{skill_name}' found but has no callable function object.")
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' is improperly registered.")
         return
 
-    logger.debug(f"Retrieved skill function '{skill_name}' directly from registry.")
+    logger.debug(f"Retrieved skill function object '{func_obj.__qualname__}' for skill '{skill_name}'.")
 
-    # Create a minimal context for the skill with the test flag
-    skill_context = SkillContext(logger=logger, llm_call=_direct_llm_call_wrapper, is_test=True)
-    logger.debug(f"Created minimal SkillContext for '{skill_name}' with is_test=True.")
+    # 3. Prepare Context and LLM Wrapper
+    # Define a non-streaming LLM call wrapper
+    async def non_streaming_llm_call_wrapper(prompt: str, temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> str:
+        logger.debug(f"Executing non-streaming LLM call for skill '{skill_name}'")
+        messages = [{"role": "user", "content": prompt}]
+        collected_response = ""
+        try:
+            async for chunk in call_llm(messages, stream=False): # Assuming call_llm is available
+                collected_response += chunk
+            logger.debug(f"Non-streaming LLM call for skill '{skill_name}' completed. Length: {len(collected_response)}")
+            return collected_response
+        except Exception as e:
+            logger.error(f"Error in non_streaming_llm_call_wrapper: {e}", exc_info=True)
+            return f"[LLM Call Error: {e}]"
 
-    # <<< Server Check/Start Logic moved here >>>
-    server_type = "LLaMA" # Default server type
-    server_check_func = _check_llm_server_health
-    server_start_func = _start_llama_server
-    server_stop_func = _stop_llama_server
-    server_port = args.port # Default port from args
-    server_model_path = args.model or DEFAULT_MODEL_PATH
-    server_gpu_layers = args.gpu_layers # Default GPU layers
-    server_mmproj_path = None # Default to no mmproj
-    server_start_success = False # Flag to track if start was successful
-    server_needed_and_started = False # Track if WE started it
+    # Create the skill context using the locally defined _ConcreteSkillContext
+    skill_context = _ConcreteSkillContext(
+        logger=logger,
+        llm_call=non_streaming_llm_call_wrapper,
+        is_test=True,
+        workspace_root=Path(PROJECT_ROOT).resolve(), # Pass the resolved project root
+        task=args.task
+    )
+    logger.debug(f"Created SkillContext for '{skill_name}' with workspace_root: {Path(PROJECT_ROOT).resolve()}")
 
-    # Determine model and potentially mmproj based on skill
-    # TODO: Move this skill-specific logic to a config or better place
-    if skill_name == "visual_perception":
-        logger.info(f"Configuring server for multimodal skill: {skill_name}")
-        # Example paths, adjust as needed
-        obsidian_model_rel = "models/obsidian-q6.gguf"
-        obsidian_mmproj_rel = "models/mmproj-obsidian-f16.gguf"
-        server_model_path = os.path.join(project_root, obsidian_model_rel)
-        server_mmproj_path = os.path.join(project_root, obsidian_mmproj_rel)
-        server_gpu_layers = 27 # Example override
-        logger.info(f"Using model: {server_model_path}")
-        logger.info(f"Using mmproj: {server_mmproj_path}")
-        logger.info(f"Setting GPU layers: {server_gpu_layers}")
-    else:
-        logger.info(f"Skill '{skill_name}' requires default text LLM server (llama.cpp).")
-        if not os.path.isabs(server_model_path):
-            server_model_path = os.path.join(project_root, server_model_path)
 
-    # Prepare arguments for the unified server start function
-    server_specific_start_args = {
-        "model_path": server_model_path,
-        "gpu_layers": server_gpu_layers,
-        "port": server_port,
-        "mmproj_path": server_mmproj_path
-    }
-
-    # Check if server is running, start if needed
-    # Use the determined llm_url for health check if available, otherwise construct from port
-    health_check_url = llm_url.replace("/v1/chat/completions", "/health") if llm_url else f"http://127.0.0.1:{server_port}/health"
-    if not _check_llm_server_health(url=health_check_url):
-        logger.info(f"--run-skill mode: {server_type} server (port {server_port}) not detected. Attempting to start...")
-        local_server_process, server_url_from_start = server_start_func(**server_specific_start_args)
-        if local_server_process and server_url_from_start:
-            logger.info(f"Internal {server_type} server started successfully for --run-skill. URL: {server_url_from_start}")
-            server_needed_and_started = True # Mark that we started it
-            # Update the URL used by the llm_call wrapper if possible? Requires refactor.
-            # For now, assume wrapper uses default or env var correctly.
-        else:
-            logger.error(f"Failed to start internal {server_type} server for --run-skill. Skill execution will likely fail.")
-            console.print(f"[bold red]Warning:[/bold red] Failed to start {server_type} server. The skill might fail.")
-    else:
-        logger.info(f"{server_type} server already running on port {server_port}.")
-    # <<< End Server Check/Start Logic >>>
-
-    # <<< Actual Skill Execution >>>
+    # 4. Detect Type and Execute
     result = None
+    executable_callable: Callable = None
+    instance: Optional[Any] = None
+
     try:
-        logger.info(f"Executing skill '{skill_name}' with params: {skill_args_dict}")
-        if inspect.iscoroutinefunction(skill_func):
-            logger.debug(f"Executing async skill '{skill_name}'")
-            result = await skill_func(ctx=skill_context, **skill_args_dict)
+        # Check if it's a method within a class (using __qualname__)
+        is_method = inspect.isfunction(func_obj) and '.' in func_obj.__qualname__
+
+        if is_method:
+            logger.info(f"Skill '{skill_name}' detected as a method: {func_obj.__qualname__}")
+            qname = func_obj.__qualname__
+            class_name = qname.split('.')[-2]
+            method_name = func_obj.__name__ # Use actual method name
+
+            # Get the module
+            module = inspect.getmodule(func_obj)
+            if not module:
+                raise RuntimeError(f"Could not determine the module for {qname}")
+
+            logger.debug(f"Attempting to get class '{class_name}' from module '{module.__name__}'")
+            SkillClass = getattr(module, class_name)
+
+            logger.info(f"Instantiating class '{class_name}' with workspace_root='{Path(PROJECT_ROOT).resolve()}'")
+            # Instantiate the class, passing workspace_root if the constructor accepts it
+            # We assume constructors accept 'workspace_root' or handle its absence gracefully.
+            try:
+                # Check if constructor accepts workspace_root
+                sig = inspect.signature(SkillClass.__init__)
+                if 'workspace_root' in sig.parameters:
+                     instance = SkillClass(workspace_root=Path(PROJECT_ROOT).resolve())
+                else:
+                     instance = SkillClass() # Instantiate without workspace_root
+            except Exception as e:
+                 logger.error(f"Failed to instantiate {class_name}: {e}", exc_info=True)
+                 raise RuntimeError(f"Failed to instantiate class {class_name}: {e}")
+
+            logger.debug(f"Successfully instantiated {class_name}.")
+
+            # Get the bound method from the instance
+            executable_callable = getattr(instance, method_name)
+            logger.debug(f"Retrieved bound method '{executable_callable.__qualname__}' for execution.")
+
         else:
-            logger.debug(f"Executing sync skill '{skill_name}'")
-            loop = asyncio.get_event_loop() # Get loop inside async function
-            result = await loop.run_in_executor(None, lambda: skill_func(ctx=skill_context, **skill_args_dict)) # Use lambda for executor
+            logger.info(f"Skill '{skill_name}' detected as a regular function: {func_obj.__qualname__}")
+            executable_callable = func_obj # Use the original function object
+
+        # Execute the callable (function or bound method)
+        logger.info(f"Executing {'method' if is_method else 'function'} '{executable_callable.__qualname__}' with args: {skill_args_dict}")
+
+        # Check if the final callable is async
+        is_async = inspect.iscoroutinefunction(executable_callable)
+
+        if is_async:
+            logger.debug(f"Executing async callable '{executable_callable.__qualname__}'")
+            # Pass skill_context as the first arg if it's a standalone function
+            # For bound methods, 'self' is already part of executable_callable
+            if not is_method:
+                 result = await executable_callable(skill_context, **skill_args_dict)
+            else:
+                 # For methods, we might still need context if designed that way,
+                 # but typical @skill might inject it or method takes **kwargs
+                 # Let's assume the method signature accepts context + kwargs OR just kwargs
+                 # Check signature to be more robust (Optional)
+                 try:
+                     result = await executable_callable(skill_context, **skill_args_dict)
+                 except TypeError as e:
+                     logger.warning(f"TypeError calling method {executable_callable.__qualname__} with context. Trying without context. Error: {e}")
+                     # Try calling without context if the method doesn't expect it explicitly
+                     result = await executable_callable(**skill_args_dict)
+
+        else:
+            logger.debug(f"Executing sync callable '{executable_callable.__qualname__}' in executor.")
+            loop = asyncio.get_event_loop()
+            if not is_method:
+                result = await loop.run_in_executor(None, lambda: executable_callable(skill_context, **skill_args_dict))
+            else:
+                # Similar logic for sync methods - try with context, then without
+                try:
+                    result = await loop.run_in_executor(None, lambda: executable_callable(skill_context, **skill_args_dict))
+                except TypeError as e:
+                    logger.warning(f"TypeError calling method {executable_callable.__qualname__} with context. Trying without context. Error: {e}")
+                    result = await loop.run_in_executor(None, lambda: executable_callable(**skill_args_dict))
+
 
         logger.info(f"Skill '{skill_name}' execution finished.")
         console.print("[bold green]Skill Result:[/]")
         try:
-            # Attempt pretty print JSON
             console.print(json.dumps(result, indent=2))
         except (TypeError, OverflowError):
-            # Fallback for non-serializable or large results
             console.print(result)
 
     except TypeError as te:
-        # Catch argument mismatches specifically
+        # More specific error for argument mismatches
         logger.exception(f"TypeError executing skill '{skill_name}': Likely incorrect arguments provided. {te}")
-        console.print(f"[bold red]Error:[/bold red] TypeError executing skill '{skill_name}'. Check arguments. Error: {te}")
+        console.print(f"[bold red]Error:[/bold red] TypeError executing skill '{skill_name}'. Check arguments provided ({skill_args_dict}). Error: {te}")
+        # Optionally print expected signature
+        if executable_callable:
+            try:
+                sig = inspect.signature(executable_callable)
+                console.print(f"Expected signature: {skill_name}{sig}")
+            except ValueError: # Can happen for built-ins etc.
+                 pass
+
     except Exception as e:
-        logger.exception(f"Error executing skill '{skill_name}':")
+        logger.exception(f"Error during execution preparation or running of skill '{skill_name}':")
         console.print(f"[bold red]Error executing skill '{skill_name}':[/] {e}")
     finally:
-        # Stop server if we started it specifically for this run
-        if server_needed_and_started:
-            logger.info(f"Stopping {server_type} server that was started for --run-skill...")
-            server_stop_func() # Call the correct stop function
-# <<< END Moved Logic >>>
+        # Stop server if we started it (same as before)
+        # Note: The logic for starting/stopping servers might need revisiting
+        # if run_skill is meant to be truly standalone without server interaction.
+        if _llama_server_process and _llama_server_process.poll() is None:
+            logger.info(f"Stopping internal llama-server (PID: {_llama_server_process.pid})...")
+            #_stop_llama_server() # Assuming this is synchronous and safe here
+            pass # Let main_async handle server shutdown
+
+# <<< END REPLACED Function >>>
+
 
 # <<< ADDED: Function to start llama.cpp server >>>
 def _start_llama_server(
@@ -1015,7 +1113,7 @@ def validate_registered_skills(expected_skills: Set[str], registered_skills_dict
     registered_skill_names = set(registered_skills_dict.keys())
 
     missing_skills = expected_skills - registered_skill_names
-    unexpected_skills = registered_skill_names - expected_skills
+    extra_skills = registered_skill_names - expected_skills
 
     if missing_skills:
         # Critical Error: Skills defined in code but not registered via import
@@ -1029,10 +1127,10 @@ def validate_registered_skills(expected_skills: Set[str], registered_skills_dict
     else:
         logger.debug("✅ All discovered skills appear to be registered.")
 
-    if unexpected_skills:
+    if extra_skills:
         # Warning: Skills registered but not found by discovery (e.g., old file deleted but import remains)
         logger.warning("🧩 Potentially stale skill registrations detected!")
-        for skill_name in unexpected_skills:
+        for skill_name in extra_skills:
             logger.warning(f"  - Skill '{skill_name}' registered but NOT found by file discovery.")
             logger.warning(f"    This might indicate an old skill file was deleted but the import in __init__.py remains.")
             logger.warning(f"    Consider removing the import for '{skill_name}' if it's no longer used.")
@@ -1045,162 +1143,179 @@ def validate_registered_skills(expected_skills: Set[str], registered_skills_dict
 
 def run_cli():
     """Função principal da CLI."""
-    # <<< MOVED: Logging setup to very beginning >>>
-    setup_logging() # Ensure logging is setup FIRST
+    # setup_logging() # Chamado dentro de main_async agora
 
-    args = _parse_arguments()
-    change_to_project_root()
-    initialize_database() # Ensure DB is ready
-
-    # <<< ADDED: Log sys.path at the start of run_cli >>>
-    logger.debug(f"sys.path at start of run_cli: {sys.path}")
-
-    # --- Server Management --- 
-    # <<< NEW: Use Server Manager >>>
-    # Determine if servers should be managed by this CLI instance
-    manage_servers = not args.no_server and not args.train # Don't manage if --no-server or --train
-    
-    # Register cleanup function to stop servers on exit
-    # Use run_until_complete in atexit handler
+    # --- Funções de Limpeza e Sinais ---
     def cleanup_servers():
-        logger.info("CLI exiting. Stopping managed servers...")
-        try:
-            # Ensure loop exists if called late
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Schedule cleanup if loop is running
-                asyncio.ensure_future(stop_all_servers())
-            else:
-                # Run cleanup directly if loop is closed
-                asyncio.run(stop_all_servers())
-            logger.info("Server cleanup process initiated.")
-        except Exception as e:
-             logger.error(f"Error during server cleanup: {e}", exc_info=True)
-             
-    if manage_servers:
-         atexit.register(cleanup_servers)
-         # Also register signal handlers to trigger cleanup
-         def signal_handler(sig, frame):
-              print(f'\nSignal {sig} received, initiating shutdown...')
-              # Directly call atexit handlers
-              sys.exit(0) # sys.exit triggers atexit
-              
-         signal.signal(signal.SIGINT, signal_handler) # Ctrl+C
-         signal.signal(signal.SIGTERM, signal_handler)
-         if platform.system() != "Windows":
-              signal.signal(signal.SIGHUP, signal_handler)
-              signal.signal(signal.SIGQUIT, signal_handler)
+        """Função de limpeza registrada com atexit para garantir parada dos servidores.
+           Deve conter apenas lógica síncrona ou chamadas que funcionem fora de um loop asyncio ativo.
+        """
+        logger.info("Executing synchronous cleanup via atexit...")
+        # A antiga função _stop_llama_server era síncrona e pode ser chamada aqui,
+        # mas a lógica moderna está em stop_all_servers (assíncrona).
+        # _stop_llama_server() # Manter ou remover dependendo se ainda é útil
 
-    # Use an async function to handle server startup and main logic
+        # <<< REMOVED: Chamada direta a stop_all_servers (assíncrona) >>>
+        # logger.info("Ensuring all managed servers are stopped via atexit...")
+        # try:
+        #     # Tentar executar a limpeza assíncrona aqui pode ser problemático
+        #     # devido ao estado do loop de eventos no atexit.
+        #     # asyncio.run(stop_all_servers())
+        #     pass # Melhor chamar stop_all_servers explicitamente no final de main_async
+        # except RuntimeError as e:
+        #      # Comum se o loop já estiver fechado
+        #      logger.warning(f"RuntimeError during atexit cleanup (likely loop closed): {e}")
+        # except Exception as e:
+        #      logger.exception("Unexpected error during atexit server cleanup:")
+        logger.info("Synchronous atexit cleanup finished.")
+
+    atexit.register(cleanup_servers)
+
+    # ... (signal handler) ...
+
+    # --- Função Principal Assíncrona ---
     async def main_async():
-        servers_ready = True # Assume ready if not managing
-        if manage_servers:
-            logger.info("Attempting to start and manage LLM and SD servers...")
-            # Start servers concurrently
-            start_tasks = [
-                start_llama_server(), 
-                start_sd_server()
-            ]
-            results = await asyncio.gather(*start_tasks, return_exceptions=True)
-            
-            # Check results
-            servers_ready = True
-            if isinstance(results[0], Exception) or results[0] is None:
-                 logger.error("LLM server failed to start or was already running with issues.")
-                 # servers_ready = False # Decide if we should stop if one fails
-            if isinstance(results[1], Exception) or results[1] is None:
-                 logger.error("SD server failed to start or was already running with issues.")
-                 # servers_ready = False 
-            
-            if not managed_processes:
-                 logger.warning("No server processes were started by the manager (might be running externally).")
-                 # If we expect the manager to start them, this might be an error
-                 # servers_ready = False 
-            elif not all(p is not None for p in managed_processes.values()):
-                 logger.warning("One or more servers failed to start correctly or were already running.")
-                 # servers_ready = False
-            else:
-                 logger.info("Both LLM and SD servers are managed and reported ready.")
+        """Função principal que executa a lógica assíncrona."""
+        global _llama_server_process # Permitir modificação
+        args = _parse_arguments()
 
-        if not servers_ready and manage_servers:
-             console.print("[bold red]Error:[/bold red] One or more required servers failed to start. Check logs/servers.log for details. Exiting.")
-             sys.exit(1)
-        elif not servers_ready and not manage_servers:
-             logger.warning("Proceeding without managed servers. Ensure external servers are running if needed by skills.")
-        else:
-             logger.info("Servers ready (or not managed). Proceeding with CLI operation.")
-             
-        # --- Load Skills & Initialize Agent (AFTER potential server start) ---
-        logger.info("Loading skills...")
-        skills_dir_path = os.path.join(project_root, "a3x", "skills")
-        load_skills("a3x.skills")
-        loaded_skill_registry = get_skill_registry()
+        # Setup logging ASAP
+        setup_logging()
+        logger.info("Starting A³X CLI...")
+        logger.info(f"Arguments: {args}")
 
-        logger.info("Initializing Agent...")
-        system_prompt = _load_system_prompt()
-        # Agent uses the default configured URL, which server_manager aims to make available
-        agent = _initialize_agent(system_prompt, llm_url_override=None, tools_dict=loaded_skill_registry)
+        # Mudar para o diretório raiz do projeto
+        change_to_project_root()
+        logger.info(f"Running in directory: {os.getcwd()}")
 
-        if agent is None:
-            logger.critical("Agent initialization returned None. Exiting.")
-            sys.exit(1)
+        # Inicializar DB
+        initialize_database() # Ensure DB is ready
 
-        logger.info("Validating skills registration...")
-        expected_skills_set = discover_expected_skills(skills_dir_path)
+        # Determinar URL do LLM
+        llm_url = args.model or DEFAULT_SERVER_URL # Usa --model se fornecido, senão config
+
+        servers_started_by_cli = False
         try:
-             validate_registered_skills(expected_skills_set, agent.tools)
-        except CriticalSkillRegistrationError as e:
-             logger.critical(f"Skill registration failed: {e}. Exiting.")
-             console.print(f"[bold red]Critical Error:[/bold red] {e}")
-             sys.exit(1)
-        logger.info("Skills validation passed.")
+            # Iniciar servidor LLaMA se necessário
+            if not args.no_server:
+                logger.info("Attempting to start and manage LLM and SD servers...")
+                # Start LLaMA
+                llama_success = await start_llama_server() # Usa a função do server_manager
+                if llama_success:
+                    logger.info("LLaMA server managed successfully.")
+                    servers_started_by_cli = True
+                else:
+                    logger.warning("LLM server failed to start correctly or was already running.")
 
-        # --- Determine Execution Mode --- 
-        # (Pass agent and args to handler functions)
-        if args.run_skill:
-            await _handle_run_skill_argument(args, agent.llm_url) # Pass agent's configured URL
-        elif args.stream_direct:
-            await stream_direct_llm(args.stream_direct)
-        elif args.train:
-             if run_qlora_finetuning:
-                  console.print("[bold cyan]Starting QLoRA Fine-tuning...[/]")
-                  try:
-                       run_qlora_finetuning() # Call the imported function
-                       console.print("[bold green]Fine-tuning finished.[/]")
-                  except Exception as train_e:
-                       logger.exception("Error during training:")
-                       console.print(f"[bold red]Training Error:[/bold red] {train_e}")
-             else:
-                  console.print("[bold yellow]Training module not available. Cannot run --train.[/]")
-        elif args.command:
-            await _handle_command_argument(agent, args.command)
-        elif args.input_file:
-            await _handle_file_argument(agent, args.input_file)
-        elif args.task:
-            await _handle_task_argument(agent, args.task)
-        else: # Default to interactive if no other mode specified
-            await _handle_interactive_argument(agent)
-            
-        # <<< NOTE: Servers will be stopped by the atexit handler >>>
+                # Start SD (Add error handling if needed)
+                # sd_success = await start_sd_server()
+                # if sd_success:
+                #    logger.info("SD server managed successfully.")
+                # else:
+                #    logger.warning("SD server failed to start correctly or was already running.")
+            else:
+                logger.info("Skipping internal server start (--no-server specified).")
+                # Verify connection to existing server?
+                # if not _check_llm_server_health(llm_url):
+                #    logger.warning(f"Warning: Could not connect to LLM server at {llm_url}. Agent may fail.")
 
-    # Run the main async function
+            logger.info("Servers ready (or not managed). Proceeding with CLI operation.")
+
+            # Carregar skills DEPOIS que os servidores (se gerenciados) estão prontos
+            logger.info("Loading skills...")
+            load_skills() # Use the core function
+            tools_dict = SKILL_REGISTRY # <<< Corrected: Pass the actual registry
+            if not tools_dict:
+                 logger.warning("No skills were loaded. The agent will have no tools.")
+                 # raise CriticalSkillRegistrationError("CRITICAL: No skills registered after loading.")
+            else:
+                logger.info(f"Loaded {len(tools_dict)} skills.")
+
+            # Inicializar Agente (passando tools)
+            logger.info("Initializing Agent...")
+            agent = _initialize_agent(system_prompt=DEFAULT_REACT_SYSTEM_PROMPT, llm_url_override=llm_url, tools_dict=tools_dict) # Pass tools here
+            if not agent:
+                logger.critical("Failed to initialize agent. Exiting.")
+                return # Sai da função main_async
+            logger.info("Agent ready.")
+
+            # Validar skills registradas vs arquivos encontrados
+            logger.info("Validating skills registration...")
+            try:
+                # Convert list to set for comparison
+                expected_skill_names = set([
+                    "generate_code", "write_file", "read_file", "list_directory",
+                    "append_to_file", "delete_path", "hierarchical_planner",
+                    "simulate_step", "final_answer", "web_search",
+                    # Add other essential skills here for validation
+                ])
+                # Validate available skills against expected
+                registered_skills = set(SKILL_REGISTRY.keys())
+                expected_skills_set = set(expected_skill_names) # <<< CONVERT TO SET >>>
+
+                missing_skills = expected_skills_set - registered_skills
+                extra_skills = registered_skills - expected_skills_set
+
+                if missing_skills:
+                    logger.warning(
+                        f"Missing expected skills in registry: {sorted(list(missing_skills))}"
+                    )
+                if extra_skills:
+                    logger.warning(
+                        f"Extra skills in registry: {sorted(list(extra_skills))}"
+                    )
+            except Exception as skill_val_err:
+                logger.exception(f"Error during skill validation placeholder:")
+
+            # Executar lógica baseada nos argumentos
+            if args.task:
+                await _handle_task_argument(agent, args.task)
+            elif args.command:
+                await _handle_command_argument(agent, args.command)
+            elif args.input_file:
+                await _handle_file_argument(agent, args.input_file)
+            elif args.interactive:
+                await _handle_interactive_argument(agent)
+            elif args.stream_direct:
+                 await stream_direct_llm(args.stream_direct, _direct_llm_call_wrapper)
+            elif args.train:
+                if run_qlora_finetuning:
+                    logger.info("Starting QLoRA fine-tuning process...")
+                    # Assumindo que a função pode rodar sincronamente ou você a adapta
+                    run_qlora_finetuning()
+                    logger.info("Fine-tuning process completed.")
+                else:
+                    logger.error("--train specified, but training module failed to import.")
+            # <<< ADDED: Handle direct skill execution >>>
+            elif args.run_skill:
+                await _handle_run_skill_argument(args, llm_url)
+            # <<< END ADDED >>>
+            else:
+                # Comportamento padrão: modo interativo se nenhum outro modo for especificado
+                logger.info("No specific mode selected, entering interactive mode.")
+                await _handle_interactive_argument(agent)
+
+        except Exception as e:
+            logger.critical(f"An unexpected error occurred in main_async: {e}", exc_info=True)
+        finally:
+            # <<< ADDED: Explicitly stop servers managed by this CLI run >>>
+            logger.info("Main CLI function finished or errored, ensuring server cleanup...")
+            await stop_all_servers()
+            logger.info("Server cleanup process completed via stop_all_servers().")
+
+    # --- Ponto de Entrada Principal ---
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received by main loop. Cleanup should trigger.")
-        # atexit handler should still run via sys.exit() or natural exit
+        logger.info("CLI interrupted by user (KeyboardInterrupt).")
+        # A limpeza de atexit deve ser chamada aqui automaticamente
+        # Mas podemos tentar uma limpeza explícita adicional se necessário,
+        # embora possa causar problemas de loop se main_async não terminou.
     except Exception as e:
-        logger.exception("An unexpected error occurred in the main async loop:")
+        logger.critical(f"A critical error occurred outside the main async loop: {e}", exc_info=True)
     finally:
-        # Explicitly call cleanup just in case atexit doesn't fire correctly in all scenarios
-        logger.info("Main CLI function finished or errored, ensuring server cleanup...")
-        # cleanup_servers() # Call the synchronous cleanup wrapper
-        pass # Relying on atexit/signal handler primarily
-        
+        logger.info("A³X CLI finished.")
 
-# <<< Make sure setup_logging() is called before run_cli if run as main >>>
-# If assistant_cli.py imports and calls run_cli, ensure setup_logging is called there first.
 
 if __name__ == "__main__":
-    setup_logging() # Call logging setup if this script is run directly
     run_cli()

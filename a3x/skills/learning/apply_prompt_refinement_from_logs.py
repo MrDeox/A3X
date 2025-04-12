@@ -9,11 +9,19 @@ import os
 import datetime
 from typing import Dict, Any, Optional, AsyncGenerator, List
 import ast
+from pathlib import Path
+import shutil
 
 # Core imports
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from a3x.skills.core.call_skill_by_name import call_skill_by_name
 from a3x.core.llm_interface import call_llm
+from a3x.core.config import PROJECT_ROOT
+# from a3x.core.config import (
+#     # LLM_DEFAULT_MODEL, # Removed, var not defined
+# )
+# from a3x.core.memory_manager import MemoryManager # Module does not exist
+# from a3x.core.utils.file_utils import get_most_recent_file # Function does not exist
 
 # Assume SkillContext e outras skills (como learn_from_reflection_logs) são acessíveis
 # através do contexto ou import direto se necessário.
@@ -26,201 +34,113 @@ PROMPT_END_MARKER = "# --- END SIMULATION PROMPT ---"
 
 logger = logging.getLogger(__name__)
 
+# Context stub (replace with actual SkillContext if available globally)
+class SkillContext:
+    logger: logging.Logger
+    # llm_call: Any # Assuming this is available
+
+
+# Helper: Define the prompt file directory relative to this script
+PROMPT_FILE_DIR = Path(__file__).parent.parent / "prompts" # Assuming prompts dir is sibling to skills/
+PROMPT_FILE_PATH = PROMPT_FILE_DIR / "decision_prompt.txt"
+# Backup directory relative to PROJECT_ROOT
+PROMPT_BACKUP_DIR = Path(PROJECT_ROOT) / ".a3x" / "prompt_backups"
+
+# --- Skill Definition ---
 @skill(
     name="apply_prompt_refinement_from_logs",
-    description="Refatora o prompt da skill simulate_decision_reflection com base nas sugestões extraídas dos logs de reflexão.",
-    parameters={}
+    description="Aplica um refinamento de prompt sugerido (gerado por refine_decision_prompt) ao arquivo decision_prompt.txt.",
+    parameters={
+        "suggested_prompt": (str, ...), # O texto completo do novo prompt sugerido.
+        "original_log_filename": (str, ...), # Nome do arquivo de log que originou a sugestão (para rastreabilidade).
+    }
 )
-async def apply_prompt_refinement_from_logs(ctx) -> Dict[str, Any]:
+async def apply_prompt_refinement_from_logs(ctx: SkillContext, suggested_prompt: str, original_log_filename: str) -> Dict[str, Any]:
     """
-    Automatically refines the prompt of the simulate_decision_reflection skill
-    based on suggestions extracted from recent reflection logs.
-
-    Args:
-        ctx: The skill execution context (must provide access to logger, llm_call,
-             and potentially other skills like learn_from_reflection_logs and file I/O).
-
-    Returns:
-        A dictionary indicating success or failure and the new prompt if successful.
+    Applies the suggested refined prompt to the main decision_prompt.txt file,
+    creating a backup of the old version first.
     """
-    ctx.logger.info("Starting prompt refinement based on learning logs.")
+    ctx.logger.info(f"Attempting to apply prompt refinement from log: {original_log_filename}")
 
-    # --- Step 1: Get Prompt Improvement Suggestions --- #
-    ctx.logger.info("Running learn_from_reflection_logs to get suggestions...")
+    # Ensure backup directory exists
     try:
-        # <<< MODIFIED: Use call_skill_by_name exclusively >>>
-        learn_skill_result = await call_skill_by_name(
-            ctx,
-            skill_name="learn_from_reflection_logs",
-            skill_args={"n_logs": 5} # Use a reasonable default or make configurable?
-        )
+        PROMPT_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        ctx.logger.error(f"Failed to create prompt backup directory {PROMPT_BACKUP_DIR}: {e}")
+        return {"status": "error", "message": f"Failed to create backup directory: {e}"}
 
-        # Check for errors from call_skill_by_name
-        if learn_skill_result.get("status") == "error" or "error" in learn_skill_result:
-            error_detail = learn_skill_result.get('error', 'Unknown error from learn_from_reflection_logs')
-            ctx.logger.error(f"Failed to get insights from logs via call_skill_by_name: {error_detail}")
-            # Return the error dict directly from the failed skill call
-            return learn_skill_result
+    # 1. Check if the target prompt file exists
+    if not PROMPT_FILE_PATH.is_file():
+        ctx.logger.error(f"Target prompt file not found: {PROMPT_FILE_PATH}")
+        return {"status": "error", "message": f"Target prompt file {PROMPT_FILE_PATH.name} not found."}
 
-        # Extract insights from the successful result data
-        # Assuming the result structure is something like {"status": "success", "data": {"insights_from_logs": "..."}}
-        # Adjust based on the actual return structure of learn_from_reflection_logs
-        insights_text = learn_skill_result.get("data", {}).get("insights_from_logs", "")
-        if not insights_text:
-            ctx.logger.error("No insights text returned from learn_from_reflection_logs call.")
-            return {"status": "error", "error": "No insights text returned from learn_from_reflection_logs call."}
-
-        # Extract suggestions (simple regex approach)
-        suggestions_match = re.search(r"- Melhorias de Prompt Sugeridas(?:.*?):\s*(.*?)(?:\n- |$)", insights_text, re.IGNORECASE | re.DOTALL)
-        if not suggestions_match:
-            ctx.logger.warning("Could not find 'Melhorias de Prompt Sugeridas' section in the insights.")
-            return {"status": "error", "error": "Seção de sugestões de prompt não encontrada nos logs."}
-
-        prompt_suggestions = suggestions_match.group(1).strip()
-        if not prompt_suggestions:
-             ctx.logger.warning("'Melhorias de Prompt Sugeridas' section is empty.")
-             return {"status": "error", "error": "Seção de sugestões de prompt está vazia."}
-
-        ctx.logger.info(f"Extracted prompt suggestions:\n{prompt_suggestions}")
-
-    except Exception as e:
-        ctx.logger.exception("Error during learn_from_reflection_logs skill call or suggestion extraction:")
-        return {"status": "error", "error": f"Falha ao obter/processar sugestões via call_skill_by_name: {e}"}
-
-    # --- Step 2: Generate New Prompt using LLM --- #
-    ctx.logger.info("Generating new prompt based on suggestions...")
-    refinement_prompt = f"""Você é responsável por refatorar o prompt da skill 'simulate_decision_reflection'.
-Abaixo estão sugestões de melhoria extraídas de logs de reflexão anteriores:
-
-{prompt_suggestions}
-
-Com base nisso, gere uma NOVA versão completa do prompt da skill.
-
-Regras:
-- O prompt deve instruir a IA (Arthur) a seguir um processo de Chain-of-Thought com etapas claras (ex: Análise do Contexto, Raciocínio Interno, Critérios, Decisão, Justificativa).
-- O prompt deve incorporar as sugestões fornecidas da melhor forma possível.
-- Não escreva introduções nem comentários.
-- Responda APENAS com o texto completo do novo prompt, pronto para ser usado no código Python como uma f-string (portanto, não use f-string dentro da sua resposta). Certifique-se de que variáveis como {{user_input}} e {{examples_text}} estejam corretamente formatadas para substituição posterior (use chaves simples {{}}).
-
-Novo prompt:
-"""
-
-    new_prompt_text = ""
+    # 2. Create a timestamped backup
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"{PROMPT_FILE_PATH.stem}_{timestamp}{PROMPT_FILE_PATH.suffix}.bak"
+    backup_path = PROMPT_BACKUP_DIR / backup_filename
     try:
-        # Replaced safe_llm_call with standard call_llm and try/except
-        ctx.logger.info("Calling LLM for prompt refinement (streaming)...")
-        analysis_response = ""
-        # Assuming call_llm expects a list of messages
-        async for chunk in call_llm(messages=[{"role": "user", "content": refinement_prompt}], stream=True): # Consider adding timeout if supported/needed
-            analysis_response += chunk
-        new_prompt_text = analysis_response.strip() # Assign stripped response
-
-        # Check for empty response
-        if not new_prompt_text:
-            ctx.logger.error("LLM failed to generate a new prompt (empty response).")
-            return {"status": "error", "error": "LLM não gerou um novo prompt."}
-
-        # Clean up potential LLM artifacts like leading/trailing quotes or markdown backticks
-        new_prompt_text = new_prompt_text.strip('\"' + "\'" + "`") # Clean after checking empty
-        ctx.logger.info("Successfully generated new prompt candidate.")
-        # ctx.logger.debug(f"New prompt generated:\\n{new_prompt_text}") # Optional: log the full new prompt
-
-        # --- ADICIONADO: Validar Sintaxe do Prompt Gerado --- #
-        try:
-            # Construir um snippet de código Python mínimo usando o prompt gerado
-            # para verificar se ele seria válido dentro de uma f-string.
-            code_to_validate = f'simulated_prompt = f"""{new_prompt_text}"""'
-            ast.parse(code_to_validate)
-            ctx.logger.info("Generated prompt passed syntax validation.")
-        except SyntaxError as e:
-            ctx.logger.error(f"Generated prompt failed Python syntax validation: {e}")
-            ctx.logger.debug(f"Invalid prompt content:\n{new_prompt_text}") # Log o prompt inválido para debug
-            return {
-                "status": "error",
-                "error": f"Generated prompt is not valid Python syntax: {e}",
-                "invalid_prompt_snippet": new_prompt_text[:200] + "..." # Retorna um trecho para análise
-            }
-        # --- FIM: Validar Sintaxe --- #
-
+        shutil.copy2(PROMPT_FILE_PATH, backup_path)
+        ctx.logger.info(f"Created backup of current prompt: {backup_path.name}")
     except Exception as e:
-        ctx.logger.exception("Error during LLM call for prompt refinement:")
-        return {"error": f"Falha ao gerar novo prompt via LLM: {e}"}
+        ctx.logger.error(f"Failed to create backup of prompt file {PROMPT_FILE_PATH}: {e}")
+        return {"status": "error", "message": f"Failed to backup prompt file: {e}"}
 
-    # --- Step 3: Read Target File and Replace Prompt --- #
-    ctx.logger.info(f"Applying new prompt to {TARGET_SKILL_FILE}...")
+    # 3. Write the new suggested prompt to the original file
     try:
-        # Assume ctx provides file reading/writing capabilities
-        # Placeholder: Replace with actual mechanism if ctx doesn't have these methods
-        # Example: Use FileManager skill if available
-
-        # Read existing content using read_file skill
-        ctx.logger.info(f"Reading target file {TARGET_SKILL_FILE} using read_file skill...")
-        target_content_dict = await call_skill_by_name(
-            ctx,
-            skill_name="read_file",
-            skill_args={"path": TARGET_SKILL_FILE}
-        )
-        # Error handling for read_file skill call
-        if target_content_dict.get("status") == "error":
-             ctx.logger.error(f"Failed to read target file {TARGET_SKILL_FILE} via skill: {target_content_dict.get('error', 'Unknown error')}")
-             return {"error": f"Failed to read target file via skill: {target_content_dict.get('error', 'Unknown error')}"}
-        if "content" not in target_content_dict.get("data", {}):
-             ctx.logger.error(f"Read_file skill succeeded but did not return 'content' for {TARGET_SKILL_FILE}.")
-             return {"error": "Read_file skill did not return content."}
-        target_content = target_content_dict["data"]["content"]
-
-        # Extract old prompt and check markers
-        match = re.search(f"{re.escape(PROMPT_START_MARKER)}(.*?){re.escape(PROMPT_END_MARKER)}", target_content, re.DOTALL)
-        if not match:
-            ctx.logger.error(f"Could not find prompt markers in {TARGET_SKILL_FILE}.")
-            return {"error": f"Marcadores de prompt não encontrados em {TARGET_SKILL_FILE}."}
-        old_prompt = match.group(1).strip()
-
-        # Create backup (optional but recommended) - Using write_file skill
-        backup_filename = f"{TARGET_SKILL_FILE}.bak_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-        ctx.logger.info(f"Creating backup of old prompt in {backup_filename} using write_file skill...")
-        backup_write_result = await call_skill_by_name(
-            ctx,
-            skill_name="write_file",
-            skill_args={"path": backup_filename, "content": old_prompt, "overwrite": True}
-        )
-        if backup_write_result.get("status") == "error":
-             ctx.logger.warning(f"Failed to create backup file {backup_filename} via skill: {backup_write_result.get('error', 'Unknown error')}. Proceeding without backup.")
-
-        # Prepare the new prompt content (ensure proper indentation/formatting if needed)
-        # For now, assume new_prompt_text is ready
-        # Ensure leading/trailing newlines match the original marker placement
-        new_prompt_section = f"\n{new_prompt_text}\n        "
-
-        # Replace the old prompt section with the new one
-        new_target_content = target_content.replace(match.group(1), new_prompt_section)
-
-        # Add automatic modification comment (optional)
-        modification_comment = f"\n# Prompt automatically refined by apply_prompt_refinement_from_logs on {datetime.datetime.now().isoformat()}\n"
-        # Find a suitable place to add it, e.g., after the END marker
-        new_target_content = new_target_content.replace(PROMPT_END_MARKER, PROMPT_END_MARKER + modification_comment)
-
-        # Write the modified content back to the file using write_file skill
-        ctx.logger.info(f"Writing updated content to {TARGET_SKILL_FILE} using write_file skill...")
-        write_result = await call_skill_by_name(
-            ctx,
-            skill_name="write_file",
-            skill_args={"path": TARGET_SKILL_FILE, "content": new_target_content, "overwrite": True}
-        )
-
-        if write_result.get("status") == "error":
-            ctx.logger.error(f"Failed to write updated file {TARGET_SKILL_FILE} via skill: {write_result.get('error', 'Unknown error')}")
-            return {"error": f"Failed to write updated file via skill: {write_result.get('error', 'Unknown error')}"}
-
-        ctx.logger.info("Prompt successfully updated.")
-        return {
-            "status": "Prompt atualizado com sucesso.",
-            "new_prompt": new_prompt_text # Return the clean new prompt
-        }
-
+        with open(PROMPT_FILE_PATH, "w", encoding="utf-8") as f:
+            f.write(suggested_prompt)
+        ctx.logger.info(f"Successfully applied refined prompt to {PROMPT_FILE_PATH.name}.")
+        # Manage old backups after successful write
+        _manage_old_prompt_backups(PROMPT_BACKUP_DIR, PROMPT_FILE_PATH.stem, ctx.logger)
+        return {"status": "success", "message": f"Prompt {PROMPT_FILE_PATH.name} updated successfully."}
+    except IOError as e:
+        ctx.logger.error(f"Failed to write refined prompt to {PROMPT_FILE_PATH}: {e}")
+        return {"status": "error", "message": f"Failed to write new prompt: {e}. Backup created at {backup_path.name}."}
     except Exception as e:
-        ctx.logger.exception(f"Error during file operation for {TARGET_SKILL_FILE}:")
-        return {"error": f"Falha ao atualizar arquivo da skill: {e}"}
+        ctx.logger.exception(f"Unexpected error writing refined prompt to {PROMPT_FILE_PATH}:")
+        return {"status": "error", "message": f"Unexpected error writing prompt: {e}. Backup created at {backup_path.name}."}
+
+# --- Helper Functions ---
+
+def _manage_old_prompt_backups(backup_dir: Path, file_stem: str, logger: logging.Logger):
+    """Keeps only the most recent N backups for a given prompt file stem."""
+    max_backups = 5 # Keep last 5 backups
+    try:
+        backups = sorted(
+            backup_dir.glob(f"{file_stem}_*.bak"),
+            key=os.path.getmtime,
+            reverse=True, # Newest first
+        )
+
+        if len(backups) > max_backups:
+            backups_to_delete = backups[max_backups:]
+            logger.info(f"Managing old prompt backups for '{file_stem}'. Found {len(backups)}, keeping {max_backups}.")
+            for old_backup in backups_to_delete:
+                try:
+                    old_backup.unlink()
+                    logger.debug(f"Deleted old prompt backup: {old_backup.name}")
+                except OSError as del_err:
+                    logger.warning(f"Failed to delete old prompt backup '{old_backup.name}': {del_err}")
+    except Exception as e:
+        logger.exception(f"Error managing old prompt backups in {backup_dir} for {file_stem}: {e}")
+
+
+# def _restore_latest_backup(target_path: Path, backup_dir: Path, logger: logging.Logger) -> bool:
+#     """Restores the most recent .bak file from the backup directory to the target path."""
+#     try:
+#         # Find the most recent backup file - COMMENTED OUT - requires get_most_recent_file
+#         # latest_backup = get_most_recent_file(backup_dir, f"{target_path.stem}_*.bak")
+#         latest_backup = None # Placeholder
+#         if latest_backup and latest_backup.is_file():
+#             shutil.copy2(latest_backup, target_path)
+#             logger.info(f"Restored prompt {target_path.name} from backup {latest_backup.name}.")
+#             return True
+#         else:
+#             logger.warning(f"No suitable backup found in {backup_dir} to restore for {target_path.name}.")
+#             return False
+#     except Exception as e:
+#         logger.exception(f"Error restoring backup for {target_path.name}: {e}")
+#         return False
 
 # TODO:
 # - Implement actual ctx.run_skill or equivalent mechanism.

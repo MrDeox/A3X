@@ -3,13 +3,14 @@
 from pathlib import Path
 from typing import Annotated, Any
 import logging
+import torch
 
 from PIL import Image
 # Use specific BLIP classes instead of AutoModel
 from transformers import BlipProcessor, BlipForConditionalGeneration
 
-# <<< IMPORT skill decorator from core.tools >>>
-from a3x.core.tools import skill
+from a3x.core.skills import skill
+from a3x.core.config import PROJECT_ROOT
 
 
 # <<< REMOVE Class Wrapper >>>

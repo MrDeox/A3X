@@ -5,8 +5,9 @@ import re
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from a3x.core.llm_interface import call_llm
+from a3x.core.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,12 @@ def extract_json_from_markdown(text: str) -> Optional[Dict[str, Any]]:
 @skill(
     name="persona_generator",
     description="Gera uma persona fictícia +18 detalhada (nome, bio, tags, prompt visual, estilo) e salva como JSON.",
-    parameters={} # Sem parâmetros de entrada necessários para esta versão
+    parameters={
+        "niche": (str, ...),
+        "platform": (str, ...),
+        "number_of_personas": (int, 1),
+        "ctx": (Context, None)
+    }
 )
 async def generate_persona(ctx) -> Dict[str, Any]:
     """

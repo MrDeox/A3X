@@ -6,7 +6,7 @@ import datetime # Added for example usage timestamp
 from typing import Dict, Any, List, Optional
 
 # Core imports
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from a3x.core.learning_logs import load_recent_reflection_logs
 from a3x.core.llm_interface import call_llm
 from a3x.skills.core.call_skill_by_name import call_skill_by_name

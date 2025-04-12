@@ -1,0 +1,3 @@
+{"content": "O A³X agora possui um ciclo cognitivo completo baseado na arquitetura ReAct com reflexão, aprendizado e replanejamento.", "source": "reflexão", "tags": ["aprendizado", "ciclo cognitivo"], "_vector_id": 0}
+{"content": "As reflexões são analisadas automaticamente para gerar recomendações e novos planos com base no resultado das ações.", "source": "reflexão", "tags": ["aprendizado", "ciclo cognitivo"], "_vector_id": 1}
+{"content": "O backend de memória vetorial FAISS substituiu com sucesso a extensão sqlite-vec, permitindo buscas rápidas e robustas.", "source": "reflexão", "tags": ["aprendizado", "ciclo cognitivo", "FAISS", "backend"], "_vector_id": 2}

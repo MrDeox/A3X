@@ -23,7 +23,7 @@ def build_react_prompt(
 
     # Adiciona objetivo (pode ser principal ou sub-objetivo do passo do plano)
     # <<< FIXED: Added missing f-string prefix >>>
-    messages.append({"role": "user", "content": f"Meu objetivo atual é: {objective}"})
+    messages.append({"role": "user", "content": f"Objective: {objective}"})
 
     # Processa histórico ReAct (Thought, Action, Observation)
     if history:
@@ -54,7 +54,7 @@ def build_react_prompt(
             )
 
     # Adiciona instrução final para o LLM pensar
-    messages.append({"role": "user", "content": "Qual o seu próximo Thought e Action?"})
+    messages.append({"role": "user", "content": "What is your next Thought and Action?"})
 
     # agent_logger.debug(f"[Prompt Builder DEBUG] Final ReAct prompt messages: {messages}") # Optional verbose debug
     return messages

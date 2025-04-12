@@ -8,6 +8,10 @@ from typing import Dict, Any, List, Optional
 import datetime # For temporary file naming (alternative)
 import importlib.util # To check for playwright
 import httpx # Add httpx for async requests
+import io
+import mss
+import mss.tools
+from PIL import Image
 
 # --- Playwright Check ---
 _playwright_installed = importlib.util.find_spec("playwright")
@@ -19,9 +23,14 @@ else:
     PlaywrightError = None
 # --- End Playwright Check ---
 
-# Core imports
-from a3x.core.tools import skill
-# Removed: from a3x.core.llm_interface import call_llm - No longer calling the default LLM here
+# Core framework imports
+from a3x.core.config import (
+    LLM_PROVIDER,
+    LLAMA_SERVER_URL, # Assuming this might be used for LLaVA
+    # Add any specific LLaVA server URL config if needed
+)
+from a3x.core.llm_interface import call_llm
+from a3x.core.skills import skill
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +65,9 @@ LLAMA_CPP_ENDPOINT = f"http://localhost:8080/v1/chat/completions" # Assuming def
 @skill(
     name="visual_perception",
     description="Captura um screenshot da tela usando Playwright, envia para o servidor LLaVA externo para análise e descreve a interface.",
-    parameters={} # No parameters needed besides context
+    parameters={
+        "ctx": (Context, None)
+    }
 )
 async def visual_perception(ctx) -> Dict[str, Any]:
     """

@@ -1,8 +1,7 @@
 # skills/final_answer.py
 import logging
-
-# from core.tools import skill  # Import the decorator
-from a3x.core.tools import skill  # Import the decorator
+from typing import Dict, Any
+from a3x.core.skills import skill  # Import the decorator
 
 # from core.skills_utils import create_skill_response
 

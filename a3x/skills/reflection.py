@@ -1,9 +1,12 @@
 # skills/reflection.py
+import json
 import logging
 import re
 from typing import Dict, Any, List, Optional, Union
-from a3x.core.tools import skill
-from a3x.core.llm_interface import call_llm  # Corrected import
+from a3x.core.skills import skill
+from a3x.core.llm_interface import call_llm
+# from a3x.core.prompt_builder import build_reflection_prompt # Function missing
+# from a3x.core.config import LLM_DEFAULT_MODEL # Removed, var not defined
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,29 @@ Briefly explain the reasoning behind your decision.
 Output Format:
 Decision: [execute|modify|skip]
 Justification: [Your reasoning here]
+"""
+
+DEFAULT_REFLECTION_SYSTEM_PROMPT = """
+You are an expert AI assistant specializing in analyzing plan execution steps.
+Your task is to reflect on a proposed plan step and its simulated outcome.
+Based on the simulation, decide if the step should be executed as planned, modified (requiring replanning), or skipped altogether.
+Provide a clear justification for your decision.
+
+Respond ONLY with the following format:
+Decision: <execute|modify|skip>
+Justification: <Your detailed reasoning>
+
+Example 1:
+Decision: execute
+Justification: The simulation shows the step achieves the intended sub-goal without issues.
+
+Example 2:
+Decision: modify
+Justification: The simulation revealed that the file path is incorrect. The plan needs to be modified to first list files to find the correct path before writing.
+
+Example 3:
+Decision: skip
+Justification: The simulation indicates this step is redundant as the required information was already obtained in a previous step.
 """
 
 

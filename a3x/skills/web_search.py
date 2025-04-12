@@ -2,7 +2,7 @@
 import logging
 import os
 from duckduckgo_search import DDGS  # Import DDGS
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)

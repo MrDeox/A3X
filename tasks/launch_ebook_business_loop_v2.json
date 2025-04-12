@@ -1,0 +1,56 @@
+{
+  "goal": "Launch the first ultra-niche e-book targeting the international market and publish it on Gumroad",
+  "steps": [
+    {
+      "skill": "scan_profitable_niches",
+      "input": {
+        "language": "en",
+        "min_interest_score": 0.8,
+        "min_gap_opportunity": 0.6,
+        "audience": "international buyers interested in digital solutions, productivity, side income, personal growth or niche obsessions"
+      },
+      "id": "step1_scan"
+    },
+    {
+      "skill": "generate_ebook_from_niche",
+      "input": {
+        "niche_summary_context": "{{output.step1_scan.niche_summary}}",
+        "target_audience": "{{output.step1_scan.audience}}",
+        "chapters": 8
+      },
+      "id": "step2_generate"
+    },
+    {
+      "skill": "format_ebook_pdf",
+      "input": {
+        "ebook_markdown": "{{output.step2_generate.markdown}}",
+        "title": "{{output.step2_generate.title}}",
+        "author": "{{output.step2_generate.author}}"
+      },
+      "id": "step3_format"
+    },
+    {
+      "skill": "generate_ebook_cover",
+      "input": {
+        "title": "{{output.step2_generate.title}}",
+        "description": "{{output.step2_generate.description}}",
+        "target_audience": "{{output.step1_scan.audience}}"
+      },
+      "id": "step4_cover"
+    },
+    {
+      "skill": "publish_ebook",
+      "input": {
+        "title": "{{output.step2_generate.title}}",
+        "description": "{{output.step2_generate.description}}",
+        "price": 7.00,
+        "file_path": "{{output.step3_format.file_path}}",
+        "cover_image_path": "{{output.step4_cover.cover_path}}",
+        "tags": ["ebook", "self help", "digital income", "productivity", "niche"],
+        "visibility": "public",
+        "license_type": "standard"
+      },
+      "id": "step5_publish"
+    }
+  ]
+} 

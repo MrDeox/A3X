@@ -4,10 +4,13 @@ Skill para anexar texto a um arquivo especificado por path.
 
 import logging
 import os
+from pathlib import Path
 from typing import Dict, Any
 
-# Core imports
-from a3x.core.tools import skill
+# Core framework imports
+from a3x.core.config import PROJECT_ROOT
+from a3x.core.skills import skill
+from a3x.core.validators import validate_workspace_path
 
 # Assume SkillContext provides logger
 

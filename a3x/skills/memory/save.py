@@ -7,14 +7,21 @@ from typing import Dict, Any
 # Importar utils - Use absolute paths
 from a3x.core.db_utils import get_db_connection
 from a3x.core.embeddings import get_embedding, EMBEDDING_DIM  # Importa dimensão também
+from a3x.core.semantic_memory_backend import add_to_index, init_index
+import os
+from a3x.core.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)  # Usar logger específico do módulo
+
+# Definir caminho base do índice FAISS
+# É melhor centralizar isso, mas por enquanto definimos aqui
+DEFAULT_INDEX_BASE_PATH = os.path.join(PROJECT_ROOT, "a3x", "memory", "indexes", "semantic_memory")
 
 
 def skill_save_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Salva um conteúdo textual e seu embedding na tabela semantic_memory.
-    Também insere no índice VSS se disponível.
+    Salva um conteúdo textual e seu embedding no índice FAISS externo.
+    Metadata inclui o conteúdo original e qualquer metadata adicional fornecida.
 
     Args:
         action_input (dict): Dicionário contendo os dados a salvar.
@@ -24,11 +31,11 @@ def skill_save_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         dict: Dicionário padronizado com status.
     """
-    logger.info("\n[Skill: Save Memory (ReAct)]")
+    logger.info("\n[Skill: Save Memory (FAISS)]")
     logger.debug(f"  Action Input: {action_input}")
 
     content_to_save = action_input.get("content")
-    metadata_dict = action_input.get("metadata")  # Pode ser None
+    provided_metadata = action_input.get("metadata", {})  # Garante dict
 
     if not content_to_save:
         logger.error(
@@ -44,48 +51,33 @@ def skill_save_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(
         f"  Gerando embedding para o conteúdo: '{content_to_save[:50]}...'"
     )  # Log trecho
-    embedding_np = None  # Inicializa para usar no except do pack_err
-    current_embedding_dim = EMBEDDING_DIM  # Usar dimensão importada
-    embedding_blob = None
+    embedding_np = None  # Inicializa para usar no except
+    current_embedding_dim = EMBEDDING_DIM
     try:
-        # get_embedding agora retorna numpy array, precisamos converter
-        embedding_np = get_embedding(
-            content_to_save
-        )  # Usa a função de core/embeddings.py
+        embedding_np = get_embedding(content_to_save)
         if embedding_np is None:
             raise ValueError("Falha ao gerar embedding (retornou None).")
 
-        if current_embedding_dim is None:
-            # Tenta forçar o carregamento se ainda não ocorreu (embora get_embedding devesse ter feito)
-            # Isso indica um problema maior se ocorrer, mas tentamos contornar.
-            from a3x.core.embeddings import _load_model_internal
+        # Opcional: Verificar dimensão contra o índice existente
+        # Isso pode adicionar latência, mas garante consistência
+        temp_index = init_index(DEFAULT_INDEX_BASE_PATH, embedding_dim=len(embedding_np))
+        if temp_index is None:
+            logger.warning(f"Não foi possível inicializar/carregar o índice FAISS em {DEFAULT_INDEX_BASE_PATH} para verificação.")
+            # Prosseguir mesmo assim? Ou retornar erro? Por enquanto, prosseguir.
+        elif temp_index.d != len(embedding_np):
+            logger.error(f"Dimensão do embedding gerado ({len(embedding_np)}) difere da dimensão do índice FAISS existente ({temp_index.d}).")
+            return {
+                "status": "error",
+                "action": "save_memory_failed",
+                "data": {"message": f"Inconsistência na dimensão do embedding (esperado {temp_index.d}, obtido {len(embedding_np)})."},
+            }
+        del temp_index  # Liberar referência
 
-            _load_model_internal()
-            from a3x.core.embeddings import (
-                EMBEDDING_DIM as current_embedding_dim,
-            )  # Tenta de novo
-
-            if current_embedding_dim is None:
-                raise ValueError(
-                    "EMBEDDING_DIM não está definida em core.embeddings mesmo após tentativa de carga."
-                )
-
-        # Converter o numpy array de floats para BLOB (bytes)
-        format_string = f"<{current_embedding_dim}f"  # Usa a dimensão obtida
-        embedding_blob = struct.pack(format_string, *embedding_np)
+        embedding_list = embedding_np.tolist()  # backend espera List[float]
         logger.debug(
-            f"  Embedding gerado e convertido para BLOB ({len(embedding_blob)} bytes, Dim: {current_embedding_dim})."
+            f"  Embedding gerado (Dim: {len(embedding_list)})."
         )
 
-    except (ImportError, ValueError, struct.error) as pack_err:
-        logger.exception(
-            f"  Erro ao empacotar embedding (Dim:{current_embedding_dim}):"
-        )
-        return {
-            "status": "error",
-            "action": "save_memory_failed",
-            "data": {"message": f"Erro ao preparar embedding para salvar: {pack_err}"},
-        }
     except Exception as e:
         # Captura genérica para erros no get_embedding ou carga do modelo
         logger.exception(
@@ -97,138 +89,41 @@ def skill_save_memory(action_input: Dict[str, Any]) -> Dict[str, Any]:
             "data": {"message": f"Erro inesperado ao gerar embedding: {e}"},
         }
 
-    # 2. Converter Metadados para JSON string (se houver)
-    metadata_json = None
-    if metadata_dict:
-        try:
-            metadata_json = json.dumps(metadata_dict)
-            logger.debug(f"  Metadados convertidos para JSON: {metadata_json}")
-        except TypeError as e:
-            logger.warning(
-                f"  Metadados fornecidos não são serializáveis em JSON: {e}. Ignorando metadados."
-            )
-            metadata_json = None  # Garante None se falhar
+    # 2. Preparar Metadados
+    final_metadata = {
+        "content": content_to_save,
+        "source": "memory_save_skill",
+        **(provided_metadata if isinstance(provided_metadata, dict) else {})
+    }
+    logger.debug(f"  Metadados finais a serem salvos: {final_metadata}")
 
-    # 3. Salvar no Banco de Dados
-    conn = None
-    semantic_rowid = None
-    vss_inserted = False
+    # 3. Salvar no Índice FAISS Externo
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        # Inserir na tabela principal (semantic_memory)
-        # Usar INSERT OR IGNORE para não dar erro se o 'content' já existir (devido ao UNIQUE)
-        logger.info("  Inserindo/Ignorando conteúdo na tabela 'semantic_memory'...")
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO semantic_memory (content, embedding, metadata)
-            VALUES (?, ?, ?)
-        """,
-            (content_to_save, embedding_blob, metadata_json),
+        add_to_index(
+            index_path_base=DEFAULT_INDEX_BASE_PATH,
+            embedding=embedding_list,
+            metadata=final_metadata,
+            embedding_dim=len(embedding_list)
         )
+        # add_to_index já loga sucesso/erro internamente
 
-        if cursor.rowcount > 0:  # INSERT aconteceu
-            semantic_rowid = cursor.lastrowid
-            logger.info(
-                f"[Skill: Save Memory (ReAct)] Conteúdo salvo com ID {semantic_rowid}."
-            )
-        else:  # IGNORE aconteceu
-            cursor.execute(
-                "SELECT id FROM semantic_memory WHERE content = ?", (content_to_save,)
-            )
-            existing_row = cursor.fetchone()
-            if existing_row:
-                semantic_rowid = existing_row[0]
-                logger.info(
-                    f"[Skill: Save Memory (ReAct)] Conteúdo já existe com ID {semantic_rowid}. Verificando/Atualizando VSS."
-                )
-            else:
-                logger.error(
-                    "[Skill: Save Memory (ReAct)] Inconsistência: INSERT OR IGNORE retornou 0, mas SELECT não encontrou o conteúdo."
-                )
-                return {
-                    "status": "error",
-                    "action": "save_memory_failed",
-                    "data": {
-                        "message": "Erro de inconsistência no banco de dados ao verificar conteúdo duplicado."
-                    },
-                }
-
-        # Inserir no índice VSS (APENAS se VSS estiver ativo e tivermos rowid)
-        if semantic_rowid is not None:
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='vss_semantic_memory'"
-            )
-            vss_table_exists = cursor.fetchone()
-
-            if vss_table_exists:
-                try:
-                    logger.debug(
-                        f"  Tentando inserir/ignorar no índice VSS (rowid: {semantic_rowid})..."
-                    )
-                    cursor.execute(
-                        """
-                         INSERT OR IGNORE INTO vss_semantic_memory (rowid, embedding)
-                         VALUES (?, ?)
-                     """,
-                        (semantic_rowid, embedding_blob),
-                    )
-                    if cursor.rowcount > 0:
-                        logger.info(
-                            f"  Embedding inserido no índice VSS com rowid {semantic_rowid}."
-                        )
-                        vss_inserted = True
-                    else:
-                        logger.info(
-                            f"  Embedding com rowid {semantic_rowid} já existia no índice VSS."
-                        )
-                        vss_inserted = True  # Consideramos sucesso mesmo que ignorado
-
-                except sqlite3.OperationalError as vss_err:
-                    logger.error(
-                        f"  Erro operacional do SQLite ao inserir no índice VSS: {vss_err}"
-                    )
-                except Exception:
-                    logger.exception("  Erro inesperado ao inserir no índice VSS:")
-            else:
-                logger.debug(
-                    "  Tabela VSS 'vss_semantic_memory' não encontrada. Pulando inserção no VSS."
-                )
-
-        conn.commit()
         logger.info(
-            f"  Memória salva com sucesso (ID: {semantic_rowid}, VSS: {vss_inserted})."
+            f"  Memória salva com sucesso no índice FAISS em '{DEFAULT_INDEX_BASE_PATH}'."
         )
         return {
             "status": "success",
             "action": "memory_saved",
             "data": {
-                "message": f"Informação salva na memória com ID {semantic_rowid}.",
-                "rowid": semantic_rowid,
-                "vss_updated": vss_inserted,
+                "message": f"Informação salva na memória vetorial (FAISS).",
             },
         }
 
-    except sqlite3.Error as db_err:
-        logger.error(f"  Erro de banco de dados ao salvar memória: {db_err}")
-        if conn:
-            conn.rollback()
+    except Exception as faiss_err:
+        # add_to_index pode levantar exceções se algo muito errado ocorrer
+        # (embora tente tratar erros internamente e logar)
+        logger.exception(f"  Erro inesperado ao chamar add_to_index: {faiss_err}")
         return {
             "status": "error",
             "action": "save_memory_failed",
-            "data": {"message": f"Erro de DB: {db_err}"},
+            "data": {"message": f"Erro inesperado ao salvar no índice FAISS: {faiss_err}"},
         }
-    except Exception as generic_err:
-        logger.exception("  Erro inesperado ao salvar memória:")
-        if conn:
-            conn.rollback()
-        return {
-            "status": "error",
-            "action": "save_memory_failed",
-            "data": {"message": f"Erro inesperado: {generic_err}"},
-        }
-    finally:
-        if conn:
-            conn.close()
-            logger.debug("[Skill: Save Memory (ReAct)] Conexão DB fechada.")

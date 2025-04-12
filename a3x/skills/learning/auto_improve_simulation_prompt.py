@@ -8,13 +8,18 @@ import json
 import os
 import datetime
 from typing import Dict, Any, Optional
+import asyncio
 
 # Core imports
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 
 # Direct imports of helper skill functions
 from a3x.skills.core.call_skill_by_name import call_skill_by_name
 from a3x.skills.core.append_to_file_path import append_to_file_path
+from a3x.skills.learning.learn_from_reflection_logs import learn_from_reflection_logs
+from a3x.skills.learning.synthesize_learning_insights import synthesize_learning_insights
+from a3x.skills.learning.apply_prompt_refinement_from_logs import apply_prompt_refinement_from_logs
+from a3x.skills.simulate import simulate_decision_reflection
 
 # Assume SkillContext provides access to logger
 

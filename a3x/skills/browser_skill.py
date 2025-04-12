@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any, Optional
 
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 
 # <<< ADDED Imports for BrowserManager >>>
 from a3x.core.browser_manager import get_browser_manager, BrowserManagerError

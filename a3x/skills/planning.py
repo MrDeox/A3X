@@ -5,7 +5,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 
 # from core.tools import skill
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from a3x.core.prompt_builder import (
     build_planning_prompt,
 )  # Assuming this exists or will be created
@@ -64,120 +64,81 @@ planner_logger = logging.getLogger(__name__)
 )
 async def hierarchical_planner(
     objective: str, available_tools: str, context: Optional[Dict] = None
-) -> Optional[List[Dict[str, Any]]]:
+) -> Dict[str, Any]:
     """
-    Generates a multi-step plan to achieve the given objective using the available tools and context.
-    Uses the LLM to generate the plan.
+    Generates a multi-step plan (list of strings) to achieve the given objective.
+    Considers learned heuristics (success and failure) from the context.
+    Returns a dictionary: {'status': 'success', 'data': {'plan': [...]}} on success,
+    or {'status': 'error', 'data': {'message': '...'}} on failure.
     """
     planner_logger.info(f"Generating plan for objective: '{objective[:100]}...'")
+    context = context or {} # Ensure context is a dict
     if context:
         planner_logger.debug(f"Planning context keys: {list(context.keys())}")
+
+    # --- MODIFIED: Extract Heuristics AND Generalized Rules --- 
+    learned_heuristics_prompt_section = ""
+    success_heuristics_text = context.get("learned_success_heuristics")
+    failure_heuristics_text = context.get("learned_failure_heuristics")
+    generalized_rules_text = context.get("learned_generalized_rules")
+
+    # Format Generalized Rules Section
+    if generalized_rules_text:
+        learned_heuristics_prompt_section += f"\n\n## Conselhos Gerais (Aprendizado Consolidado)\n{generalized_rules_text}"
+        planner_logger.info("Adding generalized rules (advice) section to planner prompt.")
+
+    # Format existing heuristics sections
+    if success_heuristics_text:
+        learned_heuristics_prompt_section += f"\n\n## Recomendações (Sucessos Passados Recentes)\n{success_heuristics_text}"
+        planner_logger.info("Adding learned success heuristics section to planner prompt.")
+        
+    if failure_heuristics_text:
+        learned_heuristics_prompt_section += f"\n\n## Avisos (Falhas Passadas Recentes)\n{failure_heuristics_text}"
+        planner_logger.info("Adding learned failure heuristics section to planner prompt.")
+    # --- END MODIFIED SECTION ---
 
     # TODO: Load a potentially more specific system prompt for the planner if needed
     planner_system_prompt = DEFAULT_PLANNER_SYSTEM_PROMPT
 
-    # Build the prompt for the planning phase
+    # Build the prompt for the planning phase - inject rules & heuristics
     prompt_messages = build_planning_prompt(
-        objective, available_tools, planner_system_prompt
+        objective,
+        available_tools,
+        planner_system_prompt + learned_heuristics_prompt_section, # Append combined section
+        # context=context # Pass other context elements if build_planning_prompt accepts them
     )
 
     plan_json_str = ""
+    plan_list = []
     try:
-        # <<< REVERTED: Use async for to consume the single item yielded by call_llm(stream=False) >>>
-        plan_json_str = ""  # Initialize
-        async for chunk in call_llm(prompt_messages, stream=False):
-            plan_json_str += chunk  # Accumulate the single yielded string
+        plan_json_str = ""
+        llm_url = getattr(context.get('ctx'), 'llm_url', None) # Try to get from ctx if passed
+        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False):
+            plan_json_str += chunk
+        
+        planner_logger.debug(f"Planner LLM raw response: {plan_json_str[:500]}...") # Log start of response
+        parsed_plan = parse_llm_json_output(plan_json_str, expected_keys=["plan"], logger=planner_logger)
 
-        # Basic validation after accumulating
-        if not isinstance(plan_json_str, str):
-            planner_logger.error(
-                f"[PlanningSkill] LLM call yielded unexpected type: {type(plan_json_str)}"
-            )
-            return None  # Or raise an error
-        if not plan_json_str:
-            planner_logger.warning(
-                "[PlanningSkill] LLM call yielded an empty response string."
-            )
-            # Handle empty string (e.g., return empty plan or None)
-            return []
-
-        planner_logger.debug(f"[PlanningSkill] Raw LLM plan response: {plan_json_str}")
-
-        # Clean and parse
-        # Attempt to parse the entire JSON string after basic cleanup (e.g., stripping whitespace)
-        try:
-            plan_json_str_cleaned = plan_json_str.strip()
-            # Remove potential markdown code block fences
-            if plan_json_str_cleaned.startswith(
-                "```json\n"
-            ) and plan_json_str_cleaned.endswith("\n```"):
-                plan_json_str_cleaned = plan_json_str_cleaned[
-                    len("```json\n") : -len("\n```")
-                ]
-            elif plan_json_str_cleaned.startswith(
-                "```"
-            ) and plan_json_str_cleaned.endswith("```"):
-                plan_json_str_cleaned = plan_json_str_cleaned[len("```") : -len("```")]
-            plan_json_str_cleaned = (
-                plan_json_str_cleaned.strip()
-            )  # Strip again after removing fences
-
-            plan_list = json.loads(plan_json_str_cleaned)
-        except json.JSONDecodeError as e:
-            planner_logger.error(
-                f"Failed to decode JSON plan from LLM response: {e}. Raw: '{plan_json_str[:200]}...'"
-            )
-            # Try finding the first list if direct parsing fails (less reliable)
-            start_index = plan_json_str.find("[")
-            end_index = plan_json_str.rfind("]")
-            if start_index != -1 and end_index != -1 and end_index > start_index:
-                plan_json_str_extracted = plan_json_str[start_index : end_index + 1]
-                planner_logger.warning(
-                    f"Direct JSON parsing failed. Attempting to parse extracted list: {plan_json_str_extracted[:100]}..."
-                )
-                try:
-                    plan_list = json.loads(plan_json_str_extracted)
-                except json.JSONDecodeError as inner_e:
-                    planner_logger.error(
-                        f"Failed to decode extracted JSON list: {inner_e}. Original raw: '{plan_json_str[:200]}...'"
-                    )
-                    return None
+        if parsed_plan and "plan" in parsed_plan:
+            plan_list = parsed_plan["plan"]
+            if isinstance(plan_list, list):
+                 # Basic validation: ensure it's a list of strings
+                if all(isinstance(step, str) for step in plan_list):
+                    planner_logger.info(f"Plan generated successfully with {len(plan_list)} steps.")
+                    return {"status": "success", "data": {"plan": plan_list}}
+                else:
+                    planner_logger.error("Planner LLM returned 'plan' but it contains non-string elements.")
+                    return {"status": "error", "data": {"message": "Plan generation failed: plan list contains invalid elements."}}
             else:
-                # If extraction also fails or no brackets found
-                return None
+                planner_logger.error("Planner LLM returned 'plan' but it's not a list.")
+                return {"status": "error", "data": {"message": "Plan generation failed: invalid plan format."}}
+        else:
+            planner_logger.error(f"Planner LLM response did not contain a valid 'plan' key after parsing. Raw: {plan_json_str[:200]}")
+            return {"status": "error", "data": {"message": "Plan generation failed: Could not parse plan from LLM response."}}
 
-        # --- Type Validation (Applied after successful parsing) ---
-        if not isinstance(plan_list, list):
-            planner_logger.error(
-                f"Parsed JSON response is not a list, but type '{type(plan_list).__name__}'. Raw: '{plan_json_str[:200]}...'"
-            )
-            # Return error specifically for non-list type
-            return None
-
-        # Check for non-string elements *only if* it's a list
-        if not all(isinstance(step, str) for step in plan_list):
-            planner_logger.error(
-                f"Parsed JSON list contains non-string elements. Raw: '{plan_json_str[:200]}...'"
-            )
-            return None
-        # --- End Refactored Validation ---
-
-        if not plan_list:  # Check if the list is empty
-            planner_logger.warning("LLM generated an empty plan list.")
-            return []
-
-        planner_logger.info(f"Plan generated successfully with {len(plan_list)} steps.")
-        return plan_list
-
-    except TypeError as e:  # Catches the non-string element error
-        planner_logger.error(
-            f"Invalid plan structure (non-string elements): {e}. Raw: '{plan_json_str[:200]}...'",
-            exc_info=True,
-        )
-        return None
-    except Exception:
-        planner_logger.exception("Unexpected error during plan generation:")
-        return None
+    except Exception as e:
+        planner_logger.exception(f"Error during planning LLM call or parsing: {e}")
+        return {"status": "error", "data": {"message": f"Exception during planning: {e}"}}
 
 
 # Example usage (for potential direct testing)

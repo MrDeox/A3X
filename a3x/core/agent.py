@@ -1,18 +1,22 @@
 import logging
 import json
 import os
+import re
 from typing import Dict, Any, List, AsyncGenerator, Optional
+from pathlib import Path
 
 # Package imports
-from a3x.core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS
-from a3x.core.tools import get_tool_descriptions, get_skill_registry
+from a3x.core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, PROJECT_ROOT, MAX_TOKENS_FALLBACK, LLAMA_SERVER_MODEL_PATH
+from a3x.core.skills import get_skill_descriptions, get_skill_registry
 from a3x.core.db_utils import save_agent_state, load_agent_state
 from a3x.core.prompt_builder import build_react_prompt
 from a3x.core.agent_parser import parse_llm_response
 from a3x.core.history_manager import trim_history
-from a3x.core.tool_executor import execute_tool
+from a3x.core.tool_executor import execute_tool, _ToolExecutionContext
 from a3x.core.llm_interface import call_llm
 from a3x.core.planner import generate_plan
+from langchain_core.agents import AgentAction, AgentActionMessageLog, AgentFinish
+from a3x.core.utils.param_normalizer import normalize_action_input
 
 # Initialize logger
 agent_logger = logging.getLogger(__name__)
@@ -20,6 +24,71 @@ agent_logger = logging.getLogger(__name__)
 # Constante para ID do estado do agente
 AGENT_STATE_ID = 1
 
+# --- Constantes Globais ---
+AGENT_STATE_FILE = "a3x_agent_state.json"
+MAX_TOKENS = MAX_TOKENS_FALLBACK
+DEFAULT_MODEL = LLAMA_SERVER_MODEL_PATH
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
+MAX_CONSECUTIVE_ERRORS = 3
+MAX_STEPS = 100  # Maximum steps per run to prevent infinite loops
+
+# Default configuration (adjust as needed)
+MAX_REACT_ITERATIONS = 10
+MAX_HISTORY_TURNS = 5
+PROJECT_ROOT = Path(__file__).parent.parent.resolve() # Get project root
+LLAMA_SERVER_MODEL_PATH = "models/google_gemma-3-4b-it-Q4_K_S.gguf"
+MAX_TOKENS_FALLBACK = 4096
+
+DEFAULT_REACT_SYSTEM_PROMPT = """You are a helpful AI agent designed to achieve user objectives through reasoning and action.
+
+**Always respond in English.**
+
+Strictly follow the ReAct format in your responses:
+
+1.  **Thought:** Briefly explain your reasoning and plan for the next action.
+2.  **Action:** Specify the exact skill name to use from the provided list.
+3.  **Action Input:** Provide the parameters for the skill in valid JSON format.
+
+Example:
+Thought: I need to write the generated code to a file.
+Action: write_file
+Action Input: {"file_path": "output/my_script.py", "content": "print('Hello World!')"}
+
+If you have completed the objective, respond ONLY with:
+
+Final Answer: [Your final summary or result]
+
+Available Skills:
+{tool_descriptions}
+
+Previous conversation history:
+{history}
+
+User Objective for this step: {input}
+"""
+
+# --- Helper for Introspective Query Detection ---
+def is_introspective_query(task: str) -> bool:
+    """Checks if the task string contains introspective keywords."""
+    task_lower = task.lower()
+    keywords = [
+        r"o que (você|o A³X) aprendeu",
+        r"como você lida",
+        r"você se lembra",
+        r"qual foi sua última reflexão",
+        r"memória recente",
+        r"reflexão anterior",
+        r"o que.*?A³X sabe sobre", # Match "o que A3X sabe sobre X"
+        r"como.*?A³X funciona", # Match "como A3X funciona"
+        r"o que aconteceu", # Match "o que aconteceu na ultima vez"
+    ]
+    # Use regex search for more flexible matching
+    for pattern in keywords:
+        if re.search(pattern, task_lower, re.IGNORECASE):
+            agent_logger.info(f"[Introspection Check] Detected introspective query: '{task}' matching pattern: '{pattern}'")
+            return True
+    return False
 
 # --- Helper for Simple Task Detection ---
 def _is_simple_list_files_task(objective: str) -> bool:
@@ -69,44 +138,15 @@ class ReactAgent:
                 f"[ReactAgent INIT] Estado do agente carregado para ID '1'. Memória: {list(self._memory.keys())}"
             )
         self.max_iterations = MAX_REACT_ITERATIONS
-        self._current_plan = None  # <<< Initialize plan >>>
         agent_logger.info(
             f"[ReactAgent INIT] Agente inicializado. LLM URL: {'Default' if not self.llm_url else self.llm_url}. Memória carregada: {list(self._memory.keys())}"
         )
 
-    # <<< NEW: Method for Plan Generation >>>
-    async def _generate_plan(self, objective: str) -> List[str]:
-        """Gera um plano de execução para o objetivo dado."""
-        agent_logger.info("--- Generating Plan ---")
-        plan_to_execute: List[str] = []
+        # ADD workspace_root to the agent instance
+        self.workspace_root = Path(PROJECT_ROOT).resolve()
+        agent_logger.info(f"Agent initialized with workspace root: {self.workspace_root}")
 
-        if _is_simple_list_files_task(objective):
-            agent_logger.info(
-                "[Planner] Detected simple list_files task. Skipping complex planning."
-            )
-            plan_to_execute = [
-                f"Use the list_files tool for the objective: '{objective}'",
-                "Use the final_answer tool to provide the list of files.",
-            ]
-            plan_str = json.dumps(plan_to_execute, indent=2, ensure_ascii=False)
-            agent_logger.info(f"Simple Plan Generated:\n{plan_str}")
-        else:
-            tool_desc = get_tool_descriptions()
-            generated_plan = await generate_plan(
-                objective, tool_desc, agent_logger, self.llm_url
-            )
-            if generated_plan:
-                plan_to_execute = generated_plan
-                plan_str = json.dumps(plan_to_execute, indent=2, ensure_ascii=False)
-                agent_logger.info(f"Plan Generated:\n{plan_str}")
-            else:
-                agent_logger.warning(
-                    "Failed to generate a plan. Proceeding with objective as single step."
-                )
-                plan_to_execute = [objective]  # Fallback to objective as the only step
-        return plan_to_execute
-
-    # <<< NEW: Method to Call LLM and Parse Response >>>
+    # <<< Method to Call LLM and Parse Response >>>
     async def _process_llm_response(
         self, prompt: List[Dict[str, str]], log_prefix: str
     ) -> Optional[Dict[str, Any]]:
@@ -163,7 +203,7 @@ class ReactAgent:
                 "content": f"Failed to get or process LLM response: {llm_err}",
             }
 
-    # <<< NEW: Method to Execute Action >>>
+    # <<< Method to Execute Action >>>
     async def _execute_action(
         self, action_name: str, action_input: Dict[str, Any], log_prefix: str
     ) -> Dict[str, Any]:
@@ -172,13 +212,37 @@ class ReactAgent:
             f"{log_prefix} Executing Action: {action_name} with input: {action_input}"
         )
         try:
-            # <<< CORRECTED CALL: Pass arguments in the correct order >>>
+            # --- Parameter Normalization --- #
+            normalized_action_input = normalize_action_input(action_name, action_input)
+            if normalized_action_input != action_input:
+                agent_logger.info(f"{log_prefix} Action input normalized to: {normalized_action_input}")
+            # Use normalized_action_input from here onwards
+            # --- End Parameter Normalization ---
+
+            # --- Parameter Mapping/Correction for Specific Skills (Can be removed if normalization handles it) ---
+            # if action_name == "generate_code" and "purpose" not in normalized_action_input:
+            #     purpose_keys = ["objective", "prompt", "description", "task", "code_description"]
+            #     for key in purpose_keys:
+            #         if key in normalized_action_input:
+            #             normalized_action_input["purpose"] = normalized_action_input.pop(key)
+            #             agent_logger.info(f"{log_prefix} Mapped input key '{key}' to 'purpose' for generate_code.")
+            #             break
+            #     if "purpose" not in normalized_action_input:
+            #         agent_logger.warning(f"{log_prefix} 'purpose' parameter missing for generate_code and could not be mapped. Validation might fail.")
+
+            # --- CREATE CONTEXT for execute_tool ---
+            exec_context = _ToolExecutionContext(
+                logger=agent_logger, # Use the agent's logger
+                workspace_root=self.workspace_root # Use agent's workspace root
+            )
+            # --- END CONTEXT CREATION ---
+
+            # Execute the tool
             tool_result = await execute_tool(
                 tool_name=action_name,
-                action_input=action_input,
+                action_input=normalized_action_input, # Use NORMALIZED action_input
                 tools_dict=self.tools,  # Pass self.tools
-                agent_logger=agent_logger,  # Pass the module logger
-                agent_memory=self._memory,  # Pass agent memory
+                context=exec_context # PASS CONTEXT
             )
             agent_logger.info(
                 f"{log_prefix} Tool Result Status: {tool_result.get('status', 'N/A')}"
@@ -186,7 +250,7 @@ class ReactAgent:
             return tool_result
         except Exception as tool_err:
             agent_logger.exception(
-                f"{log_prefix} Error executing tool '{action_name}':"
+                f"{log_prefix} Error executing tool '{action_name}':\""
             )
             return {
                 "status": "error",
@@ -194,7 +258,7 @@ class ReactAgent:
                 "data": {"message": f"Error during tool execution: {tool_err}"},
             }
 
-    # <<< NEW: Method to Handle Observation >>>
+    # <<< Method to Handle Observation >>>
     def _handle_observation(
         self, observation_data: Dict[str, Any], log_prefix: str
     ) -> str:
@@ -226,7 +290,7 @@ class ReactAgent:
             )
             return error_content
 
-    # <<< NEW: Extracted ReAct Iteration Logic >>>
+    # <<< Method to Perform ReAct Iteration >>>
     async def _perform_react_iteration(
         self, step_objective: str, log_prefix: str
     ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -248,7 +312,7 @@ class ReactAgent:
             objective=step_objective,
             history=self._history,
             system_prompt=self.system_prompt,
-            tool_descriptions=get_tool_descriptions(),
+            tool_descriptions=get_skill_descriptions(),
             agent_logger=agent_logger,
         )
 
@@ -324,161 +388,6 @@ class ReactAgent:
                 "content": f"Tool execution failed: {observation_data.get('data', {}).get('message', 'Unknown tool error')}",
             }
             # Decide if the loop should stop? For now, let the main loop decide based on error.
-
-    # --- run (Refactored to use _perform_react_iteration) ---
-    async def run(self, objective: str) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Executes the plan-driven ReAct cycle to achieve the objective,
-        generating each step's events (Thought, Action, Observation, Final Answer) as a dictionary.
-        """
-        log_prefix_base = "[ReactAgent]"
-        self._current_plan = None
-        final_answer_yielded = (
-            False  # Flag to control if the overall objective final answer was yielded
-        )
-
-        try:
-            # --- Setup History ---
-            self._history = []
-            self._history.append(f"Human: {objective}")
-            agent_logger.info(
-                f"{log_prefix_base} Objetivo Inicial: '{objective[:100]}...'"
-            )
-
-            # --- Planning Phase ---
-            plan_to_execute = await self._generate_plan(objective)
-            self._current_plan = plan_to_execute  # Store the plan
-            yield {"type": "plan", "content": plan_to_execute}
-
-            agent_logger.info("--- Starting Plan Execution ---")
-
-            # --- Plan Execution Loop ---
-            current_step_index = 0
-            total_iterations = 0  # Track overall iterations across all steps
-            last_error_message = None  # <<< INITIALIZE last_error_message >>>
-            max_total_iterations = self.max_iterations * len(
-                plan_to_execute
-            )  # Adjust max iterations based on plan length
-
-            # <<< ADD FLAG and CONTENT STORE >>>
-            max_total_reached = False
-            final_answer_content = None  # Store content from last step's final answer
-
-            # <<< MAIN PLAN EXECUTION LOOP - ADD ITERATION CHECK BACK >>>
-            # while current_step_index < len(plan_to_execute):
-            while (
-                current_step_index < len(plan_to_execute)
-                and total_iterations < max_total_iterations
-            ):
-                # <<< REMOVED CHECK FROM HERE >>>
-                step_objective = plan_to_execute[current_step_index]
-                log_prefix_step = f"{log_prefix_base} (Plan Step {current_step_index + 1}/{len(plan_to_execute)})"
-                agent_logger.info(
-                    f"\n{log_prefix_step} (Objective: '{step_objective[:50]}...')"
-                )
-
-                step_completed = False
-                react_iterations_this_step = 0
-
-                # <<< INNER ReAct LOOP FOR THE CURRENT STEP >>>
-                while (
-                    not step_completed
-                    and react_iterations_this_step < self.max_iterations
-                ):
-                    # <<< REMOVED CHECK FROM HERE >>>
-                    total_iterations += 1
-                    react_iterations_this_step += 1
-                    log_prefix_react = (
-                        f"{log_prefix_step} React Iter {react_iterations_this_step}"
-                    )
-
-                    # Handle actual ReAct iteration
-                    async for event in self._perform_react_iteration(
-                        step_objective, log_prefix_react
-                    ):
-                        # <<< YIELD ONLY INTERMEDIATE EVENTS, NOT step_final_answer >>>
-                        if event.get("type") != "step_final_answer":
-                            yield event  # Pass through non-final step events
-
-                        if event.get("type") == "step_final_answer":
-                            step_completed = True
-                            # Store content if it's the last step
-                            if current_step_index == len(plan_to_execute) - 1:
-                                final_answer_content = event.get(
-                                    "content"
-                                )  # Store content
-                                final_answer_yielded = (
-                                    True  # Mark that we *have* a final answer
-                                )
-                            break  # Break inner loop
-                        elif event.get("type") == "error":
-                            last_error_message = event.get("content")
-                            agent_logger.error(
-                                f"{log_prefix_react} Error during iteration: {last_error_message}"
-                            )
-                            step_completed = (
-                                True  # Mark step as completed (due to error)
-                            )
-                            break  # Break inner loop
-
-                # Check iterations *per step*
-                if (
-                    not step_completed
-                    and react_iterations_this_step >= self.max_iterations
-                ):
-                    agent_logger.warning(
-                        f"{log_prefix_step} Max iterations ({self.max_iterations}) reached for step {current_step_index + 1}. Moving to next step."
-                    )
-                    last_error_message = (
-                        f"Max iterations reached for step {current_step_index + 1}"
-                    )
-
-                if max_total_reached:
-                    break  # Break outer loop if total limit was hit inside inner loop
-
-                current_step_index += 1
-
-            # --- End MAIN PLAN EXECUTION LOOP ---
-
-            # <<< CHECK IF LOOP EXITED DUE TO MAX ITERATIONS >>>
-            if total_iterations >= max_total_iterations and not final_answer_yielded:
-                agent_logger.warning(
-                    f"--- Max total iterations ({max_total_iterations}) reached. Stopping execution. ---"
-                )
-                yield {"type": "error", "content": "Max total iterations reached."}
-                # No need to set final_answer_yielded = True here, summary will run if needed
-
-            # <<< ADJUST FINAL YIELD LOGIC >>>
-            # If loop finished AND we captured a final answer from the last step
-            if final_answer_yielded and final_answer_content is not None:
-                yield {"type": "final_answer", "content": final_answer_content}
-            # Otherwise, if loop finished or broke early without a specific final answer
-            elif not final_answer_yielded:
-                agent_logger.warning(
-                    f"{log_prefix_base} Plan execution finished, but no overall Final Answer was yielded during steps. Attempting to summarize."
-                )
-                last_thought_or_obs = (
-                    self._history[-1] if self._history else "No history available."
-                )
-                final_content = (
-                    f"Plan execution concluded. Last state: {last_thought_or_obs}"
-                )
-                if last_error_message:
-                    final_content += f". Encountered error: {last_error_message}"
-                yield {
-                    "type": "final_answer",
-                    "content": final_content,
-                }
-
-        except Exception as e:
-            agent_logger.exception(
-                f"{log_prefix_base} Unhandled exception during agent run:"
-            )
-            yield {"type": "error", "content": f"Agent execution failed: {e}"}
-        finally:
-            # --- Save State ---
-            self._save_state()
-            agent_logger.info(f"{log_prefix_base} Agent state saved.")
 
     def get_history(self):
         """Retorna o histórico interno para possível inspeção ou passagem para outros componentes."""

@@ -14,7 +14,22 @@ try:
 except ImportError:
     # Allow the module to be imported, but the skill will fail gracefully if FAISS is needed.
     faiss = None
-from a3x.core.tools import skill
+from a3x.core.skills import skill
+import logging
+from typing import Dict, Any, List, Optional
+import random
+import asyncio
+
+# Core framework imports
+from a3x.core.config import PROJECT_ROOT
+from a3x.core.llm_interface import call_llm
+# from a3x.core.vector_db_manager import VectorDBManager, VectorDBConfig # Module does not exist
+# Correct imports for memory functions:
+from a3x.core.db_utils import retrieve_relevant_context, add_episodic_record
+# from a3x.core.db_manager import VectorDBManager # Module does not exist yet
+# from a3x.core.llm.prompts import build_arthur_simulation_prompt # Function does not exist
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 try:
@@ -30,6 +45,14 @@ FAISS_INDEX_PATH = os.path.join(PROJECT_ROOT, "memory.db.unified.vss_semantic_me
 MAPPING_PATH = os.path.join(PROJECT_ROOT, "memory.db.unified.vss_semantic_memory.faissindex.mapping.json")
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 TOP_K = 5 # Number of similar examples to retrieve
+
+# Path to the dataset used for simulating Arthur's persona
+# Assuming unified dataset for now
+ARTHUR_DATASET_PATH = "data/arthur_unified_dataset.jsonl"
+# Number of examples to retrieve from memory for context
+NUM_MEMORY_EXAMPLES = 3
+# Number of examples to retrieve from the dataset for few-shot prompting
+NUM_DATASET_EXAMPLES = 5
 
 # --- Resource Caching ---
 # Caches to avoid reloading resources on every skill call within the same agent run
@@ -222,140 +245,131 @@ def prepare_record_text_for_prompt(record, logger):
         logger.warning(f"Record from {source} has unknown or missing type: '{record_type}'. Using raw text.")
         return f"Registro ({source}): {text}" if text else ""
 
+# Helper function to load examples from the dataset (can be moved/improved)
+def load_arthur_examples(dataset_path: str, num_examples: int) -> List[Dict[str, str]]:
+    examples = []
+    try:
+        with open(dataset_path, 'r', encoding='utf-8') as f:
+            all_lines = f.readlines()
+        # Simple random sampling
+        if len(all_lines) <= num_examples:
+            sampled_lines = all_lines
+        else:
+            sampled_lines = random.sample(all_lines, num_examples)
+
+        for line in sampled_lines:
+            try:
+                record = json.loads(line.strip())
+                # Expecting 'input' and 'arthur_response' keys based on process_whatsapp.py
+                if "input" in record and "arthur_response" in record:
+                    examples.append({"input": record["input"], "output": record["arthur_response"]})
+                elif "text" in record: # Fallback for simpler formats
+                     # Try splitting based on a common pattern if input/output not present
+                     parts = record["text"].split(" -> Response: ")
+                     if len(parts) == 2:
+                         examples.append({"input": parts[0].replace("Input: ", ""), "output": parts[1]})
+                     else: # If no clear split, use the whole text as input (less ideal)
+                         examples.append({"input": record["text"], "output": ""})
+            except json.JSONDecodeError:
+                logger.warning(f"Skipping invalid JSON line in dataset: {line.strip()}")
+    except FileNotFoundError:
+        logger.error(f"Arthur dataset file not found: {dataset_path}")
+    except Exception as e:
+        logger.error(f"Error loading Arthur dataset examples: {e}")
+    return examples
+
 # --- Skill Definition ---
 
 @skill(
     name="simulate_arthur_response",
-    description="Simula como Arthur responderia a uma determinada entrada, consultando seu histórico unificado (manifestos, conversas) usando busca semântica.",
+    description="Simula como Arthur responderia a uma entrada, buscando contexto na memória.",
     parameters={
         "user_input": (str, ...),
-    }
+        # "context": (dict, {}), # Optional context - DEPRECATED
+    },
 )
-async def simulate_arthur_response(ctx, user_input: str):
+async def simulate_arthur_response(
+    user_input: str,
+    # context: Optional[Dict] = None # Deprecated parameter
+) -> Dict[str, Any]:
     """
-    Simulates Arthur's response based on semantic similarity search over the unified dataset.
-    Args:
-        ctx: The skill execution context (provides logger, llm_call).
-        user_input: The input string to simulate a response for.
-
-    Returns:
-        A dictionary containing either 'simulated_response' or 'error'.
+    Simula como Arthur responderia a uma entrada do usuário, buscando contexto
+    relevante na memória semântica (VSS) e potencialmente usando exemplos few-shot.
     """
-    logger = ctx.logger
-    logger.info(f"Executing simulate_arthur_response (unified) for input: '{user_input[:100]}...'" )
-
-    # 1. Load resources (uses cache)
-    load_success, error_msg = load_resources(logger)
-
-    # Handle critical load errors first
-    if faiss is None:
-         return {"error": "FAISS library is not installed."}
-    if not load_success:
-        logger.error(f"Aborting simulation due to resource load failure: {error_msg}")
-        user_error = error_msg or "Failed to load necessary resources for simulation."
-        return {"error": user_error}
-
-    # 2. Check if simulation is possible (even if loaded, resources might be empty)
-    if index_cache is None or index_cache.ntotal == 0 or not mapping_cache or not unified_dataset_cache:
-        warning_msg = "Não há dados suficientes (índice, mapeamento ou dataset unificado) para simular uma resposta com base no histórico. A simulação pode não refletir Arthur com precisão. (Verifique se os scripts de coleta e indexação foram executados e geraram dados)."
-        logger.warning(warning_msg)
-
-    if model_cache is None:
-         return {"error": "Embedding model is not loaded."}
-
-    # 3. Generate embedding for user_input
-    try:
-        logger.debug(f"Generating embedding for input: '{user_input}'")
-        input_embedding = model_cache.encode([user_input], convert_to_numpy=True).astype(np.float32)
-        if input_embedding.ndim == 1:
-             input_embedding = np.expand_dims(input_embedding, axis=0)
-        logger.debug(f"Input embedding generated, shape: {input_embedding.shape}")
-    except Exception as e:
-        logger.error(f"Failed to generate embedding for input: {e}", exc_info=True)
-        return {"error": "Failed to generate input embedding."}
-
-    # 4. Search FAISS index (only if index exists and has vectors)
-    retrieved_faiss_indices = []
-    distances = []
-    if index_cache is not None and index_cache.ntotal > 0:
-        try:
-            k = min(TOP_K, index_cache.ntotal)
-            logger.debug(f"Searching FAISS index ({index_cache.ntotal} vectors) for {k} nearest neighbors...")
-            distances, retrieved_faiss_indices = index_cache.search(input_embedding, k)
-            retrieved_faiss_indices = retrieved_faiss_indices[0]
-            distances = distances[0]
-            valid_indices_mask = retrieved_faiss_indices != -1
-            retrieved_faiss_indices = retrieved_faiss_indices[valid_indices_mask]
-            distances = distances[valid_indices_mask]
-            logger.debug(f"Retrieved {len(retrieved_faiss_indices)} valid indices: {retrieved_faiss_indices}")
-            logger.debug(f"Distances: {distances}")
-        except Exception as e:
-            logger.error(f"Failed to search FAISS index: {e}", exc_info=True)
-            retrieved_faiss_indices = []
-            distances = []
-    else:
-        logger.warning("FAISS index is not loaded or is empty. Cannot perform search.")
-
-    # 5. Retrieve and Format Examples
-    examples_for_prompt = []
-    if mapping_cache and unified_dataset_cache and retrieved_faiss_indices is not None:
-        try:
-            for i, faiss_index in enumerate(retrieved_faiss_indices):
-                faiss_index_str = str(faiss_index)
-                metadata = mapping_cache.get(faiss_index_str)
-                if metadata is None:
-                    logger.warning(f"No mapping found for FAISS index {faiss_index} (String key: '{faiss_index_str}'). Skipping.")
-                    continue
-                record_index = int(faiss_index)
-                if 0 <= record_index < len(unified_dataset_cache):
-                    full_record = unified_dataset_cache[record_index]
-                    record_text = prepare_record_text_for_prompt(full_record, logger)
-                    if record_text:
-                        examples_for_prompt.append(record_text)
-                else:
-                    logger.warning(f"Retrieved record index {record_index} ... is out of bounds... Skipping.")
-        except Exception as e:
-            logger.error(f"Error retrieving or formatting records using mapping: {e}", exc_info=True)
-            examples_for_prompt = []
-
-    # Prepare examples string
-    if not examples_for_prompt:
-        logger.info("No relevant examples found or formatted for the prompt after search.")
-        examples_str = "Nenhum exemplo similar encontrado no histórico."
-    else:
-        examples_str = "\n\n---\n\n".join(examples_for_prompt)
-
-    # 6. Construct Prompt and Call LLM
-    prompt = f"""
-Você é um simulador da forma de pensar e responder de Arthur. Com base nos exemplos do histórico de Arthur (se disponíveis) e na entrada do usuário fornecida, simule como Arthur responderia. Mantenha o tom e estilo de Arthur.
-
-Entrada do Usuário:
-{user_input}
-
-Exemplos do Histórico de Arthur (Manifestos ou Conversas WhatsApp):
-{examples_str}
-
-Simulação da Resposta de Arthur:
-"""
+    logger.info(f"Simulating Arthur response for input: '{user_input[:100]}...'")
+    # if context:
+    #     logger.warning("'context' parameter in simulate_arthur_response is deprecated and unused.")
 
     try:
-        logger.info("Calling LLM to simulate response (streaming)...")
-        simulated_response_content = ""
-        async for chunk in ctx.llm_call(prompt):
-            simulated_response_content += chunk
+        # 1. Retrieve relevant context from semantic memory (using imported function)
+        memory_examples = retrieve_relevant_context(user_input, top_k=NUM_MEMORY_EXAMPLES)
+        memory_context_str = "\n".join([f"- {ex}" for ex in memory_examples]) if memory_examples else "No relevant memories found."
+        logger.info(f"Retrieved {len(memory_examples)} relevant memory examples.")
 
-        if not simulated_response_content or not simulated_response_content.strip():
-             logger.warning("LLM returned an empty or whitespace-only response after streaming.")
-             return {"simulated_response": "[Simulação falhou: O modelo não gerou uma resposta]"}
+        # 2. Load examples from dataset (Optional - can be removed if not using few-shot)
+        dataset_examples = load_arthur_examples(ARTHUR_DATASET_PATH, NUM_DATASET_EXAMPLES)
+        logger.debug(f"Loaded {len(dataset_examples)} dataset examples for few-shot.")
 
-        if simulated_response_content.startswith("[LLM Call Error:"):
-            logger.error(f"LLM call failed within the stream: {simulated_response_content}")
-            return {"error": simulated_response_content}
+        # 3. Build the prompt
+        # prompt = build_arthur_simulation_prompt(
+        #     user_input,
+        #     relevant_memory=memory_context_str,
+        #     few_shot_examples=dataset_examples
+        # )
+        prompt = f"Given the context: {memory_context_str}, simulate a response to the user prompt: {user_input}" # Simple fallback
 
-        logger.info(f"LLM simulation stream finished. Total length: {len(simulated_response_content)}")
-        logger.debug(f"Full Simulated response: {simulated_response_content[:100]}...")
-        return {"simulated_response": simulated_response_content.strip()}
+        # 4. Call LLM
+        simulated_response_raw = ""
+        async for chunk in call_llm(prompt, stream=False):
+            simulated_response_raw += chunk
+
+        # Basic cleanup (optional, can be refined)
+        simulated_response = simulated_response_raw.strip()
+
+        if not simulated_response:
+            logger.warning("LLM returned an empty response for Arthur simulation.")
+            return {"status": "error", "message": "LLM returned empty response."}
+
+        logger.info(f"Arthur simulation generated response: '{simulated_response[:100]}...'")
+
+        # --- Log the simulation result as an experience ---
+        try:
+            outcome_data = {"status": "success", "simulated_response": simulated_response}
+            # Use the imported function name
+            add_episodic_record(
+                context=f"Arthur Simulation Request: {user_input}",
+                action=f"Simulated Response Generation (Memory: {len(memory_examples)})",
+                outcome=json.dumps(outcome_data, ensure_ascii=False),
+                metadata={"skill": "simulate_arthur_response"}
+            )
+            logger.info("Simulation interaction logged to experience buffer.")
+        except Exception as db_err:
+            logger.error(f"Failed to log Arthur simulation experience: {db_err}")
+        # --- End Logging ---
+
+        return {
+            "status": "success",
+            "data": {
+                "simulated_response": simulated_response,
+                "memory_context_used": memory_examples # Include retrieved context
+            }
+        }
 
     except Exception as e:
-        logger.error(f"LLM call failed during simulation stream processing: {e}", exc_info=True)
-        return {"error": f"LLM call failed: {e}"} 
+        logger.exception("Unexpected error during Arthur simulation:")
+        return {"status": "error", "message": f"Unexpected error: {e}"}
+
+# === Example Usage (for testing) ===
+# async def main():
+#     logging.basicConfig(level=logging.INFO)
+#     # Ensure DB is initialized if running standalone
+#     # from a3x.core.db_utils import initialize_database
+#     # initialize_database()
+#     user_query = "Qual sua opinião sobre inteligência artificial geral?"
+#     result = await simulate_arthur_response(user_query)
+#     print("\n--- Simulation Result ---")
+#     print(json.dumps(result, indent=2, ensure_ascii=False))
+#     print("------------------------")
+
+# if __name__ == "__main__":
+#     asyncio.run(main()) 

@@ -13,7 +13,7 @@ try:
 except ImportError:
     faiss = None
 
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from a3x.core.config import LLAMA_MODEL_PATH
 from a3x.core.llm_interface import call_llm
 
@@ -328,6 +328,7 @@ def _get_examples_from_index(indices: List[int], distances: List[float]) -> List
     description="Simula como Arthur refletiria sobre um problema ou questão e tomaria uma decisão, usando Chain-of-Thought e buscando exemplos no histórico unificado.",
     parameters={
         "user_input": (str, ...), # Input é a questão/problema
+        "ctx": (Context, None)
     }
 )
 async def simulate_decision_reflection(ctx, user_input: str):

@@ -1,476 +1,468 @@
 # core/cerebrumx.py
 import logging
-from typing import Dict, Any, List, AsyncGenerator, Optional
+from typing import Dict, Any, List, AsyncGenerator, Optional, Tuple
+import json # Removed comment
+import os
+import datetime
 
 # Import base agent and other necessary core components
-# from core.agent import ReactAgent
-from a3x.core.agent import ReactAgent
+from a3x.core.agent import ReactAgent, is_introspective_query
 
-# from core.tools import get_tool_descriptions  # <<< ADDED import
-from a3x.core.tools import get_tool_descriptions  # <<< ADDED import
+# from core.tools import get_tool_descriptions  # <<< REMOVED import
+from a3x.core.skills import get_skill_descriptions # <<< Simplified import
 
-# from core.tool_executor import execute_tool  # <<< ADDED import
-from a3x.core.tool_executor import execute_tool  # <<< ADDED import
+# from core.tool_executor import execute_tool  # <<< REMOVED import
+from a3x.core.tool_executor import execute_tool, _ToolExecutionContext  # <<< KEPT needed import
 
-# <<< ADDED Import for new execution logic >>>
-# from core.execution_logic import execute_plan_with_reflection
-from a3x.core.execution_logic import execute_plan_with_reflection
+# <<< REMOVED Import for old execution logic >>>
+# from a3x.core.execution_logic import execute_plan_with_reflection
+
+# Import DB functions for memory access
+from a3x.core.db_utils import retrieve_relevant_context, add_episodic_record # <<< Keep episodic record for now
 
 # Potentially import memory, reflection components later
 
+# Import skills needed for reflect_and_learn
+from ..skills.core.reflect_on_success import reflect_on_success
+from ..skills.core.learn_from_failure_log import learn_from_failure_log
+from ..skills.core.reflect_on_failure import reflect_on_failure # <<< ADDED import
+# Generalization/Consolidation skills will be called within _reflect_and_learn
+
 # Initialize logger for this module
-cerebrumx_logger = logging.getLogger(__name__)
+cerebrumx_logger = logging.getLogger(__name__) # <<< Rename logger? agent_logger already exists in ReactAgent
+
+# <<< REMOVED LOG_FILE_PATH Constants, might be better in config or learning module >>>
+# LEARNING_LOG_DIR = "memory/learning_logs"
+# HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics.jsonl")
 
 
-class CerebrumXAgent(ReactAgent):  # Inheriting from ReactAgent for now
+class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
     """
-    Agente Autônomo Adaptável Experimental com ciclo cognitivo CerebrumX.
-    Expande o ReactAgent com percepção, planejamento hierárquico, simulação e reflexão.
+    Agente Autônomo Adaptável Experimental com ciclo cognitivo unificado.
+    Incorpora percepção, planejamento, execução ReAct, reflexão e aprendizado em um único fluxo.
     """
 
     def __init__(self, system_prompt: str, llm_url: Optional[str] = None, tools_dict: Optional[Dict[str, Dict[str, Any]]] = None):
         """Inicializa o Agente CerebrumX."""
         super().__init__(system_prompt, llm_url, tools_dict=tools_dict)
-        self.initial_perception = (
-            None  # Store initial perception for potential replanning
-        )
-        cerebrumx_logger.info("[CerebrumX INIT] Agente CerebrumX inicializado.")
-        # TODO: Initialize specific CerebrumX components (e.g., perception handler, planner, simulator, reflector)
+        # Use self.agent_logger inherited from ReactAgent
+        self.agent_logger.info("[CerebrumX INIT] Agente CerebrumX inicializado (Ciclo Unificado).")
+        # No initial_perception needed here if run takes objective
 
-    async def run_cerebrumx_cycle(
-        self, initial_perception: Any
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    # <<< REMOVED run_cerebrumx_cycle >>>
+    # async def run_cerebrumx_cycle(...) -> AsyncGenerator[Dict[str, Any], None]: ...
+
+    # --- Novo Ciclo Cognitivo Unificado ---
+    async def run(self, objective: str) -> Dict[str, Any]: # Now returns final result dict
         """
-        Executa o ciclo cognitivo completo do CerebrumX.
-        Yields dictionaries representing each step of the cognitive cycle.
+        Executa o ciclo cognitivo completo unificado do A³X.
+        Perceber -> Planejar -> Executar -> Refletir & Aprender.
+        Retorna um dicionário com o resultado final ou o status da execução.
         """
-        cerebrumx_logger.info(
-            f"--- Iniciando Ciclo CerebrumX --- Perception inicial: {str(initial_perception)[:100]}..."
-        )
-        self.initial_perception = (
-            initial_perception  # Store for potential use in replanning
-        )
+        self.agent_logger.info(f"--- Iniciando Ciclo Cognitivo Unificado --- Objetivo: {objective[:100]}..." )
 
-        # --- 1. Percepção ---
-        processed_perception = self._perceive(initial_perception)
-        yield {"type": "perception", "content": processed_perception}
+        # 1. Percepção (Simplificado)
+        perception = self._perceive(objective)
+        self.agent_logger.info(f"Percepção processada: {perception}")
 
-        # --- 2. Recuperação de Contexto ---
-        context = await self._retrieve_context(processed_perception)
-        yield {"type": "context_retrieval", "content": context}
+        # 2. Recuperação de Contexto
+        context = await self._retrieve_context(perception)
+        self.agent_logger.info(f"Contexto recuperado: {str(context)[:100]}...")
 
-        # --- 3. Planejamento Hierárquico ---
-        plan = await self._plan_hierarchically(processed_perception, context)
-        yield {"type": "planning", "content": plan}
+        # 3. Planejamento
+        plan = await self._plan(perception, context)
+        self.agent_logger.info(f"Plano gerado: {plan}")
+        if not plan:
+             self.agent_logger.error("Falha ao gerar plano. Abortando ciclo.")
+             return {"status": "error", "message": "Falha crítica no planejamento."}
 
-        # --- 4-5. Dynamic Execution Loop (Delegated) ---
-        cerebrumx_logger.info(
-            "--- Iniciando Execução do Plano com Simulação e Reflexão ---"
-        )
-        execution_results = []  # Collect execution results for final reflection
-        # modification_needed = False # F841
+        # 4. Execução do Plano
+        # Returns tuple: (final_status: str, final_message: str, execution_results: list)
+        # final_status can be 'completed', 'failed', 'error'
+        final_status, final_message, execution_results = await self._execute_plan(plan, context, perception.get("processed", objective))
+        self.agent_logger.info(f"Execução do plano finalizada. Status: {final_status}")
 
-        async for execution_event in execute_plan_with_reflection(self, plan, context):
-            # Pass through the yields from the execution logic
-            yield execution_event
+        # 5. Reflexão e Aprendizado Pós-Execução
+        await self._reflect_and_learn(perception, plan, execution_results, final_status)
 
-            # Collect execution results
-            if execution_event.get("type") == "execution_step":
-                execution_results.append(execution_event.get("result"))
-            # Handle replanning trigger if needed
-            elif execution_event.get("type") == "modification_trigger":
-                # modification_needed = True # F841
-                step_index = execution_event.get("step_index")
-                reason = execution_event.get("reason", "Unknown reason")
-                cerebrumx_logger.warning(
-                    f"Modification trigger received for step {step_index}. Reason: {reason}. Attempting to replan."
-                )
+        # 6. Retornar Resultado Final
+        self.agent_logger.info("--- Ciclo Cognitivo Unificado Concluído --- ")
+        return {"status": final_status, "message": final_message, "results": execution_results} # Return consolidated result
 
-                # --- Attempt Re-planning ---
-                # Create a new context/objective for the planner
-                replanning_perception_data = {
-                    # Use the original processed perception + modification info
-                    "processed": processed_perception.get(
-                        "processed", "Original Objective Missing"
-                    ),
-                    "modification_request": {
-                        "failed_step_index": step_index,
-                        "failed_step": (
-                            plan[step_index] if step_index < len(plan) else "N/A"
-                        ),
-                        "reason": reason,
-                        "current_plan": plan,
-                    },
-                }
+    # --- Métodos Internos do Ciclo ---
 
-                new_plan = await self._plan_hierarchically(
-                    replanning_perception_data, context
-                )  # Call planner again
+    def _perceive(self, objective: str) -> Dict[str, Any]:
+        """Processa a percepção inicial (objetivo)."""
+        # TODO: Expandir lógica de percepção se necessário
+        self.agent_logger.info("Processando percepção...")
+        return {"processed": objective}
 
-                if (
-                    new_plan != plan and new_plan
-                ):  # Check if plan actually changed and is not empty
-                    cerebrumx_logger.info(
-                        f"Re-planning successful. New plan generated with {len(new_plan)} steps. Restarting execution loop with new plan."
-                    )
-                    plan = new_plan  # Replace the old plan
-                    yield {"type": "replan", "content": plan}  # Signal the replan
-                    # Restart the execution loop with the new plan
-                    execution_results = []  # Reset results for the new plan
-                    # modification_needed = ( # F841
-                    #     False  # Reset flag, allow execution_logic to skip the step
-                    # )
-                    pass  # Flag is not actually used, just log and let logic proceed
-                else:
-                    cerebrumx_logger.error(
-                        "Re-planning failed or did not change the plan. Execution will continue skipping modified step."
-                    )
-                    # modification_needed = ( # F841
-                    #     False  # Reset flag, allow execution_logic to skip the step
-                    # )
-                    pass  # Flag is not actually used, just log and let logic proceed
+    async def _retrieve_context(self, perception: Dict[str, Any]) -> Dict[str, Any]:
+        """Recupera contexto relevante da memória semântica e episódica."""
+        self.agent_logger.info("Recuperando contexto da memória...")
+        query = perception.get("processed", "")
+        if not query:
+            self.agent_logger.warning("Query de percepção vazia, não é possível buscar contexto semântico.")
+            return {"semantic_summary": "N/A", "semantic_results": [], "episodic": [], "query": query}
 
-        # --- 6. Reflexão (Pós-Execução Geral) ---
-        cerebrumx_logger.info("--- Iniciando Reflexão Pós-Execução ---")
-        reflection = await self._reflect(processed_perception, plan, execution_results)
-        yield {"type": "reflection", "content": reflection}
-
-        # --- 7. Aprendizagem (Atualização da Memória) ---
-        cerebrumx_logger.info("--- Iniciando Aprendizagem/Atualização da Memória ---")
-        await self._learn(reflection)
-        yield {"type": "learning_update", "status": "success"}
-
-        cerebrumx_logger.info("--- Ciclo CerebrumX Concluído ---")
-
-        # Determine final answer based on execution results or reflection
-        final_answer = "CerebrumX cycle completed."  # Default
-        if reflection and reflection.get("summary"):  # Prioritize reflection summary
-            final_answer = reflection.get("summary")
-        elif execution_results:  # Fallback to last step result if reflection is minimal
-            last_result = execution_results[-1]
-            final_answer = f"Last step status: {last_result.get('status')}. Message: {last_result.get('data', {}).get('message', 'N/A')}"
-        # We might need a dedicated 'final_answer' tool call based on reflection
-
-        yield {"type": "final_answer", "content": final_answer}
-
-    # Placeholder methods for the new cycle stages
-    def _perceive(self, perception_input: Any) -> Dict[str, Any]:
-        cerebrumx_logger.info("Processing perception...")
-        # TODO: Implementar lógica de percepção (extrair dados relevantes do input)
-        # Store initial perception if not already done
-        if self.initial_perception is None:
-            self.initial_perception = perception_input
-        # Process input - simple pass-through for now
-        if isinstance(perception_input, dict) and "processed" in perception_input:
-            return perception_input  # Already processed (e.g., during replanning)
-        return {"processed": perception_input}
-
-    async def _retrieve_context(
-        self, processed_perception: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        cerebrumx_logger.info("Retrieving context from memory...")
-
-        semantic_match = "No semantic match found."
-        query = processed_perception.get("processed", "")
-
-        if query and hasattr(self._memory, "retrieve_relevant_context"):
-            try:
-                # Call the actual memory retrieval method
-                memory_result = await self._memory.retrieve_relevant_context(
-                    query=query,
-                    max_results=5,  # Default max results, consider making configurable
-                )
-                # Assuming memory_result is a dict or similar structure containing matches
-                # Adapt based on the actual return format of retrieve_relevant_context
-                if (
-                    isinstance(memory_result, dict)
-                    and "semantic_match" in memory_result
-                ):
-                    semantic_match = memory_result["semantic_match"]
-                elif isinstance(memory_result, str):  # Handle simple string return
-                    semantic_match = memory_result
-                elif memory_result:  # Handle other non-empty results
-                    semantic_match = str(memory_result)
-                else:
-                    cerebrumx_logger.info(
-                        "Memory retrieval returned no relevant semantic context."
-                    )
-
-            except Exception:
-                cerebrumx_logger.exception(
-                    f"Error retrieving semantic context from memory for query '{query[:50]}...'"
-                )
-                semantic_match = "Error during semantic memory retrieval."
-        elif not hasattr(self._memory, "retrieve_relevant_context"):
-            cerebrumx_logger.warning(
-                "_memory object does not have 'retrieve_relevant_context' method."
-            )
-            semantic_match = "Memory retrieval method not available."
-        else:
-            semantic_match = "No query provided for semantic search."
-
-        # Combine with short-term history
-        retrieved = {
-            "short_term_history": self.get_history(),  # Get current conversation history
-            "semantic_match": semantic_match,  # Use the retrieved or placeholder match
-        }
-        # TODO: Add retrieval from episodic memory based on relevance or time
-        return {"retrieved_context": retrieved}
-
-    async def _plan_hierarchically(
-        self, perception: Dict[str, Any], context: Dict[str, Any]
-    ) -> List[str]:
-        cerebrumx_logger.info("Generating hierarchical plan using planning skill...")
-
-        # 1. Get available tool descriptions (needed by the planner skill)
-        tool_desc = get_tool_descriptions()
-
-        # 2. Prepare input for the hierarchical_planner skill
-        objective = perception.get("processed")
-        # Add modification info if present
-        if "modification_request" in perception:
-            objective += f"\n[REPLANNING CONTEXT: Need to modify plan. Failed Step: {perception['modification_request'].get('failed_step')}. Reason: {perception['modification_request'].get('reason')}]"
-
-        planner_input = {
-            "objective": objective,
-            "available_tools": tool_desc,
-            "context": context,  # Pass the retrieved context
-        }
-
-        # 3. Execute the planner skill using execute_tool
-        planner_result = {
-            "status": "error",
-            "data": {"message": "Planner execution failed."},
-        }  # Default
+        # --- Busca Semântica (FAISS) --- #
+        semantic_matches = []
+        semantic_summary = "Nenhuma memória semântica relevante encontrada."
         try:
-            planner_result = await execute_tool(
-                tool_name="hierarchical_planner",
-                action_input=planner_input,
-                tools_dict=self.tools,  # Agent has access to the tools registry via self.tools
-                agent_logger=cerebrumx_logger,  # Use the module-level logger for this agent's context
-                agent_memory=self._memory,  # Pass agent's memory
-            )
-        except Exception as e:
-            cerebrumx_logger.exception(
-                "Exception occurred while executing the planner tool."
-            )
-            planner_result["data"]["message"] = f"Exception calling planner: {e}"
+            # Importar localmente ou mover para o topo do arquivo se preferir
+            from a3x.core.embeddings import get_embedding
+            from a3x.core.semantic_memory_backend import search_index
+            from a3x.core.config import PROJECT_ROOT, SEMANTIC_SEARCH_TOP_K # <<< Importar configs
+            import os
 
-        # 4. Process the result
-        if planner_result.get("status") == "success":
-            plan_list = planner_result.get("data", {}).get("plan", [])
-            if isinstance(plan_list, list) and plan_list:
-                cerebrumx_logger.info(
-                    f"Hierarchical plan generated successfully ({len(plan_list)} steps)."
-                )
-                return plan_list
-            else:
-                cerebrumx_logger.warning(
-                    "Planner skill succeeded but returned an empty or invalid plan list."
-                )
-                objective_str = str(perception.get("processed", "Fallback objective"))
-                return [f"Address objective directly: '{objective_str[:50]}...'"]
-        else:
-            error_msg = planner_result.get("data", {}).get(
-                "message", "Unknown planning error"
-            )
-            cerebrumx_logger.error(f"Hierarchical planner skill failed: {error_msg}")
-            objective_str = str(perception.get("processed", "Fallback objective"))
-            return [
-                f"Address objective directly (planning failed): '{objective_str[:50]}...'"
-            ]
+            # <<< Definir caminho base do índice FAISS (Idealmente em config.py) >>>
+            index_path_base = os.path.join(PROJECT_ROOT, "a3x", "memory", "indexes", "semantic_memory")
 
-    async def _simulate_step(
-        self, plan_step: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        cerebrumx_logger.info(f"Simulating step: {plan_step[:50]}...")
-        # --- Use the simulate_step skill ---
-        simulation_input = {"step": plan_step, "context": context}
-        simulation_result = {  # Default error result
-            "status": "error",
-            "simulated_outcome": "Exception during simulation call",
-            "confidence": "N/A",
-        }
-        try:
-            tool_result = await execute_tool(
-                tool_name="simulate_step",
-                action_input=simulation_input,
-                tools_dict=self.tools,
-                agent_logger=cerebrumx_logger,
-                agent_memory=self._memory,
-            )
+            self.agent_logger.info(f"Gerando embedding para a busca: '{query[:50]}...'" )
+            query_embedding_np = get_embedding(query)
 
-            if tool_result.get("status") == "success":
-                simulation_result = {
-                    "simulated_outcome": tool_result.get(
-                        "simulated_outcome",
-                        "Simulation success, but no outcome text provided.",
-                    ),
-                    "confidence": tool_result.get("confidence", "N/A"),
-                }
-            else:
-                error_msg = tool_result.get(
-                    "error_message", "Simulation skill failed without specific message."
-                )
-                cerebrumx_logger.error(
-                    f"Simulation skill failed for step '{plan_step[:50]}...': {error_msg}"
-                )
-                simulation_result["simulated_outcome"] = (
-                    f"Simulation Failed: {error_msg}"
+            if query_embedding_np is not None:
+                query_embedding_list = query_embedding_np.tolist()
+                self.agent_logger.info(f"Buscando no índice FAISS: {index_path_base} (top_k={SEMANTIC_SEARCH_TOP_K})" )
+                search_results = search_index(
+                    index_path_base=index_path_base,
+                    query_embedding=query_embedding_list,
+                    top_k=SEMANTIC_SEARCH_TOP_K
                 )
 
-        except Exception as e:
-            cerebrumx_logger.exception(
-                f"Exception calling simulate_step skill for step '{plan_step[:50]}...':"
-            )
-            # Keep default error message
-            simulation_result["simulated_outcome"] = (
-                f"Exception during simulation call: {e}"
-            )
+                if search_results:
+                    self.agent_logger.info(f"Encontrados {len(search_results)} resultados na memória semântica.")
+                    semantic_matches = search_results # Mantém a lista completa de resultados
+                    # Criar sumário para o planner
+                    semantic_summary = "\nContexto Semântico Relevante:\n"
+                    for i, res in enumerate(search_results):
+                         # Acessa o conteúdo original dentro dos metadados
+                         content = res.get("metadata", {}).get("content", "<Conteúdo indisponível>")
+                         distance = res.get("distance", -1.0)
+                         semantic_summary += f"- [Dist: {distance:.3f}] {content}\n"
+                    semantic_summary = semantic_summary.strip()
 
-        return simulation_result  # Always return a dict
-
-    # <<< REMOVED _execute_plan_step method (logic moved to execution_logic.py) >>>
-    # async def _execute_plan_step(self, step_objective: str, context: Dict[str, Any]) -> Dict[str, Any]:
-    #     ...
-
-    async def _reflect(
-        self,
-        perception: Dict[str, Any],
-        plan: List[str],
-        execution_results: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        cerebrumx_logger.info("Reflecting on overall execution...")
-
-        objective = perception.get("processed", "Unknown objective")
-        learnings = []
-        success_count = 0
-        total_steps_attempted = len(execution_results)
-        plan_completed = total_steps_attempted == len(plan)
-
-        # Analyze each step result
-        for i, result in enumerate(execution_results):
-            step_description = (
-                plan[i] if i < len(plan) else f"Step {i + 1} (description missing)"
-            )
-            step_summary = f"Step {i + 1} ('{step_description[:30]}...')"
-            status = result.get("status", "unknown")
-            message = result.get("message", "No message provided.")
-
-            if status == "success":
-                success_count += 1
-                learnings.append(
-                    {
-                        "type": "success",
-                        "step_index": i,
-                        "step_description": step_description,
-                        "content": f"{step_summary}: Completed successfully. Result: {str(message)[:100]}...",
-                    }
-                )
-            elif status == "skipped":
-                learnings.append(
-                    {
-                        "type": "skipped",
-                        "step_index": i,
-                        "step_description": step_description,
-                        "content": f"{step_summary}: Skipped. Reason: {str(message)[:100]}...",
-                    }
-                )
-            else:  # error or unknown
-                learnings.append(
-                    {
-                        "type": "failure",
-                        "step_index": i,
-                        "step_description": step_description,
-                        "content": f"{step_summary}: Failed. Reason: {str(message)[:100]}...",
-                    }
-                )
-
-        # Calculate final stats
-        success_rate = (
-            (success_count / total_steps_attempted) * 100
-            if total_steps_attempted > 0
-            else 0
-        )
-
-        # Generate overall assessment
-        if not execution_results:
-            summary = f"Objective '{objective[:50]}...': No steps were executed."
-            overall_outcome = "unknown"
-        elif success_rate == 100 and plan_completed:
-            summary = f"Objective '{objective[:50]}...': Plan executed successfully. All {total_steps_attempted} steps completed."
-            overall_outcome = "success"
-            # Optionally add a summary learning point
-            # learnings.append({"type": "summary", "content": "All plan steps executed successfully."})
-        elif success_count > 0:
-            summary = f"Objective '{objective[:50]}...': Plan partially executed. {success_count}/{total_steps_attempted} steps successful ({success_rate:.0f}%)."
-            overall_outcome = "partial_success"
-        else:  # 0 successes
-            summary = f"Objective '{objective[:50]}...': Plan execution failed. {success_count}/{total_steps_attempted} steps successful ({success_rate:.0f}%)."
-            overall_outcome = "failure"
-
-        return {
-            "assessment": summary,
-            "success_rate": success_rate / 100.0,
-            "overall_outcome": overall_outcome,  # Added field: success, failure, partial_success
-            "learnings": learnings,  # List of dicts with structured info per step
-        }
-
-    async def _learn(self, reflection_output: Dict[str, Any]):
-        cerebrumx_logger.info("Updating memory based on reflection...")
-
-        learnings = reflection_output.get("learnings", [])
-        overall_assessment = reflection_output.get(
-            "assessment", "No assessment provided."
-        )
-
-        if not learnings:
-            cerebrumx_logger.info(
-                "No specific step learnings identified in this cycle."
-            )
-            # Optionally, still log the overall assessment
-            log_entry = {"type": "cycle_summary", "assessment": overall_assessment}
-        else:
-            cerebrumx_logger.info(
-                f"{len(learnings)} potential learning points identified."
-            )
-            # Process each learning point
-            for learning in learnings:
-                log_entry = {
-                    "type": learning.get("type", "unknown_learning"),
-                    "step_index": learning.get("step_index", -1),
-                    "step_description": learning.get("step_description", "N/A"),
-                    "content": learning.get("content", "N/A"),
-                }
-                # Attempt to save to memory
-                if hasattr(self._memory, "add_episodic_record"):
+                    # <<< Opcional: Registrar a consulta e os resultados na memória episódica >>>
                     try:
-                        # Adapt the data format as needed by add_episodic_record
-                        await self._memory.add_episodic_record(data=log_entry)
-                        cerebrumx_logger.debug(
-                            f"Saved learning to episodic memory: {log_entry['type']} for step {log_entry['step_index']}"
-                        )
-                    except Exception:
-                        cerebrumx_logger.exception(
-                            f"Failed to save learning point to episodic memory: {log_entry}"
-                        )
+                         record_metadata = {
+                             "query": query,
+                             "top_k": SEMANTIC_SEARCH_TOP_K,
+                             "num_results": len(search_results),
+                             "results_preview": [{ "dist": r.get("distance",-1), "content_preview": r.get("metadata",{}).get("content","")[:50]} for r in search_results]
+                         }
+                         add_episodic_record(
+                             context="context_retrieval",
+                             action="semantic_search",
+                             outcome="results_found",
+                             metadata=record_metadata
+                         )
+                         self.agent_logger.info("Consulta de memória semântica registrada na memória episódica.")
+                    except Exception as db_err:
+                         self.agent_logger.error(f"Erro ao registrar consulta semântica na memória episódica: {db_err}")
+
                 else:
-                    cerebrumx_logger.warning(
-                        "Cannot save learning to memory: _memory object lacks 'add_episodic_record' method."
+                     self.agent_logger.info("Nenhum resultado encontrado na memória semântica.")
+            else:
+                self.agent_logger.error("Falha ao gerar embedding para a busca semântica.")
+                semantic_summary = "Erro ao gerar embedding para busca."
+
+        except ImportError as imp_err:
+            self.agent_logger.error(f"Erro de importação necessário para busca semântica: {imp_err}")
+            semantic_summary = "Erro: Dependência de busca semântica não encontrada."
+        except Exception as e:
+            self.agent_logger.exception("Erro inesperado durante a busca de contexto semântico:")
+            semantic_summary = f"Erro inesperado na busca semântica: {e}"
+
+        # --- Busca Episódica (Placeholder) --- #
+        # TODO: Implementar recuperação de memória episódica relevante, se necessário.
+        episodic_matches = []
+        episodic_summary = "N/A"
+
+        # --- Montar Contexto Final --- #
+        final_context = {
+            "semantic_summary": semantic_summary,
+            "semantic_results": semantic_matches, # Inclui a lista completa de resultados
+            "episodic_summary": episodic_summary,
+            "episodic_results": episodic_matches,
+            "query": query
+        }
+        return final_context
+
+    # Renamed from _plan_hierarchically, unified planning logic
+    async def _plan(self, perception: Dict[str, Any], context: Dict[str, Any]) -> List[str]:
+        """Gera um plano de execução para o objetivo, usando o contexto."""
+        self.agent_logger.info("--- Gerando Plano de Execução ---")
+        objective = perception.get("processed", "")
+
+        # Incorporate logic from ReactAgent._generate_plan if needed (e.g., simple tasks)
+        if _is_simple_list_files_task(objective): # Function from agent.py
+             self.agent_logger.info("[Planner] Tarefa simples detectada (list_files). Gerando plano simples.")
+             plan_to_execute = [
+                 f"Use the list_files tool for the objective: '{objective}'",
+                 "Use the final_answer tool to provide the list of files.",
+             ]
+        else:
+            # Use the planner logic (previously in planner.py, called by ReactAgent)
+            # Assumes self.tools and self.llm_url are set by __init__
+            tool_desc = get_skill_descriptions()
+            # Context might need formatting for the planner prompt
+            formatted_context = f"Consulta Original: {context.get('query')}\nMemória Semântica Relevante: {context.get('semantic')}\nMemória Episódica Relevante: {context.get('episodic')}"
+
+            try:
+                # Assuming planner.generate_plan exists and works
+                from a3x.core.planner import generate_plan # Local import ok here?
+                plan_to_execute = await generate_plan(
+                    objective, tool_desc, self.agent_logger, self.llm_url, context_str=formatted_context
+                )
+                if not plan_to_execute:
+                     self.agent_logger.warning("Planejador não retornou um plano. Tentando objetivo como passo único.")
+                     plan_to_execute = [objective] # Fallback
+            except Exception as plan_err:
+                 self.agent_logger.exception("Erro durante a geração do plano:")
+                 plan_to_execute = [] # Indicate planning failure
+
+        plan_str = json.dumps(plan_to_execute, indent=2, ensure_ascii=False)
+        self.agent_logger.info(f"Plano Gerado:\n{plan_str}")
+        return plan_to_execute
+
+
+    # Merged from execution_logic.execute_plan_with_reflection
+    async def _execute_plan(self, plan: List[str], context: Dict[str, Any], original_objective: str) -> Tuple[str, str, List[Dict[str, Any]]]:
+        """
+        Executa um plano passo-a-passo usando o ciclo ReAct interno (_perform_react_iteration).
+        Realiza reflexão sobre falhas e chama a skill de aprendizado de falhas.
+        Retorna (status_final, mensagem_final, lista_resultados_passos).
+        """
+        self.agent_logger.info("--- Iniciando Execução do Plano --- ")
+        execution_results = []
+        last_successful_thought = ""
+        last_attempted_action = ""
+        last_observation_content = None
+        final_status = "unknown"
+        final_message = "Execução não iniciada ou falha indeterminada."
+
+        for i, step in enumerate(plan):
+            log_prefix = f"[Exec Step {i+1}/{len(plan)}]"
+            self.agent_logger.info(f"{log_prefix} Processando Passo: {step[:60]}...")
+
+            # --- Simulation (Optional - Add back if needed) ---
+            # simulated_outcome = await self._simulate_step(step, context) # _simulate_step needs implementation
+            # self.agent_logger.debug(f"{log_prefix} Simulação: {simulated_outcome}")
+            # yield {"type": "simulation", "step_index": i, "content": simulated_outcome}
+
+            # --- Pre-Reflection (Optional - Add back if needed) ---
+            # reflection_decision = await self._reflect_step(step, simulated_outcome, context)
+            # if reflection_decision['decision'] == 'skip': continue
+            # if reflection_decision['decision'] == 'modify':
+            #    yield {"type": "modification_trigger", ...} # Signal replanning if needed
+            #    # Handle replanning logic here or signal back to run()
+            #    continue
+
+            # --- Execute Step using ReAct Iteration ---
+            self.agent_logger.info(f"{log_prefix} Executando passo via ReAct.")
+            step_result = None
+            error_occurred = False
+            try:
+                # _perform_react_iteration is inherited from ReactAgent
+                async for react_event in self._perform_react_iteration(step, log_prefix):
+                    # Log intermediate events if desired
+                    self.agent_logger.debug(f"{log_prefix} ReAct Event: {react_event.get('type')}")
+
+                    # Capture last thought/action/observation for potential failure reflection
+                    if react_event.get("type") == "thought":
+                         last_successful_thought = react_event.get("content", last_successful_thought)
+                    elif react_event.get("type") == "action":
+                         last_attempted_action = react_event.get("tool_name", last_attempted_action)
+                    elif react_event.get("type") == "observation":
+                         last_observation_content = react_event.get("content", last_observation_content)
+
+                    if react_event.get("type") == "step_final_answer":
+                        step_result = {
+                            "status": "success",
+                            "message": react_event.get("content")
+                        }
+                        final_status = "intermediate_success" # Step succeeded, plan continues
+                        final_message = step_result["message"]
+                        self.agent_logger.info(f"{log_prefix} Passo concluído com sucesso.")
+                        break # Step finished successfully
+                    elif react_event.get("type") == "error":
+                        step_result = {
+                            "status": "error",
+                            "message": react_event.get("content")
+                        }
+                        last_observation_content = step_result['message'] # Error message is the observation
+                        error_occurred = True
+                        final_status = "failed" # Step failed
+                        final_message = f"Falha no passo {i+1}: {step_result['message']}"
+                        self.agent_logger.error(f"{log_prefix} Passo falhou: {step_result['message']}")
+                        break # Step errored out
+
+                if step_result is None: # Should not happen if loop finishes properly
+                     step_result = {"status": "unknown", "message": "Iteração ReAct finalizada sem resposta ou erro."}
+                     last_observation_content = step_result['message']
+                     error_occurred = True
+                     final_status = "error" # Treat unknown state as error
+                     final_message = f"Erro indeterminado no passo {i+1}."
+                     self.agent_logger.error(f"{log_prefix} Estado desconhecido ao final da iteração ReAct.")
+
+
+            except Exception as e:
+                 self.agent_logger.exception(f"{log_prefix} Exceção não tratada durante execução do passo '{step}':")
+                 step_result = {
+                     "status": "error",
+                     "message": f"Exceção não tratada: {e}"
+                 }
+                 last_observation_content = step_result['message']
+                 error_occurred = True
+                 final_status = "error" # Treat exception as error
+                 final_message = f"Erro crítico no passo {i+1}: {e}"
+
+            # --- Failure Reflection & Learning Integration ---
+            if error_occurred:
+                self.agent_logger.error(f"{log_prefix} Passo falhou. Iniciando reflexão/aprendizado sobre falha.")
+                # Collect context for reflection
+                failure_context = {
+                    "objective": original_objective,
+                    "plan": plan, # Whole plan
+                    "failed_step_index": i,
+                    "failed_step": step,
+                    "last_thought": last_successful_thought or "N/A",
+                    "last_action": last_attempted_action or "N/A",
+                    "last_observation": str(last_observation_content) or "N/A" # Ensure it's a string
+                }
+                exec_context = _ToolExecutionContext(logger=self.agent_logger, workspace_root=self.workspace_root)
+                setattr(exec_context, 'llm_url', self.llm_url) # Pass LLM URL if needed by skills
+
+                try:
+                    # Call reflect_on_failure skill
+                    reflection_result = await execute_tool(
+                        tool_name="reflect_on_failure",
+                        action_input=failure_context,
+                        tools_dict=self.tools, # Use agent's tools
+                        context=exec_context
                     )
+                    failure_analysis = "Análise da falha não disponível."
+                    if reflection_result.get("status") == "success":
+                        failure_analysis = reflection_result.get("data", {}).get("explanation", failure_analysis)
+                        self.agent_logger.info(f"{log_prefix} Reflexão sobre falha gerada: {failure_analysis[:100]}...")
 
-        # Log the overall assessment separately for clarity
-        cerebrumx_logger.info(f"Overall Execution Assessment: {overall_assessment}")
+                        # Call learn_from_failure_log skill
+                        learn_input = {
+                            "objective": original_objective,
+                            "error_message": step_result.get('message', 'Erro Desconhecido'),
+                            "failure_analysis": failure_analysis
+                        }
+                        try:
+                            learn_result = await execute_tool(
+                                tool_name="learn_from_failure_log",
+                                action_input=learn_input,
+                                tools_dict=self.tools,
+                                context=exec_context # Re-use context
+                            )
+                            if learn_result.get("status") == "success":
+                                heuristic = learn_result.get("data", {}).get("heuristic", "N/A")
+                                self.agent_logger.info(f"{log_prefix} Heurística de falha registrada: {heuristic[:100]}...")
+                            else:
+                                learn_error = learn_result.get("data", {}).get("message", "Erro desconhecido no aprendizado")
+                                self.agent_logger.error(f"{log_prefix} Falha ao chamar skill learn_from_failure_log: {learn_error}")
+                        except Exception as learn_err:
+                            self.agent_logger.exception(f"{log_prefix} Exceção ao chamar skill learn_from_failure_log:")
+                    else:
+                        reflect_error = reflection_result.get("data", {}).get("message", "Erro desconhecido na reflexão")
+                        self.agent_logger.error(f"{log_prefix} Falha ao chamar skill reflect_on_failure: {reflect_error}")
+                        failure_analysis = f"Erro na reflexão: {reflect_error}" # Update final message
+
+                except Exception as reflect_err:
+                     self.agent_logger.exception(f"{log_prefix} Exceção ao chamar skill reflect_on_failure:")
+                     failure_analysis = f"Erro crítico na chamada de reflexão: {reflect_err}" # Update final message
+
+                # Update final message with failure analysis and stop execution
+                final_message = f"Falha no passo {i+1}: {step_result.get('message', 'Erro Desconhecido')}\n**Análise:** {failure_analysis}"
+                final_status = "failed" # Ensure status reflects failure
+                execution_results.append(step_result) # Add failed step result
+                self.agent_logger.warning(f"{log_prefix} Encerrando execução do plano devido à falha no passo.")
+                return final_status, final_message, execution_results # Stop plan execution
+
+            # Append successful step result
+            execution_results.append(step_result)
+
+        # If loop completes without critical errors/failures stopping it
+        if final_status == "intermediate_success": # Check if last step was successful
+             final_status = "completed"
+             final_message = "Plano executado com sucesso." # Overall success message
+             self.agent_logger.info("--- Execução do Plano Concluída com Sucesso ---")
+        elif final_status == "unknown": # Should not happen ideally
+             final_status = "error"
+             final_message = "Execução do plano terminou em estado desconhecido."
+
+        return final_status, final_message, execution_results
 
 
-# Exemplo de como poderia ser chamado (requereria ajustes na CLI)
-# async def main():
-#     # Carregar prompt, etc.
-#     system_prompt = "Você é CerebrumX..."
-#     agent = CerebrumXAgent(system_prompt=system_prompt)
-#     initial_input = "Resuma as notícias de hoje sobre IA."
-#     async for output in agent.run_cerebrumx_cycle(initial_input):
-#         print(output)
+    # New consolidated reflection and learning method
+    async def _reflect_and_learn(self, perception: Dict[str, Any], plan: List[str], execution_results: List[Dict[str, Any]], final_status: str):
+        """
+        Encapsula o ciclo pós-execução chamando a skill unificada 'learning_cycle'.
+        """
+        self.agent_logger.info("--- Iniciando Fase de Reflexão e Aprendizado (via Skill Learning Cycle) --- ")
+        original_objective = perception.get("processed", "Objetivo Desconhecido")
 
-# if __name__ == "__main__":
-#     asyncio.run(main())
+        # Preparar input para a skill learning_cycle
+        learning_cycle_input = {
+            "objective": original_objective,
+            "plan": plan,
+            "execution_results": execution_results,
+            "final_status": final_status,
+            "agent_tools": self.tools, # Passar as tools do agente
+            "agent_workspace": str(self.workspace_root), # Passar workspace do agente
+            "agent_llm_url": self.llm_url, # Passar LLM URL do agente
+        }
+
+        # Criar contexto para a chamada da skill principal
+        # Usando logger do agente e workspace
+        exec_context = _ToolExecutionContext(logger=self.agent_logger, workspace_root=self.workspace_root)
+        # Não precisa setar llm_url aqui, a skill recebe como arg e passa internamente se necessário
+
+        try:
+            # Chamar a skill unificada
+            learning_result = await execute_tool(
+                tool_name="learning_cycle",
+                action_input=learning_cycle_input,
+                tools_dict=self.tools, # Passar o registro de tools
+                context=exec_context
+            )
+
+            if learning_result.get("status") == "success" or learning_result.get("status") == "warning":
+                # Log sucesso ou warning da skill
+                msg = learning_result.get("data", {}).get("message", "Ciclo de aprendizado concluído sem mensagem específica.")
+                self.agent_logger.info(f"Resultado do Learning Cycle: {learning_result.get('status')} - {msg}")
+            else:
+                # Log erro da skill
+                error_msg = learning_result.get("data", {}).get("message", "Erro desconhecido no ciclo de aprendizado.")
+                self.agent_logger.error(f"Skill learning_cycle falhou: {error_msg}")
+
+        except Exception as e:
+            self.agent_logger.exception("Erro crítico ao chamar a skill learning_cycle:")
+
+        self.agent_logger.info("--- Fase de Reflexão e Aprendizado Concluída --- ")
+
+    # --- Métodos Auxiliares Mantidos/Adaptados ---
+
+    # Removed _learn method
+
+    # <<< REMOVING Zombie method _reflect >>>
+    # async def _reflect(
+    #     self,
+    #     perception: Dict[str, Any],
+    #     plan: List[str],
+    #     execution_results: List[Dict[str, Any]],
+    # ) -> Dict[str, Any]: ...
+
+    # <<< REMOVING Zombie method _simulate_step >>>
+    # async def _simulate_step(
+    #     self, plan_step: str, context: Dict[str, Any]
+    # ) -> Dict[str, Any]: ...
+
+    # ... (Métodos _perceive, _retrieve_context já adaptados acima) ...
+
+    # Helper removed - _log_heuristic (logic should be inside learning skills)
+    # async def _log_heuristic(self, log_entry: Dict[str, Any]): ...

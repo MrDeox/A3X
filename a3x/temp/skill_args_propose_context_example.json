@@ -1,0 +1,6 @@
+{
+  "reason": "Agent lacks a dedicated mechanism to retrieve relevant contextual examples from semantic memory based on the current task.",
+  "suggestion_description": "Create a skill named 'context_example_retrieval' that queries the semantic memory (VSS table) based on the current task or query to find similar past examples (code snippets, command sequences, reflections) and provides them as context.",
+  "skill_name": "context_example_retrieval",
+  "output_dir": "a3x/skills/auto_generated"
+} 

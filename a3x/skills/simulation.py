@@ -1,7 +1,8 @@
 # skills/simulation.py
 import logging
+import json
+from a3x.core.skills import skill
 from typing import Dict, Any
-from a3x.core.tools import skill
 from a3x.core.llm_interface import call_llm  # <-- CORRECT IMPORT
 
 logger = logging.getLogger(__name__)

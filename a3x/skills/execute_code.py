@@ -3,8 +3,8 @@ import subprocess
 import logging
 from a3x.core.config import PYTHON_EXEC_TIMEOUT  # Default timeout
 from a3x.core.code_safety import is_safe_ast
-from a3x.core.tools import skill  # Import skill decorator
-from a3x.core.db_utils import record_experience # <<< Importar a função
+from a3x.core.skills import skill  # <<< Update import
+from a3x.core.db_utils import add_episodic_record # <<< Corrected import name
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def execute_code(
         metadata = {"reason": "ast_block", "message": safety_message}
         # <<< Registrar Experiência >>>
         try:
-            record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+            add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
         except Exception as db_err:
             logger.error(f"Failed to record AST block experience: {db_err}")
         return {
@@ -145,7 +145,7 @@ def execute_code(
             metadata = {"returncode": exit_code, "stdout_len": len(stdout_result), "stderr_len": len(stderr_result)}
             # <<< Registrar Experiência >>>
             try:
-                record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+                add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
             except Exception as db_err:
                 logger.error(f"Failed to record success experience: {db_err}")
             return {
@@ -169,7 +169,7 @@ def execute_code(
             metadata = {"returncode": exit_code, "error_cause": error_cause, "stderr_preview": stderr_result[:200]}
             # <<< Registrar Experiência >>>
             try:
-                record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+                add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
             except Exception as db_err:
                 logger.error(f"Failed to record failure experience: {db_err}")
             return {
@@ -189,7 +189,7 @@ def execute_code(
         metadata = {"timeout_value": timeout_sec}
         # <<< Registrar Experiência >>>
         try:
-            record_experience(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+            add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
         except Exception as db_err:
             logger.error(f"Failed to record timeout experience: {db_err}")
         return {
@@ -208,7 +208,7 @@ def execute_code(
         metadata = {"error_type": "FileNotFoundError"}
         # <<< Registrar Experiência >>>
         try:
-            record_experience(context="execute_code skill", action="N/A - Environment Error", outcome=outcome, metadata=metadata)
+            add_episodic_record(context="execute_code skill", action="N/A - Environment Error", outcome=outcome, metadata=metadata)
         except Exception as db_err:
             logger.error(f"Failed to record environment error experience: {db_err}")
         return {
@@ -224,7 +224,7 @@ def execute_code(
         metadata = {"error_type": type(e).__name__, "error_message": str(e)[:200]}
         # <<< Registrar Experiência >>>
         try:
-            record_experience(context="execute_code skill", action=code_to_execute if 'code_to_execute' in locals() else "N/A - Early Error", outcome=outcome, metadata=metadata)
+            add_episodic_record(context="execute_code skill", action=code_to_execute if 'code_to_execute' in locals() else "N/A - Early Error", outcome=outcome, metadata=metadata)
         except Exception as db_err:
             logger.error(f"Failed to record unexpected error experience: {db_err}")
         return {

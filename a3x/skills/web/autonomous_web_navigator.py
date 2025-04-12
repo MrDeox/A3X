@@ -10,8 +10,8 @@ import sys
 from collections import namedtuple
 
 # Core A3X imports
-from a3x.core.tools import skill
-from a3x.core.config import project_root # Import project_root for path resolution
+from a3x.core.skills import skill
+from a3x.core.config import PROJECT_ROOT # Corrected import: PROJECT_ROOT
 from a3x.skills.perception.describe_image_blip import describe_image_blip
 from a3x.skills.perception.ocr_extract import extract_text_boxes_from_image
 
@@ -224,7 +224,7 @@ async def autonomous_web_navigator(ctx: Any, url: str, objective: str, max_steps
     final_screenshot_path = None
 
     # --- Setup Screenshot Directory ---
-    screenshots_dir = Path(project_root) / "memory" / "screenshots" / "autonav" # Subfolder for this skill
+    screenshots_dir = Path(PROJECT_ROOT) / "memory" / "screenshots" / "autonav" # Subfolder for this skill
     try:
         screenshots_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Ensured screenshot directory exists: {screenshots_dir}")

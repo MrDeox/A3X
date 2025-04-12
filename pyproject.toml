@@ -67,6 +67,8 @@ dependencies = [
     "pydantic", # Already present via fastapi usually
     "playwright",
     "duckduckgo-search",
+    "Pillow", # For image manipulation
+    "python-slugify", # For creating file-safe names
 ]
 
 [project.optional-dependencies]

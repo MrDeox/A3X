@@ -1,7 +1,11 @@
-import sqlite3
+import sqlite3 # Use standard library
+# import pysqlite3 as sqlite3 # Use pysqlite3 backport
+# import sqlite3 # Use standard library
+# import pysqlite3 as sqlite3 # Removed custom pysqlite3
 import os
 import logging  # Usar logging é melhor que print para debug
 import json
+import asyncio
 
 # Configurar logging básico
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s DB] %(message)s")
@@ -36,36 +40,28 @@ except Exception as e:
 VECTOR_EXTENSION_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "lib", "vector0.so"
 )
-VSS_EXTENSION_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "lib", "vss0.so"
-)
+# VSS_EXTENSION_PATH = os.path.join(
+#     os.path.dirname(os.path.dirname(__file__)), "lib", "vss0.so"
+# ) # Removed VSS path
 # <<< FIM DA ADIÇÃO >>>
 
 
 def get_db_connection():
-    """Retorna uma conexão com o banco de dados com a extensão VSS carregada (se possível)."""
-    conn = None  # Inicializa conn
+    """Retorna uma conexão com o banco de dados SQLite padrão."""
+    conn = None
     try:
-        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-        # conn.enable_load_extension(True)  # Temporariamente desabilitado para contornar erro em Python compilado sem suporte a SQLite extensions
+        conn = sqlite3.connect(DATABASE_PATH, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
         conn.row_factory = sqlite3.Row
 
-        # Tenta carregar extensões VSS
+        # <<< EXTENSION LOADING REMOVED FROM HERE >>>
         # try:
-        #     # Verifica se os arquivos existem
-        #     if not os.path.exists(VECTOR_EXTENSION_PATH):
-        #         logger.warning(f"Arquivo da extensão vector0 NÃO encontrado no caminho esperado: {VECTOR_EXTENSION_PATH}")
-        #     if not os.path.exists(VSS_EXTENSION_PATH):
-        #         logger.warning(f"Arquivo da extensão vss0 NÃO encontrado no caminho esperado: {VSS_EXTENSION_PATH}")
-
-        #     # Carrega as extensões na ordem correta
-        #     conn.load_extension(VECTOR_EXTENSION_PATH)
-        #     logger.info("Extensão vector0 carregada com sucesso!")
-
-        #     conn.load_extension(VSS_EXTENSION_PATH)
-        #     logger.info("Extensão vss0 carregada com sucesso!")
+        #     # ... loading logic removed ...
         # except sqlite3.OperationalError as e:
-        #      logger.warning(f"Falha ao carregar extensão sqlite-vss: {e}. Busca vetorial estará DESABILITADA.")
+        #     # ... exception handling removed ...
+        # except Exception as e_load:
+        #     # ... exception handling removed ...
+
+        # <<< SECURITY DISABLE REMOVED FROM HERE >>>
         # conn.enable_load_extension(False)
 
         return conn
@@ -77,9 +73,17 @@ def get_db_connection():
     # Não fechar a conexão aqui, quem chama é responsável por fechar
 
 
+async def close_db_connection(conn):
+    """Fecha a conexão com o banco de dados de forma assíncrona."""
+    if conn:
+        await asyncio.to_thread(conn.close) # Use to_thread for blocking IO
+        logger.debug("Database connection closed.")
+
+
+# <<< ADICIONADA: Função para inicializar o DB >>>
 def initialize_database():
-    """Garante que todas as tabelas necessárias existam."""
-    conn = None
+    """Cria as tabelas necessárias no banco de dados se não existirem."""
+    conn = None # Initialize conn
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -126,26 +130,6 @@ def initialize_database():
         """
         )
         logger.info("Tabela 'semantic_memory' verificada/criada.")
-
-        # Tenta criar tabela VSS (com try/except separado)
-        try:
-            cursor.execute("SELECT vss_version()")
-            logger.info("Extensão VSS funcional detectada.")
-            EMBEDDING_DIM = 768  # Para ibm-granite
-            logger.info("Verificando/Criando tabela virtual 'vss_semantic_memory'...")
-            cursor.execute(
-                f"""
-                 CREATE VIRTUAL TABLE IF NOT EXISTS vss_semantic_memory USING vss0(
-                     embedding({EMBEDDING_DIM}) 
-                 )
-             """
-            )
-            logger.info("Tabela virtual 'vss_semantic_memory' verificada/criada.")
-        except sqlite3.OperationalError as e:
-            logger.warning(
-                f"Não foi possível criar/verificar tabela VSS (extensão pode não estar carregada ou erro): {e}"
-            )
-        # --- Fim Bloco Semantic Memory ---
 
         # --- Criação Tabela Experience Buffer ---
         logger.info("Verificando/Criando tabela 'experience_buffer'...")
@@ -237,8 +221,9 @@ def load_agent_state(agent_id: str) -> dict:
 
 # --- Funções para Experience Buffer --- #
 
-def record_experience(context: str, action: str, outcome: str, metadata: dict | None = None):
-    """Registra uma nova experiência no buffer."""
+# Renamed from record_experience
+def add_episodic_record(context: str, action: str, outcome: str, metadata: dict | None = None):
+    """Registra um ciclo de experiência completo (episódio) no buffer."""
     conn = None
     try:
         # Lógica inicial simples de prioridade: falhas/erros têm prioridade maior
@@ -311,6 +296,78 @@ def sample_experiences(batch_size: int) -> list[sqlite3.Row]:
         if conn:
             conn.close()
     return experiences
+
+
+# --- Funções para Semantic Memory / VSS --- #
+
+# ADDED: New function for semantic context retrieval
+def retrieve_relevant_context(objective: str, top_k: int = 5) -> list[str]:
+    """Recupera contextos relevantes da memória semântica usando sqlite-vec."""
+    conn = None
+    results = []
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Verifica se a tabela VEC existe
+        cursor.execute("SELECT name FROM sqlite_master WHERE type=\'table\' AND name=\'vec_semantic_memory\'")
+        vec_table_exists = cursor.fetchone()
+
+        if not vec_table_exists:
+            logger.warning("Tabela VEC \'vec_semantic_memory\' não encontrada. Não é possível realizar busca vetorial.")
+            return []
+
+        # 1. Gerar embedding para o objetivo
+        from a3x.core.embeddings import get_embedding # Import local para evitar dependência circular ou carregar modelo cedo demais
+        query_embedding = get_embedding(objective)
+        if query_embedding is None:
+            logger.error(f"Falha ao gerar embedding para o objetivo: \'{objective[:100]}...\'")
+            return []
+
+        # 2. Preparar query VEC
+        # Convert embedding to JSON string for the query (sqlite-vec expects this)
+        query_embedding_json = json.dumps(query_embedding)
+
+        # Executar busca vetorial using a subquery for the LIMIT
+        # Syntax for sqlite-vec uses MATCH
+        vec_query = f"""
+            SELECT
+                sm.content,
+                sm.metadata,
+                vec_results.distance
+            FROM
+                ( -- Start Subquery --
+                    SELECT
+                        rowid,
+                        distance
+                    FROM vec_semantic_memory
+                    WHERE embedding MATCH ? -- Use MATCH operator
+                    ORDER BY distance       -- sqlite-vec orders by distance implicitly
+                    LIMIT ?                 -- Apply LIMIT within the subquery
+                ) vec_results -- End Subquery --
+            JOIN
+                semantic_memory sm ON vec_results.rowid = sm.id
+            ORDER BY
+                vec_results.distance -- Order the final joined results by distance
+        """
+        logger.debug(f"Executando busca VEC com subquery LIMIT={top_k}. Query: {vec_query}")
+        # Pass query_embedding_json and top_k as parameters
+        cursor.execute(vec_query, (query_embedding_json, top_k))
+        rows = cursor.fetchall()
+
+        results = [row['content'] for row in rows] # Retorna apenas o conteúdo por simplicidade
+        logger.info(f"Recuperados {len(results)} contextos relevantes via VEC para o objetivo.")
+
+    except ImportError:
+        logger.error("Erro ao importar \'get_embedding\'. A função de embeddings está disponível?")
+    except sqlite3.Error as e:
+        logger.error(f"Erro SQLite durante a busca vetorial (VEC): {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Erro inesperado durante a busca vetorial (VEC): {e}", exc_info=True)
+    finally:
+        if conn:
+            conn.close()
+    # return results # Don't return results from here, it's handled by the skill
 
 
 # Comentado para evitar execução automática na importação.

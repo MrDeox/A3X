@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+torch --index-url https://download.pytorch.org/whl/rocm5.7 # Or remove index for CPU/other setups
+diffusers
+transformers
+safetensors
+Pillow
+python-dotenv # Good practice for potential config 

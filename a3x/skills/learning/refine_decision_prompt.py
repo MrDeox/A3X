@@ -4,9 +4,11 @@ import asyncio
 from typing import Dict, Any, List
 
 # Core imports
-from a3x.core.tools import skill
+from a3x.core.skills import skill
 from a3x.core.learning_logs import load_recent_reflection_logs
 from a3x.core.llm_interface import call_llm
+from a3x.skills.learning.synthesize_learning_insights import synthesize_learning_insights
+from a3x.skills.learning.apply_prompt_refinement_from_logs import apply_prompt_refinement_from_logs
 
 logger = logging.getLogger(__name__)
 

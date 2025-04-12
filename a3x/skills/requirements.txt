@@ -1,0 +1,5 @@
+markdown2
+xhtml2pdf
+requests
+httpx
+python-slugify # For creating safe filenames from titles 

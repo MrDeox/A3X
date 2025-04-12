@@ -6,8 +6,9 @@ import base64
 import random
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-
-from a3x.core.tools import skill
+from pathlib import Path
+from a3x.core.skills import skill
+from a3x.core.config import SD_API_URL_BASE, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 

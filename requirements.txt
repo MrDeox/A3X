@@ -2,10 +2,12 @@
 # principais devem ser gerenciadas em pyproject.toml.
 # Use 'pip install .' ou 'pip install -e .' para instalar o projeto.
 
+python-dotenv # Needed by core/config.py
+aiohttp # Needed by core/server_manager.py and sd_api_server.py
+
 # Dependências que estavam aqui foram movidas para pyproject.toml:
 # pytest
 # pytest-asyncio
-# python-dotenv
 # pyperclip
 # requests
 # pyautogui
