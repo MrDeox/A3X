@@ -5,17 +5,8 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 import re # For simple keyword matching
 
-# Ensure skill decorator is imported correctly based on current structure
-try:
-    from a3x.core.skill_interface import skill
-    from a3x.core.context import Context
-except ImportError:
-    # Fallback if structure is different or running standalone
-    def skill(**kwargs):
-        def decorator(func):
-            return func
-        return decorator
-    Context = Any
+from a3x.core.skills import skill
+from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +20,16 @@ ORIGINAL_HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics
 MAX_HEURISTICS_TO_CONSIDER = 100 # Limit how many recent consolidated logs to check
 MIN_KEYWORD_MATCH_SCORE = 1 # Minimum overlap to consider a heuristic relevant
 
+# <<< RESTORED Decorator >>>
 @skill(
     name="consult_learned_heuristics",
-    # <<< UPDATED Description >>>
     description="Consulta o log CONSOLIDADO de heurísticas aprendidas (representativas/únicas) para encontrar regras relevantes.",
-    parameters=[
-        {"name": "objective", "type": "string", "description": "O objetivo atual para o qual buscar heurísticas."},
-        {"name": "top_k", "type": "int", "description": "Número máximo de heurísticas (por tipo) a retornar.", "optional": True, "default": 3},
-        {"name": "ctx", "type": "Context", "description": "Objeto de contexto da execução.", "optional": True}
-    ]
+    parameters={
+        'objective': (str, ...), 
+        'top_k': (int, 3)
+    }
 )
+# <<< RESTORED async def and ctx parameter >>>
 async def consult_learned_heuristics(objective: str, top_k: int = 3, ctx: Optional[Context] = None) -> Dict[str, Any]:
     """Busca heurísticas relevantes (sucesso e falha) no log consolidado."""
 
@@ -49,14 +40,14 @@ async def consult_learned_heuristics(objective: str, top_k: int = 3, ctx: Option
     failure_heuristics = []
 
     try:
+        # <<< RESTORED Original logic using getattr >>>
         workspace_root = Path(getattr(ctx, 'workspace_root', '.'))
-        # <<< UPDATED: Use consolidated file path >>>
-        log_file_path = workspace_root / HEURISTIC_LOG_FILE 
+        log_file_path = workspace_root / HEURISTIC_LOG_FILE
 
         if not log_file_path.exists():
             logger.warning(f"{log_prefix} Log de heurísticas CONSOLIDADAS não encontrado em {log_file_path}. Verificando log original como fallback...")
             # Fallback to original log if consolidated doesn't exist yet
-            log_file_path = workspace_root / ORIGINAL_HEURISTIC_LOG_FILE
+            log_file_path = workspace_root / ORIGINAL_HEURISTIC_LOG_FILE 
             if not log_file_path.exists():
                  logger.warning(f"{log_prefix} Log original também não encontrado. Nenhuma heurística será retornada.")
                  return {"status": "success", "data": {"success": [], "failure": [], "message": "Nenhum log de aprendizado encontrado."}}
