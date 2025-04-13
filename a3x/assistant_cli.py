@@ -36,6 +36,9 @@ except Exception:
     traceback.print_exc()
     sys.exit(1)
 
+def main():
+    run_cli()
+
 if __name__ == "__main__":
     # Chama a função principal da interface CLI
-    run_cli()
+    main()

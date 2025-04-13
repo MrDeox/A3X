@@ -17,11 +17,10 @@ logger = logging.getLogger(__name__)
 
 @skill(
     name="call_skill_by_name",
-    description="Executa outra skill registrada dinamicamente pelo seu nome, passando argumentos.",
+    description="Executa outra skill registrada pelo nome, passando os argumentos necessários.",
     parameters={
         "skill_name": (str, ...), # Nome da skill a ser chamada
-        "skill_args": (Optional[Dict[str, Any]], None), # Argumentos (dicionário JSON) para a skill
-        "ctx": (Context, None) # Added ctx parameter declaration
+        "skill_args": (Optional[Dict[str, Any]], None)
     }
 )
 async def call_skill_by_name(ctx, skill_name: str, skill_args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

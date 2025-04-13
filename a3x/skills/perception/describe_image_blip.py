@@ -1,7 +1,7 @@
 """Skill to describe an image using the BLIP model."""
 
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Dict
 import logging
 import torch
 
@@ -11,6 +11,7 @@ from transformers import BlipProcessor, BlipForConditionalGeneration
 
 from a3x.core.skills import skill
 from a3x.core.config import PROJECT_ROOT
+from a3x.core.context import Context
 
 
 # <<< REMOVE Class Wrapper >>>
@@ -18,29 +19,16 @@ from a3x.core.config import PROJECT_ROOT
 #     """Skill to generate a caption for an image using Salesforce BLIP."""
 
 @skill(
-    # <<< CHANGE parameters format to Dict[str, tuple] >>>
-    name="describe_image_blip", # Need to explicitly add name here
-    description="Generates a textual description (caption) for the provided image file using the BLIP model.",
+    name="describe_image_blip",
+    description="Descreve uma imagem usando o modelo BLIP (requer transformers e torch).",
     parameters={
-        "image_path": (Path, ...), # Ellipsis indicates required
+        "image_path": (str, ...)
     }
-    # parameters=[
-    #     Parameter(name="image_path", type="Path", description="The path to the image file."),
-    # ],
-    # output_type="str", # Decorator doesn't seem to use output_type
-    # examples=[
-    #     'await describe_image_blip(image_path=Path("screenshots/latest.png"))'
-    # ] # Decorator doesn't seem to use examples
 )
 async def describe_image_blip(
-    # <<< REMOVE self parameter >>>
-    # self,
-    # <<< CHANGE Context type hint >>>
-    # ctx: Context,
-    ctx: Any, # Use Any for now
-    image_path: Path # Keep the Path type hint
-) -> str:
-    """Describes the image found at the given path using BLIP."""
+    ctx, image_path: str
+) -> Dict[str, Any]:
+    """Describes an image using the BLIP model via transformers."""
     # <<< Need to access logger from ctx, assuming it has a .log attribute >>>
     logger = ctx.log if hasattr(ctx, 'log') else logging.getLogger(__name__)
 

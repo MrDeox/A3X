@@ -62,7 +62,7 @@ except ImportError:
 
 # Skill definition utilities
 try:
-    from a3x.core.skill_interface import skill
+    from a3x.core.skills import skill
     from a3x.core.context import Context
 except ImportError:
     # Fallback for standalone testing
@@ -125,7 +125,7 @@ async def _generate_embeddings(heuristics: List[Dict[str, Any]]) -> Optional[Tup
             logger.warning(f"Skipping empty heuristic text at original index {original_heuristic_index}")
             continue
         try:
-            emb = await get_embedding(text)
+            emb = get_embedding(text)
             if emb:
                 if dimension is None: dimension = len(emb)
                 if len(emb) == dimension:
@@ -199,13 +199,14 @@ def _select_representative(cluster_indices: Set[int], heuristics_subset: List[Di
          
          try:
              if timestamp_str:
-                 if timestamp_str.endswith('Z'):
-                    timestamp_str = timestamp_str[:-1] + '+00:00'
-                 current_time = datetime.datetime.fromisoformat(timestamp_str)
-                 current_time_naive_utc = current_time.astimezone(datetime.timezone.utc).replace(tzinfo=None) if current_time.tzinfo else current_time
+                 # Clean timestamp before parsing: Remove trailing 'Z' if present
+                 cleaned_timestamp_str = timestamp_str.rstrip('Z')
+                 current_time = datetime.datetime.fromisoformat(cleaned_timestamp_str)
+                 if current_time.tzinfo:
+                     current_time = current_time.astimezone(datetime.timezone.utc).replace(tzinfo=None)
                  
-                 if latest_time is None or current_time_naive_utc > latest_time:
-                     latest_time = current_time_naive_utc
+                 if latest_time is None or current_time > latest_time:
+                     latest_time = current_time
                      representative_subset_idx = subset_idx
              elif representative_subset_idx == -1: # If no timestamp, pick the first one as fallback
                  representative_subset_idx = subset_idx
@@ -224,10 +225,10 @@ def _select_representative(cluster_indices: Set[int], heuristics_subset: List[Di
 @skill(
     name="consolidate_heuristics",
     description="Analisa heurísticas aprendidas, identifica redundâncias semânticas e gera um log consolidado.",
-    parameters=[
-        {"name": "similarity_threshold", "type": "float", "description": "Limiar de similaridade cosseno para agrupar heurísticas.", "optional": True},
-        {"name": "ctx", "type": "Context", "description": "Objeto de contexto da execução.", "optional": True}
-    ]
+    parameters={
+        "similarity_threshold": (Optional[float], None) # Removed 'ctx' from here
+        # "ctx": (Optional[Context], None) # Context passed by executor
+    }
 )
 async def consolidate_heuristics(similarity_threshold: Optional[float] = None, ctx: Optional[Context] = None) -> Dict[str, Any]:
     """Consolidates learned heuristics by identifying and marking semantic duplicates."""
@@ -245,6 +246,15 @@ async def consolidate_heuristics(similarity_threshold: Optional[float] = None, c
         workspace_root = Path(getattr(ctx, 'workspace_root', '.'))
         input_log_path = workspace_root / HEURISTIC_LOG_FILE
         output_log_path = workspace_root / CONSOLIDATED_LOG_FILE
+        # <<< CORREÇÃO: Garantir que o diretório exista >>>
+        output_log_dir = output_log_path.parent
+        try:
+            output_log_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"{log_prefix} Diretório de log garantido: {output_log_dir}")
+        except OSError as e:
+            logger.error(f"{log_prefix} Falha ao criar diretório de log {output_log_dir}: {e}")
+            return {"status": "error", "data": {"message": f"Falha ao criar diretório de log: {e}"}}
+        # <<< FIM CORREÇÃO >>>
 
         # 1. Read heuristics
         all_heuristics = _read_heuristics(input_log_path)
@@ -371,9 +381,14 @@ if __name__ == '__main__':
             {"timestamp": "2023-10-28T10:00:00Z", "type": "success", "heuristic": "Usar list_dir antes de delete_file previne erros.", "context_snapshot": {}},
         ]
         input_path = Path(HEURISTIC_LOG_FILE)
-        with open(input_path, 'w', encoding='utf-8') as f:
-            for entry in dummy_heuristics:
-                f.write(json.dumps(entry) + '\n')
+        from a3x.core.learning_logs import log_heuristic_with_traceability
+        # Limpa o arquivo antes de inserir exemplos
+        if input_path.exists():
+            input_path.unlink()
+        for i, entry in enumerate(dummy_heuristics):
+            plan_id = f"consolidate-seed-plan-{i+1}"
+            execution_id = f"consolidate-seed-exec-{i+1}"
+            log_heuristic_with_traceability(entry, plan_id, execution_id, validation_status="seed")
         logger.info(f"Created dummy heuristic file: {input_path.name}")
 
         # 2. Run the skill

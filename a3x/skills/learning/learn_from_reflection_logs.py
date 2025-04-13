@@ -4,14 +4,21 @@ import asyncio
 import os # Added for example usage path
 import datetime # Added for example usage timestamp
 from typing import Dict, Any, List, Optional
+from pathlib import Path
 
 # Core imports
 from a3x.core.skills import skill
 from a3x.core.learning_logs import load_recent_reflection_logs
 from a3x.core.llm_interface import call_llm
 from a3x.skills.core.call_skill_by_name import call_skill_by_name
+from a3x.core.context import Context
+from a3x.core.config import REFLECTION_LOG_DIR, LEARNING_LOG_DIR, HEURISTIC_LOG_FILE
 
 logger = logging.getLogger(__name__)
+
+# --- Constants ---
+REFLECTION_LOG_PATH = Path(REFLECTION_LOG_DIR) / "reflection_log.jsonl"
+HEURISTIC_LOG_PATH = Path(LEARNING_LOG_DIR) / HEURISTIC_LOG_FILE
 
 @skill(
     name="learn_from_reflection_logs",

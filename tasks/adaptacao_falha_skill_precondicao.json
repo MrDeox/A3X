@@ -1,0 +1,10 @@
+{
+  "objective": "Delete o arquivo 'arquivo_inexistente.txt' do workspace.",
+  "context": "O arquivo 'arquivo_inexistente.txt' não existe.",
+  "expected_behavior": [
+    "O Arthur deve detectar que o arquivo não existe ao tentar deletar.",
+    "O agente deve registrar a falha e sugerir (ou planejar) uma ação alternativa ou informar ao usuário.",
+    "Evitar repetir a tentativa de deleção sem sentido.",
+    "A heurística de adaptação deve ser registrada."
+  ]
+}

@@ -12,6 +12,7 @@ import io
 import mss
 import mss.tools
 from PIL import Image
+from a3x.core.context import Context # <<< ADDED IMPORT >>>
 
 # --- Playwright Check ---
 _playwright_installed = importlib.util.find_spec("playwright")
@@ -28,6 +29,7 @@ from a3x.core.config import (
     LLM_PROVIDER,
     LLAMA_SERVER_URL, # Assuming this might be used for LLaVA
     # Add any specific LLaVA server URL config if needed
+    SD_API_URL_BASE, PROJECT_ROOT # Assuming SD is used for something, check imports
 )
 from a3x.core.llm_interface import call_llm
 from a3x.core.skills import skill
@@ -63,23 +65,22 @@ OBSIDIAN_MODEL_NAME = "obsidian-3b"
 LLAMA_CPP_ENDPOINT = f"http://localhost:8080/v1/chat/completions" # Assuming default port 8080
 
 @skill(
-    name="visual_perception",
-    description="Captura um screenshot da tela usando Playwright, envia para o servidor LLaVA externo para análise e descreve a interface.",
+    name="describe_visual_elements",
+    description="Descreve os elementos visuais importantes em uma imagem.",
     parameters={
-        "ctx": (Context, None)
+        "image_path": (str, ...)
     }
 )
-async def visual_perception(ctx) -> Dict[str, Any]:
+async def describe_visual_elements(image_path: str, ctx: Optional[Context] = None) -> str:
     """
-    Captures a screenshot using Playwright, sends it to the unified llama.cpp server
-    (running an Obsidian multimodal model) for analysis, and returns a text description.
+    Analyzes an image using a vision model (like LLaVA) to describe its key elements.
 
     Args:
+        image_path: The path to the image to be analyzed.
         ctx: The skill execution context (provides logger).
 
     Returns:
-        A dictionary containing the analysis ('resumo', 'elementos_detectados', 'acoes_possiveis')
-        or an error message.
+        A string containing the description of the key elements in the image.
     """
     ctx.logger.info("[VISUAL PERCEPTION] Starting skill execution.")
 
@@ -87,7 +88,7 @@ async def visual_perception(ctx) -> Dict[str, Any]:
     if not _playwright_installed or async_playwright is None or httpx is None: # Check httpx too
         ctx.logger.error("Playwright or httpx library not found. Please install them: pip install playwright httpx")
         ctx.logger.error("You also need to install browser binaries: playwright install chromium")
-        return {"error": "Playwright library is required but not installed. Install with 'pip install playwright' and 'playwright install chromium'."}
+        return "Playwright library is required but not installed. Install with 'pip install playwright' and 'playwright install chromium'."
     # --- End Dependency Check ---
 
     # Ensure screenshot directory exists
@@ -96,7 +97,7 @@ async def visual_perception(ctx) -> Dict[str, Any]:
         ctx.logger.debug(f"Ensured screenshot directory exists: {SCREENSHOT_DIR}")
     except Exception as e:
         ctx.logger.exception(f"Failed to create or access screenshot directory {SCREENSHOT_DIR}: ")
-        return {"error": f"Failed to create/access screenshot directory: {e}"}
+        return f"Failed to create/access screenshot directory: {e}"
 
     screenshot_path = os.path.join(SCREENSHOT_DIR, SCREENSHOT_FILENAME)
 
@@ -119,7 +120,7 @@ async def visual_perception(ctx) -> Dict[str, Any]:
                  except PlaywrightError as fallback_e:
                      ctx.logger.error(f"Failed to launch any browser: {fallback_e}")
                      ctx.logger.error("Please ensure Playwright browsers are installed: run 'playwright install'")
-                     return {"error": f"Failed to launch Playwright browser. Ensure it's installed ('playwright install'). Error: {fallback_e}"}
+                     return f"Failed to launch Playwright browser. Ensure it's installed ('playwright install'). Error: {fallback_e}"
 
             # We need a page to take a screenshot, even if it's blank
             page = await browser.new_page()
@@ -142,10 +143,10 @@ async def visual_perception(ctx) -> Dict[str, Any]:
 
         except PlaywrightError as e:
             ctx.logger.exception("[VISUAL PERCEPTION] Playwright error during screenshot capture:")
-            return {"error": f"Playwright error during screenshot: {e}. Ensure browsers are installed ('playwright install')."}
+            return f"Playwright error during screenshot: {e}. Ensure browsers are installed ('playwright install')."
         except Exception as e:
             ctx.logger.exception("[VISUAL PERCEPTION] Failed to capture screenshot using Playwright:")
-            return {"error": f"Failed to capture screenshot with Playwright: {e}"}
+            return f"Failed to capture screenshot with Playwright: {e}"
         finally:
             if browser:
                 await browser.close()

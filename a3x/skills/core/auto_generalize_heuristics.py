@@ -8,7 +8,7 @@ import datetime
 
 # Ensure skill decorator and utils are imported correctly
 try:
-    from a3x.core.skill_interface import skill
+    from a3x.core.skills import skill
     from a3x.core.context import Context
     # If called from within agent, we might need execute_tool
     # from a3x.core.skill_utils import execute_tool 
@@ -37,11 +37,18 @@ def _get_timestamp(iso_timestamp_str: Optional[str]) -> Optional[datetime.dateti
     if not iso_timestamp_str:
         return None
     try:
-        # Handle potential timezone info (Z or +HH:MM)
-        if iso_timestamp_str.endswith('Z'):
-            iso_timestamp_str = iso_timestamp_str[:-1] + '+00:00'
-        # Use aware datetime objects for comparison if possible, but convert to naive UTC for simplicity here
-        dt_aware = datetime.datetime.fromisoformat(iso_timestamp_str)
+        # --- START: Modification for Robust Timestamp Parsing ---
+        cleaned_timestamp_str = iso_timestamp_str
+        # First, remove trailing 'Z' if it exists, regardless of offset
+        if cleaned_timestamp_str.endswith('Z'):
+            cleaned_timestamp_str = cleaned_timestamp_str[:-1]
+        
+        # Now, attempt parsing
+        # Let fromisoformat handle standard offsets (+HH:MM or Z if we didn't strip it)
+        # If it fails, log the warning.
+        # --- END: Modification --- 
+
+        dt_aware = datetime.datetime.fromisoformat(cleaned_timestamp_str)
         # If timezone info present, convert to UTC and make naive
         if dt_aware.tzinfo:
             dt_utc = dt_aware.astimezone(datetime.timezone.utc)
@@ -105,10 +112,10 @@ async def _count_new_heuristics(heuristic_file_path: Path, since_time: Optional[
 @skill(
     name="auto_generalize_heuristics",
     description="Verifica se novas heurísticas foram aprendidas e aciona a generalização se um limite for atingido.",
-    parameters=[
-        {"name": "threshold", "type": "int", "description": "Número de novas heurísticas necessárias para acionar a generalização.", "optional": True},
-        {"name": "ctx", "type": "Context", "description": "Objeto de contexto da execução.", "optional": True}
-    ]
+    parameters={
+        "threshold": (Optional[int], None) # Removed 'ctx' from here
+        # "ctx": (Optional[Context], None) # Context passed by executor
+    }
 )
 async def auto_generalize_heuristics(threshold: Optional[int] = None, ctx: Optional[Context] = None) -> Dict[str, Any]:
     """Checks if enough new heuristics exist and triggers the generalize_heuristics skill."""
@@ -124,6 +131,16 @@ async def auto_generalize_heuristics(threshold: Optional[int] = None, ctx: Optio
         workspace_root = Path(getattr(ctx, 'workspace_root', '.'))
         rules_file = workspace_root / GENERALIZED_RULES_FILE
         heuristic_file = workspace_root / HEURISTIC_LOG_FILE
+        
+        # <<< CORREÇÃO: Garantir que o diretório exista ANTES de tentar ler/escrever >>>
+        learning_dir = heuristic_file.parent
+        try:
+            learning_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"{log_prefix} Diretório de log garantido: {learning_dir}")
+        except OSError as e:
+            logger.error(f"{log_prefix} Falha ao criar diretório de log {learning_dir}: {e}")
+            return {"status": "error", "data": {"message": f"Falha ao criar diretório de log: {e}"}}
+        # <<< FIM CORREÇÃO >>>
 
         # 1. Get last generalization time
         last_gen_time = await _get_last_generalization_time(rules_file)
@@ -250,12 +267,20 @@ if __name__ == '__main__':
         # Add enough new heuristics to trigger generalization
         heuristic_file = Path(HEURISTIC_LOG_FILE)
         if heuristic_file.exists(): os.remove(heuristic_file) # Start fresh
-        with open(heuristic_file, 'a', encoding='utf-8') as f:
-            base_time = datetime.datetime.utcnow()
-            for i in range(DEFAULT_GENERALIZATION_THRESHOLD + 2):
-                 # Ensure timestamps are distinct and clearly after the 'old' rule if used
-                 ts = (base_time + datetime.timedelta(seconds=i+1)).isoformat() + 'Z' # Add Z for UTC
-                 f.write(json.dumps({"timestamp": ts, "type": "failure", "heuristic": f"New heuristic {i+1}", "context_snapshot":{}}) + '\n')
+        from a3x.core.learning_logs import log_heuristic_with_traceability
+        base_time = datetime.datetime.utcnow()
+        for i in range(DEFAULT_GENERALIZATION_THRESHOLD + 2):
+            ts = (base_time + datetime.timedelta(seconds=i+1)).isoformat() + 'Z'
+            heuristic = {
+                "timestamp": ts,
+                "type": "failure",
+                "heuristic": f"New heuristic {i+1}",
+                "context_snapshot": {}
+            }
+            # Gera plan_id/execution_id fictícios para teste
+            plan_id = f"test-plan-{i+1}"
+            execution_id = f"test-exec-{i+1}"
+            log_heuristic_with_traceability(heuristic, plan_id, execution_id, validation_status="pending")
 
         dummy_ctx = DummyContext()
         result = await auto_generalize_heuristics(ctx=dummy_ctx)

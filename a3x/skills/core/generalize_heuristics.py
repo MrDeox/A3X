@@ -235,11 +235,10 @@ async def _log_generalized_heuristic(rule_text: str, source_cluster_texts: List[
 @skill(
     name="generalize_heuristics",
     description="Analisa heurísticas consolidadas, agrupa semanticamente via DBSCAN e gera regras gerais.",
-    parameters=[
-        {"name": "dbscan_eps", "type": "float", "description": "Parâmetro eps do DBSCAN (distância máxima cosseno).", "optional": True},
-        {"name": "min_cluster_size", "type": "int", "description": "Número mínimo de heurísticas para formar um cluster generalizável.", "optional": True},
-        {"name": "ctx", "type": "Context", "description": "Objeto de contexto da execução.", "optional": True}
-    ]
+    parameters={
+        "dbscan_eps": (Optional[float], DBSCAN_EPS),
+        "min_cluster_size": (Optional[int], DBSCAN_MIN_SAMPLES)
+    }
 )
 # <<< UPDATED: Function signature and logic >>>
 async def generalize_heuristics(dbscan_eps: Optional[float] = None, min_cluster_size: Optional[int] = None, ctx: Optional[Context] = None) -> Dict[str, Any]:

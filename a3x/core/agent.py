@@ -6,7 +6,13 @@ from typing import Dict, Any, List, AsyncGenerator, Optional
 from pathlib import Path
 
 # Package imports
-from a3x.core.config import MAX_REACT_ITERATIONS, MAX_HISTORY_TURNS, PROJECT_ROOT, MAX_TOKENS_FALLBACK, LLAMA_SERVER_MODEL_PATH
+from a3x.core.config import (
+    MAX_REACT_ITERATIONS,
+    MAX_HISTORY_TURNS,
+    PROJECT_ROOT,
+    MAX_TOKENS_FALLBACK,
+    LLAMA_SERVER_MODEL_PATH,
+)
 from a3x.core.skills import get_skill_descriptions, get_skill_registry
 from a3x.core.db_utils import save_agent_state, load_agent_state
 from a3x.core.prompt_builder import build_react_prompt
@@ -33,22 +39,16 @@ RETRY_DELAY = 2  # seconds
 MAX_CONSECUTIVE_ERRORS = 3
 MAX_STEPS = 100  # Maximum steps per run to prevent infinite loops
 
-# Default configuration (adjust as needed)
-MAX_REACT_ITERATIONS = 10
-MAX_HISTORY_TURNS = 5
-PROJECT_ROOT = Path(__file__).parent.parent.resolve() # Get project root
-LLAMA_SERVER_MODEL_PATH = "models/google_gemma-3-4b-it-Q4_K_S.gguf"
-MAX_TOKENS_FALLBACK = 4096
+DEFAULT_REACT_SYSTEM_PROMPT = """
+You are a helpful AI agent designed to achieve user objectives through reasoning and action.
 
-DEFAULT_REACT_SYSTEM_PROMPT = """You are a helpful AI agent designed to achieve user objectives through reasoning and action.
+**IMPORTANT: You MUST ALWAYS respond using the strict ReAct format below, for EVERY step, even for simple file or directory operations.**
 
-**Always respond in English.**
+Strictly follow this format in ALL your responses:
 
-Strictly follow the ReAct format in your responses:
-
-1.  **Thought:** Briefly explain your reasoning and plan for the next action.
-2.  **Action:** Specify the exact skill name to use from the provided list.
-3.  **Action Input:** Provide the parameters for the skill in valid JSON format.
+Thought: [Briefly explain your reasoning and plan for the next action.]
+Action: [Skill name from the provided list, e.g., write_file]
+Action Input: [Parameters for the skill in valid JSON format, e.g., {"file_path": "...", "content": "..."}]
 
 Example:
 Thought: I need to write the generated code to a file.
@@ -56,11 +56,14 @@ Action: write_file
 Action Input: {"file_path": "output/my_script.py", "content": "print('Hello World!')"}
 
 If you have completed the objective, respond ONLY with:
-
 Final Answer: [Your final summary or result]
+
+**Do NOT use any other format. Do NOT output explanations, markdown, or code blocks outside the required fields.**
 
 Available Skills:
 {tool_descriptions}
+
+You may also propose and use hypothetical skills that are not in the list above if you believe they would help achieve the objective. If you do so, clearly specify the skill name and its intended function. The system will treat such attempts as opportunities to learn and expand its capabilities.
 
 Previous conversation history:
 {history}
@@ -143,7 +146,14 @@ class ReactAgent:
         )
 
         # ADD workspace_root to the agent instance
-        self.workspace_root = Path(PROJECT_ROOT).resolve()
+        project_root_path = Path(PROJECT_ROOT).resolve()
+        # <<< ADDED WORKAROUND: Check if path ends with 'a3x' and go up one level >>>
+        if str(project_root_path).endswith('/a3x'):
+             agent_logger.warning(f"Workspace root from config ended with /a3x ({project_root_path}). Adjusting to parent directory.")
+             self.workspace_root = project_root_path.parent
+        else:
+             self.workspace_root = project_root_path
+        # self.workspace_root = Path(PROJECT_ROOT).resolve() # <<< OLD
         agent_logger.info(f"Agent initialized with workspace root: {self.workspace_root}")
 
     # <<< Method to Call LLM and Parse Response >>>
@@ -211,6 +221,24 @@ class ReactAgent:
         agent_logger.info(
             f"{log_prefix} Executing Action: {action_name} with input: {action_input}"
         )
+
+        # Fallback elegante para skills inexistentes
+        if action_name not in self.tools:
+            try:
+                from a3x.skills.core.learning_cycle import register_missing_skill_heuristic
+                register_missing_skill_heuristic(
+                    skill_name=action_name,
+                    context={"action_input": action_input, "log_prefix": log_prefix}
+                )
+            except Exception as reg_err:
+                agent_logger.warning(f"{log_prefix} Falha ao registrar heurística de skill ausente: {reg_err}")
+            return {
+                "status": "missing_skill",
+                "action": f"{action_name}_not_found",
+                "data": {
+                    "message": f"Skill '{action_name}' não foi encontrada. Deseja criar ou aprender essa ferramenta?"
+                }
+            }
         try:
             # --- Parameter Normalization --- #
             normalized_action_input = normalize_action_input(action_name, action_input)
@@ -233,9 +261,14 @@ class ReactAgent:
             # --- CREATE CONTEXT for execute_tool ---
             exec_context = _ToolExecutionContext(
                 logger=agent_logger, # Use the agent's logger
-                workspace_root=self.workspace_root # Use agent's workspace root
+                workspace_root=self.workspace_root, # Use agent's workspace root
+                llm_url=self.llm_url, # Pass the agent's llm_url
+                tools_dict=self.tools # Pass the agent's tools_dict
             )
             # --- END CONTEXT CREATION ---
+
+            # <<< ADDED LOGGING >>>
+            agent_logger.debug(f"{log_prefix} Context passed to execute_tool: workspace_root='{exec_context.workspace_root}'")
 
             # Execute the tool
             tool_result = await execute_tool(

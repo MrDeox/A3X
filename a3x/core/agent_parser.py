@@ -63,11 +63,47 @@ def parse_llm_response(
                 action_input = {"answer": thought if thought else "(Final answer content not found)"}
             agent_logger.debug(f"[Agent Parse DEBUG] Extracted Final Answer as Action: {action}, Input: {action_input}")
         else:
-            # Action (or Final Answer) is mandatory for the ReAct loop
-            agent_logger.error(
-                f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response.\nResponse:\n{response}"
+            # Fallback: tentar extrair intenção de ação mesmo sem o formato estrito
+            agent_logger.warning(
+                "[Agent Parse WARN] 'Action:' ou 'Final Answer:' não encontrados. Tentando fallback de parsing adaptativo."
             )
-            return None, None, None # Critical parsing failure
+            # Heurística: procurar comandos de skill em texto livre
+            action_fallback = None
+            action_input_fallback = {}
+            # Exemplo: "use the write_file tool to create..." ou "utilize a ferramenta write_file para criar..."
+            skill_match = re.search(r"(?:use|utilize|utilize a ferramenta|utilize a skill|execute|chame|call) (?:the )?(\w+)[\s_-]?(?:tool|skill|ferramenta)?", response, re.IGNORECASE)
+            if skill_match:
+                action_fallback = skill_match.group(1).strip()
+                agent_logger.warning(f"[Agent Parse FALLBACK] Skill inferida: {action_fallback}")
+                # Tentar extrair parâmetros básicos (ex: path, content) do texto
+                path_match = re.search(r"(?:file|arquivo|path|diretório|directory)[\s:]*['\"]?([^\s'\"\,\)]+)", response, re.IGNORECASE)
+                content_match = re.search(r"(?:content|conteúdo|texto|text)[\s:]*['\"]?([^\n'\"\,\)]+)", response, re.IGNORECASE)
+                if path_match:
+                    action_input_fallback["file_path"] = path_match.group(1)
+                if content_match:
+                    action_input_fallback["content"] = content_match.group(1)
+                # Registrar heurística de parsing adaptativo
+                try:
+                    from a3x.core.learning_logs import log_heuristic_with_traceability
+                    import datetime
+                    plan_id = f"plan-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+                    execution_id = f"exec-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+                    heuristic = {
+                        "type": "parsing_fallback",
+                        "raw_response": response[:500],
+                        "action_inferred": action_fallback,
+                        "action_input_inferred": action_input_fallback,
+                    }
+                    log_heuristic_with_traceability(heuristic, plan_id, execution_id, validation_status="pending_manual")
+                    agent_logger.info("[Agent Parse FALLBACK] Heurística de parsing adaptativo registrada.")
+                except Exception as log_err:
+                    agent_logger.warning(f"[Agent Parse FALLBACK] Falha ao registrar heurística de parsing: {log_err}")
+                return thought, action_fallback, action_input_fallback
+            else:
+                agent_logger.error(
+                    f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response, e fallback também falhou.\nResponse:\n{response}"
+                )
+                return None, None, None # Critical parsing failure
 
         # Process Action Input only if the action is NOT final_answer (handled above)
         if action != "final_answer":
@@ -78,27 +114,32 @@ def parse_llm_response(
                 )
                 if action_input_str:
                     try:
+                        # Replace curly quotes
+                        cleaned_input_str = action_input_str.replace("\u201c", '"').replace("\u201d", '"') # " " -> "
+                        if cleaned_input_str != action_input_str:
+                            agent_logger.debug("[Agent Parse DEBUG] Replaced curly quotes in Action Input string.")
+
                         # Clean potential markdown
-                        if action_input_str.startswith("```json"):
-                            action_input_str = (
-                                action_input_str.removeprefix("```json")
+                        if cleaned_input_str.startswith("```json"):
+                            cleaned_input_str = (
+                                cleaned_input_str.removeprefix("```json")
                                 .removesuffix("```")
                                 .strip()
                             )
-                        elif action_input_str.startswith("```"):
-                            action_input_str = (
-                                action_input_str.removeprefix("```")
+                        elif cleaned_input_str.startswith("```"):
+                            cleaned_input_str = (
+                                cleaned_input_str.removeprefix("```")
                                 .removesuffix("```")
                                 .strip()
                             )
 
                         decoder = json.JSONDecoder()
-                        action_input, end_pos = decoder.raw_decode(action_input_str)
+                        action_input, end_pos = decoder.raw_decode(cleaned_input_str)
                         agent_logger.debug(
                             f"[Agent Parse DEBUG] raw_decode parsed JSON up to position {end_pos}. Parsed object: {action_input}"
                         )
-                        if end_pos < len(action_input_str.strip()):
-                            trailing_data = action_input_str[end_pos:].strip()
+                        if end_pos < len(cleaned_input_str.strip()):
+                            trailing_data = cleaned_input_str[end_pos:].strip()
                             agent_logger.warning(
                                 f"[Agent Parse WARN] Trailing data found after JSON in Action Input: '{trailing_data[:100]}...'"
                             )

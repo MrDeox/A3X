@@ -1,0 +1,10 @@
+{
+  "objective": "Execute um código Python que imprime 'Teste de falha de ambiente'.",
+  "context": "Simule um ambiente onde o interpretador python3 não está disponível.",
+  "expected_behavior": [
+    "O Arthur deve detectar a ausência do python3 ao tentar executar o código.",
+    "O agente deve registrar a falha e sugerir (ou planejar) a instalação do python3.",
+    "Após a correção, o Arthur deve retomar e executar o código solicitado.",
+    "A heurística de adaptação deve ser registrada."
+  ]
+}

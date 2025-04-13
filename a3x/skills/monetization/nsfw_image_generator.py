@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 from a3x.core.skills import skill
 from a3x.core.config import SD_API_URL_BASE, PROJECT_ROOT
+from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +49,14 @@ def format_lora_string(lora_filename: str, weight: float = 0.7) -> str:
 
 @skill(
     name="nsfw_image_generator",
-    description="Gera imagens NSFW usando Stable Diffusion Web UI com base em uma persona JSON.",
+    description="Gera imagens NSFW usando a API Stable Diffusion com base em um perfil de persona JSON e um LoRA opcional.",
     parameters={
-        "persona_path": (str, ...), # Caminho para o arquivo JSON da persona
-        "num_images": (int, 1),      # Número de imagens a gerar
-        "lora_weight": (float, 0.7), # Peso a ser aplicado à LoRA selecionada
-        "override_prompt": (Optional[str], None), # Permite usar um prompt diferente da persona
-        "override_negative_prompt": (Optional[str], None), # Permite usar um negativo diferente
-        "override_lora_filename": (Optional[str], None) # Força o uso de uma LoRA específica
+        "persona_path": (str, ...),
+        "num_images": (int, 1),
+        "lora_weight": (float, 0.7),
+        "override_prompt": (Optional[str], None),
+        "override_negative_prompt": (Optional[str], None),
+        "override_lora_filename": (Optional[str], None)
     }
 )
 async def generate_nsfw_image(ctx, persona_path: str, num_images: int = 1, lora_weight: float = 0.7, override_prompt: Optional[str] = None, override_negative_prompt: Optional[str] = None, override_lora_filename: Optional[str] = None) -> Dict[str, Any]:

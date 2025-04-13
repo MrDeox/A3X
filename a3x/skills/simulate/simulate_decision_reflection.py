@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Dict, Any, List, Optional, AsyncGenerator
 import datetime
+from a3x.core.context import Context
 
 try:
     import faiss
@@ -325,24 +326,32 @@ def _get_examples_from_index(indices: List[int], distances: List[float]) -> List
 
 @skill(
     name="simulate_decision_reflection",
-    description="Simula como Arthur refletiria sobre um problema ou questão e tomaria uma decisão, usando Chain-of-Thought e buscando exemplos no histórico unificado.",
+    description="Simula a reflexão sobre uma decisão tomada, avaliando prós, contras e alternativas.",
     parameters={
-        "user_input": (str, ...), # Input é a questão/problema
-        "ctx": (Context, None)
+        "decision_context": (str, ...),
+        "chosen_action": (str, ...),
+        "alternative_actions": (List[str], ...)
     }
 )
-async def simulate_decision_reflection(ctx, user_input: str):
+async def simulate_decision_reflection(
+    decision_context: str,
+    chosen_action: str,
+    alternative_actions: List[str],
+    ctx: Optional[Context] = None
+) -> Dict[str, Any]:
     """
-    Simulates Arthur's decision-making reflection process based on semantic search.
+    Simulates reflecting on a decision using an LLM.
     Args:
+        decision_context: The context of the decision.
+        chosen_action: The action that was chosen.
+        alternative_actions: A list of alternative actions.
         ctx: The skill execution context (provides logger, llm_call).
-        user_input: The question or problem to reflect upon.
 
     Returns:
         A dictionary containing either 'simulated_reflection' or 'error'.
     """
     logger = ctx.logger
-    logger.info(f"Executing simulate_decision_reflection for input: '{user_input[:100]}...'")
+    logger.info(f"Executing simulate_decision_reflection for input: '{decision_context[:100]}...'")
 
     # 1. Load resources (uses cache)
     # <<< MODIFICADO: Chamar a versão async >>>
@@ -359,10 +368,10 @@ async def simulate_decision_reflection(ctx, user_input: str):
 
     # 2. Generate embedding for user_input
     try:
-        logger.debug(f"Generating embedding for: '{user_input}'")
+        logger.debug(f"Generating embedding for: '{decision_context}'")
         # <<< MODIFICADO: Usar a versão async do encode >>>
         input_embedding = await asyncio.to_thread(
-            _embedding_model.encode, [user_input], convert_to_numpy=True
+            _embedding_model.encode, [decision_context], convert_to_numpy=True
         )
         input_embedding = input_embedding.astype(np.float32)
         if input_embedding.ndim == 1: input_embedding = np.expand_dims(input_embedding, axis=0)
@@ -413,7 +422,7 @@ async def simulate_decision_reflection(ctx, user_input: str):
         examples_str = "\n\n---\n\n".join(examples_for_prompt)
 
     # 5. Construct the prompt using the f-string defined at the top
-    final_prompt = prompt.format(user_input=user_input, examples_str=examples_str) # Format the prompt string here
+    final_prompt = prompt.format(decision_context=decision_context, examples_str=examples_str) # Format the prompt string here
 
     ctx.logger.debug("Prompt construído. Chamando LLM para simulação...")
     # ctx.logger.debug(f"Prompt para LLM (simulação):\\n{final_prompt[:500]}...") # Log inicial do prompt
@@ -451,7 +460,7 @@ async def simulate_decision_reflection(ctx, user_input: str):
         # Log the result
         log_entry = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "input": user_input,
+            "input": decision_context,
             "simulation": simulated_reflection_content.strip(),
             "model": LLAMA_MODEL_PATH, # Log which model was used
             "retrieved_indices": retrieved_faiss_indices.tolist() if retrieved_faiss_indices is not None else [],

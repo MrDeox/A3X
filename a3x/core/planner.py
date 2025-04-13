@@ -46,6 +46,8 @@ Available Tools:
 - write_file(filename: str, content: str) -> str: Writes the content to the specified file.
 - final_answer(answer: str) -> str: Provides the final answer to the user.
 
+You may also propose hypothetical tools that are not in the list above if you believe they would help achieve the objective. Clearly specify the tool name and its intended function. The system will treat such attempts as opportunities to learn and expand its capabilities.
+
 Output:
 ```json
 [
@@ -70,6 +72,7 @@ async def generate_plan(
     tool_descriptions: str,
     agent_logger: logging.Logger,
     llm_url: Optional[str] = None,  # Allow passing LLM URL if needed
+    heuristics_context: Optional[str] = None # <<< ADDED: Novo parâmetro para heurísticas
 ) -> Optional[List[str]]:
     """
     Generates a plan (list of steps) to achieve the objective using the LLM.
@@ -79,6 +82,7 @@ async def generate_plan(
         tool_descriptions: A string describing the available tools.
         agent_logger: The logger instance for logging messages.
         llm_url: Optional URL for the LLM service.
+        heuristics_context: Optional string containing relevant learned heuristics.
 
     Returns:
         A list of strings representing the plan steps, or None if planning fails.
@@ -89,7 +93,10 @@ async def generate_plan(
 
     # 1. Build the planning prompt
     planning_prompt_messages = build_planning_prompt(
-        objective, tool_descriptions, PLANNER_SYSTEM_PROMPT
+        objective=objective,
+        tool_descriptions=tool_descriptions,
+        planner_system_prompt=PLANNER_SYSTEM_PROMPT,
+        heuristics_context=heuristics_context # Passar o novo contexto
     )
 
     # 2. Call the LLM

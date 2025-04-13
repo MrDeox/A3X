@@ -259,13 +259,13 @@ def _parse_arguments():
 
 
 def _initialize_agent(
-    system_prompt: str, llm_url_override: Optional[str] = None, tools_dict: Optional[Dict[str, Any]] = None
+    system_prompt: str, llm_url_override: Optional[str] = None, loaded_tools: Optional[Dict[str, Any]] = None
 ) -> Optional[CerebrumXAgent]:
-    """Inicializa e retorna uma instância do CerebrumXAgent. Aceita override de URL."""
+    """Inicializa e retorna uma instância do CerebrumXAgent. Aceita override de URL e tools pré-carregadas."""
     logger.info("Initializing CerebrumXAgent...")
     try:
-        # Pass the potentially overridden URL to the agent constructor
-        agent = CerebrumXAgent(system_prompt=system_prompt, llm_url=llm_url_override, tools_dict=tools_dict)
+        # Pass the potentially overridden URL and the pre-loaded tools to the agent constructor
+        agent = CerebrumXAgent(system_prompt=system_prompt, llm_url=llm_url_override, tools_dict=loaded_tools)
         logger.info("CerebrumXAgent ready.")
         return agent
     except Exception as agent_init_err:
@@ -1195,6 +1195,9 @@ def run_cli():
         llm_url = args.model or DEFAULT_SERVER_URL # Usa --model se fornecido, senão config
 
         servers_started_by_cli = False
+        loaded_tools = {} # <<< Initialize loaded_tools >>>
+        agent = None # <<< Initialize agent >>>
+
         try:
             # Iniciar servidor LLaMA se necessário
             if not args.no_server:
@@ -1221,23 +1224,31 @@ def run_cli():
 
             logger.info("Servers ready (or not managed). Proceeding with CLI operation.")
 
+            # <<< MOVED SKILL LOADING BEFORE AGENT INIT >>>
             # Carregar skills DEPOIS que os servidores (se gerenciados) estão prontos
             logger.info("Loading skills...")
-            load_skills() # Use the core function
-            tools_dict = SKILL_REGISTRY # <<< Corrected: Pass the actual registry
-            if not tools_dict:
-                 logger.warning("No skills were loaded. The agent will have no tools.")
-                 # raise CriticalSkillRegistrationError("CRITICAL: No skills registered after loading.")
-            else:
-                logger.info(f"Loaded {len(tools_dict)} skills.")
+            try:
+                load_skills() # Use the core function
+                loaded_tools = SKILL_REGISTRY # <<< Assign loaded registry to variable >>>
+                if not loaded_tools:
+                    logger.warning("No skills were loaded. The agent will have no tools.")
+                    # Optionally raise error if core skills are missing
+                else:
+                    logger.info(f"Loaded {len(loaded_tools)} skills.")
+            except Exception as skill_load_err:
+                logger.critical(f"Fatal error loading skills: {skill_load_err}", exc_info=True)
+                return # Cannot proceed
 
             # Inicializar Agente (passando tools)
             logger.info("Initializing Agent...")
-            agent = _initialize_agent(system_prompt=DEFAULT_REACT_SYSTEM_PROMPT, llm_url_override=llm_url, tools_dict=tools_dict) # Pass tools here
-            if not agent:
-                logger.critical("Failed to initialize agent. Exiting.")
-                return # Sai da função main_async
-            logger.info("Agent ready.")
+            try:
+                agent = _initialize_agent(system_prompt=DEFAULT_REACT_SYSTEM_PROMPT, llm_url_override=llm_url, loaded_tools=loaded_tools) # <<< Pass loaded_tools >>>
+                if not agent:
+                    raise RuntimeError("Agent initialization returned None.") # More specific error
+                logger.info("Agent ready.")
+            except Exception as agent_init_err:
+                logger.critical(f"Fatal error initializing agent: {agent_init_err}", exc_info=True)
+                return # Exit if agent init fails
 
             # Validar skills registradas vs arquivos encontrados
             logger.info("Validating skills registration...")
@@ -1247,10 +1258,11 @@ def run_cli():
                     "generate_code", "write_file", "read_file", "list_directory",
                     "append_to_file", "delete_path", "hierarchical_planner",
                     "simulate_step", "final_answer", "web_search",
+                    "consult_learned_heuristics", # <<< Add the skill we are testing >>>
                     # Add other essential skills here for validation
                 ])
                 # Validate available skills against expected
-                registered_skills = set(SKILL_REGISTRY.keys())
+                registered_skills = set(agent.tools.keys()) # <<< Validate agent's tools dict >>>
                 expected_skills_set = set(expected_skill_names) # <<< CONVERT TO SET >>>
 
                 missing_skills = expected_skills_set - registered_skills
@@ -1258,11 +1270,11 @@ def run_cli():
 
                 if missing_skills:
                     logger.warning(
-                        f"Missing expected skills in registry: {sorted(list(missing_skills))}"
+                        f"Missing expected skills in agent's registry: {sorted(list(missing_skills))}"
                     )
                 if extra_skills:
                     logger.warning(
-                        f"Extra skills in registry: {sorted(list(extra_skills))}"
+                        f"Extra skills found in agent's registry: {sorted(list(extra_skills))}"
                     )
             except Exception as skill_val_err:
                 logger.exception(f"Error during skill validation placeholder:")
@@ -1288,8 +1300,7 @@ def run_cli():
                     logger.error("--train specified, but training module failed to import.")
             # <<< ADDED: Handle direct skill execution >>>
             elif args.run_skill:
-                await _handle_run_skill_argument(args, llm_url)
-            # <<< END ADDED >>>
+                await _handle_run_skill_argument(args, llm_url) # Pass llm_url for consistency
             else:
                 # Comportamento padrão: modo interativo se nenhum outro modo for especificado
                 logger.info("No specific mode selected, entering interactive mode.")

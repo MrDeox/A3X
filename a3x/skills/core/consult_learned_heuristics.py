@@ -143,11 +143,22 @@ if __name__ == '__main__':
     # Create dummy log file for testing
     if not os.path.exists(LEARNING_LOG_DIR):
         os.makedirs(LEARNING_LOG_DIR)
-    with open(HEURISTIC_LOG_FILE, 'w', encoding='utf-8') as f:
-        f.write(json.dumps({"timestamp": "", "type": "failure", "heuristic": "Ao usar 'edit_file', sempre forneça contexto claro.", "context_snapshot": {"objective_summary": "editar arquivo de configuração"}}) + '\n')
-        f.write(json.dumps({"timestamp": "", "type": "success", "heuristic": "Para listar diretórios, 'list_dir' é direto.", "context_snapshot": {"objective_summary": "listar arquivos python"}}) + '\n')
-        f.write(json.dumps({"timestamp": "", "type": "success", "heuristic": "Usar 'run_terminal_cmd' com 'mkdir -p' cria diretórios aninhados.", "context_snapshot": {"objective_summary": "criar estrutura de pastas"}}) + '\n')
-        f.write(json.dumps({"timestamp": "", "type": "failure", "heuristic": "Não assuma que o arquivo existe antes de ler.", "context_snapshot": {"objective_summary": "ler conteúdo de arquivo"}}) + '\n')
+    from a3x.core.learning_logs import log_heuristic_with_traceability
+    import uuid
+    # Limpa o arquivo antes de inserir exemplos
+    if os.path.exists(HEURISTIC_LOG_FILE):
+        os.remove(HEURISTIC_LOG_FILE)
+    # Exemplo de heurísticas seed
+    seeds = [
+        {"timestamp": "", "type": "failure", "heuristic": "Ao usar 'edit_file', sempre forneça contexto claro.", "context_snapshot": {"objective_summary": "editar arquivo de configuração"}},
+        {"timestamp": "", "type": "success", "heuristic": "Para listar diretórios, 'list_dir' é direto.", "context_snapshot": {"objective_summary": "listar arquivos python"}},
+        {"timestamp": "", "type": "success", "heuristic": "Usar 'run_terminal_cmd' com 'mkdir -p' cria diretórios aninhados.", "context_snapshot": {"objective_summary": "criar estrutura de pastas"}},
+        {"timestamp": "", "type": "failure", "heuristic": "Não assuma que o arquivo existe antes de ler.", "context_snapshot": {"objective_summary": "ler conteúdo de arquivo"}},
+    ]
+    for i, h in enumerate(seeds):
+        plan_id = f"seed-plan-{i+1}"
+        execution_id = f"seed-exec-{i+1}"
+        log_heuristic_with_traceability(h, plan_id, execution_id, validation_status="seed")
 
     async def run_test():
         test_objective = "Preciso editar o arquivo principal do projeto."

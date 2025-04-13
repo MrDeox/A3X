@@ -6,7 +6,7 @@ import importlib
 import inspect
 import pkgutil  # <<< ADDED IMPORT >>>
 from typing import Dict, Any, Callable, Optional
-from pydantic import BaseModel, create_model  # Import Pydantic
+from pydantic import BaseModel, create_model, ConfigDict # <<< ADDED ConfigDict >>>
 
 # Initialize logger before potentially using it in print statements
 logger = logging.getLogger(__name__)
@@ -34,9 +34,11 @@ from a3x.core.skill_management import SKILL_REGISTRY
 # --- Novo Registro de Skills e Decorador ---
 
 class SkillInputSchema(BaseModel):
-    """Classe base para schemas de input de skill, pode ser estendida se necessário."""
+    """Classe base para schemas de input de skill, agora com config.
 
-    pass
+    Permite tipos arbitrários (como Context) para serem usados nos parâmetros das skills.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
@@ -82,7 +84,7 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
             )  # Remove 'self' before comparing with declared params
         # --- End Modification ---
 
-        # <<< START NEW: Define parameters to ignore during signature validation >>>
+        # Define parameters to ignore during signature validation
         ignored_params = {
             "self",
             "agent_memory",
@@ -90,8 +92,8 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
             "resolved_path",
             "original_path_str",
             "kwargs",
+            "ctx"
         }
-        # <<< END NEW >>>
 
         # Verificar se todos os parâmetros declarados estão na assinatura da função
         # <<< MODIFIED: Remove ignored params before check >>>
@@ -154,9 +156,13 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
         # Nome do schema dinâmico (para melhor debug/docs)
         schema_name = f"{name.capitalize()}SkillSchema"
         try:
-            # Usar Ellipsis diretamente para campos obrigatórios
+            # <<< CORRECTED: Removed __config__, inherit from base class >>>
             dynamic_schema = create_model(
-                schema_name, **pydantic_fields, __base__=SkillInputSchema
+                schema_name,
+                __base__=SkillInputSchema,
+                __module__=func.__module__, # Helps with docs/debugging
+                # __config__ is no longer needed here
+                **pydantic_fields
             )
         except Exception as e:
             logger.error(
@@ -218,21 +224,25 @@ def load_skills(skill_package_name: str = "a3x.skills"):
         else:
             logger.debug(f"Walking package path(s) to discover skill modules: {package_paths}")
             prefix = module.__name__ + '.'
-            for importer, modname, ispkg in pkgutil.walk_packages(package_paths, prefix):
-                if not ispkg:
-                    try:
-                        if modname in sys.modules:
-                            logger.debug(f"---> Reloading skill module: {modname}")
-                            # Explicitly reload the submodule to re-run decorators
-                            importlib.reload(sys.modules[modname])
-                        else:
-                            # This case is less likely during a reload, but handle it.
-                            logger.debug(f"---> Importing new skill module: {modname}")
-                            importlib.import_module(modname)
-                    except Exception as e_mod:
-                        logger.error(f"Failed to import/reload skill module '{modname}'. Error: {e_mod}", exc_info=True)
-                # else: # Optional: Handle subpackages if skills can be nested deeper
-                #    logger.debug(f"Skipping subpackage: {modname}")
+            # <<< MODIFIED: Add more robust error handling and logging during walk >>>
+            for importer, modname, ispkg in pkgutil.walk_packages(package_paths, prefix, onerror=lambda name: logger.warning(f"Error accessing module {name} during walk_packages")):
+                logger.info(f"---> Processing: {modname} (is_pkg={ispkg})") # Log processing start
+                try:
+                    if modname not in sys.modules:
+                        logger.debug(f"---> Attempting to import new module: {modname}")
+                        imported_module = importlib.import_module(modname)
+                        logger.info(f"---> Successfully imported skill module: {modname}")
+                    elif not ispkg: # Only reload modules, not packages themselves again
+                        logger.debug(f"---> Attempting to reload module: {modname}")
+                        reloaded_module = importlib.reload(sys.modules[modname])
+                        logger.info(f"---> Successfully reloaded skill module: {modname}")
+                    else:
+                        logger.debug(f"---> Skipping package: {modname}")
+                except Exception as e_mod:
+                    # Log specific error for the module that failed
+                    logger.error(f"Failed to import/reload skill module '{modname}'. Error: {e_mod}", exc_info=True)
+                    # Continue loading other modules
+            # <<< END MODIFICATION >>>
 
 
         count_after = len(SKILL_REGISTRY)

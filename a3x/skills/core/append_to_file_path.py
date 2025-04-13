@@ -11,6 +11,7 @@ from typing import Dict, Any
 from a3x.core.config import PROJECT_ROOT
 from a3x.core.skills import skill
 from a3x.core.validators import validate_workspace_path
+from a3x.core.context import Context
 
 # Assume SkillContext provides logger
 

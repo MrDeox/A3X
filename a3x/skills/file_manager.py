@@ -100,7 +100,6 @@ class FileManagerSkill:
         original_path_str: str,
         directory: str = ".",
         extension: str | None = None,
-        **kwargs,
     ) -> dict:
         """Lists directory contents. Path validation via decorator."""
         logger.debug(

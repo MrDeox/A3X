@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 def build_react_prompt(
@@ -62,27 +62,45 @@ def build_react_prompt(
 
 # <<< NEW FUNCTION >>>
 def build_planning_prompt(
-    objective: str, tool_descriptions: str, planner_system_prompt: str
+    objective: str, tool_descriptions: str, planner_system_prompt: str,
+    heuristics_context: Optional[str] = None
 ) -> List[Dict[str, str]]:
-    """Constrói a lista de mensagens para a fase de Planejamento do LLM.
-
-    Args:
-        objective: O objetivo final do usuário.
-        tool_descriptions: Descrições das ferramentas disponíveis.
-        planner_system_prompt: O prompt de sistema específico para o planejador.
-
-    Returns:
-        Lista de dicionários de mensagens para a chamada LLM de planejamento.
     """
+    Constrói a lista de mensagens para a fase de Planejamento do LLM,
+    incluindo instruções restritivas, exemplos e contexto real das skills.
+    """
+    # Instruções explícitas e exemplos
+    instructions = """
+Você é o planejador do agente Arthur (A³X). Seu objetivo é gerar um plano de passos claros, objetivos e minimalistas para atingir o objetivo do usuário, usando apenas as skills disponíveis abaixo.
+
+NÃO inclua passos que usem ferramentas não listadas abaixo.
+NÃO utilize web_search, hierarchical_planner, read_file, ou qualquer skill não disponível.
+Para tarefas de escrita em arquivo, use diretamente a skill write_file.
+Decomponha o objetivo apenas se necessário para garantir clareza e segurança.
+Evite passos genéricos, redundantes ou que não contribuem diretamente para o objetivo.
+
+Exemplo de plano bom para "Salve o texto 'Teste heurística' no arquivo 'nao_existe2/teste2.txt'":
+1. Use a skill write_file para salvar o texto no arquivo solicitado.
+2. Use a skill final_answer para confirmar a operação.
+
+Exemplo de plano ruim (NÃO FAÇA):
+1. Use web_search para buscar exemplos de texto.
+2. Use hierarchical_planner para decompor o objetivo.
+3. Use skills não listadas abaixo.
+"""
+
+    # Monta a mensagem do usuário
+    user_content = f'{instructions}\n\nObjetivo do usuário: "{objective}"'
+
+    if heuristics_context:
+        user_content += f'\n\nHeurísticas relevantes:\n{heuristics_context}'
+
+    user_content += f'\n\nSkills disponíveis:\n{tool_descriptions}\n\nGere o plano como uma lista JSON de strings, cada uma descrevendo um passo objetivo e direto.'
+
     messages = [
         {"role": "system", "content": planner_system_prompt},
-        {
-            "role": "user",
-            "content": f'User Objective: "{objective}"\n\nAvailable Tools:\n{tool_descriptions}\n\nGenerate the plan as a JSON list of strings.',
-        },
+        {"role": "user", "content": user_content}
     ]
-    # Logger não é passado aqui, mas pode ser adicionado se necessário debug
-    # print(f"[Planner Prompt DEBUG] {messages}")
     return messages
 
 

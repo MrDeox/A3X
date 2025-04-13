@@ -2,11 +2,35 @@
 import logging
 from typing import Dict, Any, List, Optional
 
+from pathlib import Path
+from a3x.core.config import LEARNING_LOG_DIR, HEURISTIC_LOG_FILE
+import json
+import datetime
 from a3x.core.skills import skill
 from a3x.core.tool_executor import execute_tool, _ToolExecutionContext
 from a3x.core.db_utils import add_episodic_record # Para log final
 
 logger = logging.getLogger(__name__)
+
+def register_missing_skill_heuristic(skill_name: str, context: dict = None):
+    """
+    Registra uma heurística de necessidade quando o agente tenta usar uma skill inexistente.
+    Salva no arquivo de heurísticas como uma linha JSONL.
+    """
+    from a3x.core.config import LEARNING_LOG_DIR, HEURISTIC_LOG_FILE
+    import os
+
+    heuristics_path = os.path.join(LEARNING_LOG_DIR, HEURISTIC_LOG_FILE)
+    os.makedirs(LEARNING_LOG_DIR, exist_ok=True)
+    entry = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='microseconds'),
+        "type": "missing_skill_attempt",
+        "skill_name": skill_name,
+        "context": context or {},
+        "message": f"O agente tentou usar a ferramenta '{skill_name}', que ainda não existe — considere implementá-la."
+    }
+    with open(heuristics_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 @skill(
     name="learning_cycle",
@@ -35,10 +59,8 @@ async def learning_cycle_skill(
     
     # Criar contexto para as sub-skills
     # Passando logger, workspace e llm_url herdados do agente principal
-    exec_context = _ToolExecutionContext(logger=logger, workspace_root=agent_workspace)
-    if agent_llm_url:
-        setattr(exec_context, 'llm_url', agent_llm_url)
-    
+    exec_context = _ToolExecutionContext(logger=logger, workspace_root=agent_workspace, llm_url=agent_llm_url, tools_dict=agent_tools)
+
     learned_info = [] # Para coletar informações aprendidas
     errors = [] # Para coletar erros durante o ciclo
 
@@ -61,7 +83,24 @@ async def learning_cycle_skill(
                  learned_heuristic = reflect_success_result.get("data", {}).get("learned_heuristic", "N/A")
                  logger.info(f"Heurística de sucesso aprendida: {learned_heuristic[:100]}...")
                  learned_info.append(f"Success Heuristic: {learned_heuristic}")
-                 # TODO: Logar heurística? (DB ou arquivo)
+                 # Registro da heurística de sucesso em arquivo
+                 try:
+                     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='microseconds')
+                     log_entry = {
+                         "timestamp": timestamp,
+                         "objective": objective,
+                         "plan": plan,
+                         "results": execution_results,
+                         "heuristic": learned_heuristic,
+                         "type": "success"
+                     }
+                     log_file = Path(LEARNING_LOG_DIR) / HEURISTIC_LOG_FILE
+                     log_file.parent.mkdir(parents=True, exist_ok=True)
+                     with open(log_file, 'a', encoding='utf-8') as f:
+                         f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+                     logger.info(f"Heurística de sucesso registrada em {log_file}: {learned_heuristic[:100]}...")
+                 except Exception as log_write_err:
+                     logger.exception(f"Falha ao escrever heurística de sucesso no log {HEURISTIC_LOG_FILE}: {log_write_err}")
             else:
                  error_msg = f"Skill reflect_on_success falhou: {reflect_success_result.get('data',{}).get('message')}"
                  logger.error(error_msg)

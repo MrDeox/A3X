@@ -8,6 +8,7 @@ from datetime import datetime
 from a3x.core.skills import skill
 from a3x.core.llm_interface import call_llm
 from a3x.core.config import PROJECT_ROOT
+from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)
 
@@ -70,21 +71,29 @@ def extract_json_from_markdown(text: str) -> Optional[Dict[str, Any]]:
     parameters={
         "niche": (str, ...),
         "platform": (str, ...),
-        "number_of_personas": (int, 1),
-        "ctx": (Context, None)
+        "number_of_personas": (int, 1)
     }
 )
-async def generate_persona(ctx) -> Dict[str, Any]:
+async def generate_persona(
+    niche: str,
+    platform: str,
+    number_of_personas: int = 1,
+    ctx: Optional[Context] = None
+) -> Dict[str, Any]:
     """
     Generates a fictional +18 persona profile using an LLM call and saves it to a JSON file.
 
     Args:
-        ctx: The skill execution context, providing access to llm_call.
+        niche: The specific niche for the persona.
+        platform: The target platform.
+        number_of_personas: How many personas to generate (currently logic generates 1).
+        ctx: The skill execution context, providing access to llm_call and logger.
 
     Returns:
         A dictionary indicating success or failure, including the path to the saved persona file.
     """
-    logger.info("Starting persona generation...")
+    logger = ctx.logger if ctx else logging.getLogger(__name__)
+    logger.info(f"Starting persona generation for niche '{niche}' on platform '{platform}'...")
 
     full_response_content = ""
     json_data = None
@@ -145,6 +154,87 @@ async def generate_persona(ctx) -> Dict[str, Any]:
     except Exception as e:
         logger.exception("An unexpected error occurred during persona generation:")
         return {"status": "error", "message": f"An unexpected error occurred: {e}"}
+
+@skill(
+    name="generate_persona_profile",
+    description="Gera um perfil de persona detalhado para um público-alvo específico, incluindo necessidades, dores e motivações.",
+    parameters={
+        "target_audience": (str, ...),
+        "product_description": (str, ...)
+    }
+)
+async def generate_persona_profile(target_audience: str, product_description: str, ctx: Optional[Context] = None) -> str:
+    """
+    Generates a detailed persona profile using an LLM based on target audience and product.
+
+    Args:
+        target_audience: The target audience for the persona.
+        product_description: The product description for the persona.
+        ctx: The skill execution context, providing access to llm_call.
+
+    Returns:
+        A string indicating success or failure.
+    """
+    logger.info("Starting persona profile generation...")
+
+    full_response_content = ""
+
+    try:
+        # Use the standard streaming call_llm function
+        # We will accumulate the text and parse JSON afterwards
+        logger.debug("Calling LLM with streaming enabled...")
+        llm_call_args = {
+            "messages": [{"role": "user", "content": f"Generate a detailed persona profile for a {target_audience} audience, considering their needs, pains, and motivations. The product description is: {product_description}."}],
+            "stream": True
+        }
+        # Check if ctx provides a specific llm_url, otherwise defaults will be used by call_llm
+        if hasattr(ctx, 'llm_url') and ctx.llm_url:
+            llm_call_args['llm_url'] = ctx.llm_url
+        
+        async for chunk in call_llm(**llm_call_args):
+             # Ensure chunk is a string before appending
+             if isinstance(chunk, str):
+                 full_response_content += chunk
+                 # logger.debug(f"LLM Stream Chunk: {chunk}") # Can be noisy
+             else:
+                 logger.warning(f"Received non-string chunk from call_llm: {type(chunk)}")
+
+        logger.info("LLM stream finished. Attempting to extract JSON from accumulated text.")
+        logger.debug(f"Full response content length: {len(full_response_content)}")
+        # logger.debug(f"Full response content sample: {full_response_content[:500]}...") # Optional: log sample
+        
+        # Attempt to extract JSON from the accumulated response
+        json_data = extract_json_from_markdown(full_response_content)
+
+        if json_data is None:
+             logger.error("Failed to extract valid JSON persona data from LLM response.")
+             logger.debug(f"Full LLM Response Content:\n{full_response_content}")
+             return "Failed to get valid JSON persona data from LLM."
+
+        # Validate required keys
+        required_keys = ["persona_name", "bio", "tags", "visual_prompt", "style_reference"]
+        if not all(key in json_data for key in required_keys):
+            logger.error(f"Missing required keys in generated persona JSON. Found: {json_data.keys()}")
+            return f"Missing required keys in generated persona. Required: {required_keys}"
+
+        persona_name_slug = re.sub(r'\W+', '-', json_data["persona_name"]).lower()
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        filename = f"{persona_name_slug}-{timestamp}.json"
+        filepath = os.path.join(PERSONAS_DIR, filename)
+
+        logger.info(f"Saving generated persona to: {filepath}")
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            logger.info(f"Persona '{json_data['persona_name']}' saved successfully.")
+            return f"Persona '{json_data['persona_name']}' saved successfully."
+        except IOError as e:
+            logger.error(f"Failed to save persona file to {filepath}: {e}")
+            return f"Failed to save persona file: {e}"
+
+    except Exception as e:
+        logger.exception("An unexpected error occurred during persona profile generation:")
+        return f"An unexpected error occurred: {e}"
 
 """
 # Example usage (for testing purposes, typically called by the agent)

@@ -10,10 +10,10 @@ import requests
 
 # --- Core component imports for specs/instantiation ---
 from a3x.core.agent import ReactAgent  # Corrected import: ReactAgent
-from a3x.core.config import (  # Assuming these exist in your config
-    PROJECT_ROOT as CONFIG_PROJECT_ROOT,  # Use consistently named root
-    LLAMA_MODEL_PATH as DEFAULT_MODEL_PATH,
-    CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE,
+from a3x.core.config import (
+    PROJECT_ROOT as CONFIG_PROJECT_ROOT,
+    LLAMA_SERVER_MODEL_PATH as DEFAULT_MODEL_PATH,
+    # CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE,  # Remover ou ajustar se não existir
 )
 
 # from core.llm_interface import llm_interface # Removed problematic import
@@ -57,7 +57,7 @@ DEFAULT_TEST_GPU_LAYERS = int(os.getenv("PYTEST_LLAMA_GPU_LAYERS", "-1"))
 # Default Model Path for tests (can be overridden by env var)
 DEFAULT_TEST_MODEL_PATH = os.getenv("PYTEST_LLAMA_MODEL_PATH", DEFAULT_MODEL_PATH)
 DEFAULT_TEST_CONTEXT_SIZE = int(
-    os.getenv("PYTEST_LLAMA_CONTEXT_SIZE", str(DEFAULT_CONTEXT_SIZE))
+    os.getenv("PYTEST_LLAMA_CONTEXT_SIZE", "4096")
 )
 
 # Define the actual model path

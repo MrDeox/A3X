@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Define a context structure similar to the CLI for consistency
 # We might not need all fields here, but workspace_root and logger are key.
-_ToolExecutionContext = namedtuple("ToolExecutionContext", ["logger", "workspace_root"])
+_ToolExecutionContext = namedtuple("ToolExecutionContext", ["logger", "workspace_root", "llm_url", "tools_dict"])
 
 
 # Modified Signature: Accept workspace_root and context elements instead of just logger/memory

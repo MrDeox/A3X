@@ -47,12 +47,10 @@ Gere APENAS a heurística extraída, sem nenhum texto adicional antes ou depois.
 
 @skill(
     name="learn_from_failure_log",
-    # <<< UPDATED Description and Parameters >>>
     description="Gera uma heurística concisa a partir de uma análise de falha detalhada.",
-    parameters=[
-        {"name": "failure_analysis", "type": "string", "description": "Texto detalhado analisando a causa raiz e a correção da falha."},
-        {"name": "ctx", "type": "Context", "description": "Objeto de contexto (para LLM URL).", "optional": True}
-    ]
+    parameters={
+        "failure_analysis": (str, ...)
+    }
 )
 async def learn_from_failure_log(failure_analysis: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
     """Gera uma heurística a partir de uma análise de falha usando LLM."""
@@ -75,7 +73,7 @@ async def learn_from_failure_log(failure_analysis: str, ctx: Optional[Context] =
     try:
         logger.debug(f"{log_prefix} Chamando LLM para extrair heurística...")
         # Expecting a short, direct response, not streaming
-        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False, max_tokens=100, temperature=0.2):
+        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False):
              heuristic_text += chunk
         
         heuristic_text = heuristic_text.strip().strip('"') # Corrected quotes

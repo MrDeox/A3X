@@ -298,6 +298,36 @@ def sample_experiences(batch_size: int) -> list[sqlite3.Row]:
     return experiences
 
 
+# Função para buscar experiências baseadas em prioridade (usada pelo trainer)
+def retrieve_recent_episodes(limit: int = 5) -> list[sqlite3.Row]:
+    """Recupera os 'limit' episódios mais recentes do buffer de experiência."""
+    conn = None
+    episodes = []
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Seleciona todos os campos, ordenando pelo timestamp decrescente e limitando
+        cursor.execute(
+            f"""
+            SELECT id, context, action, outcome, timestamp, metadata 
+            FROM experience_buffer 
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        episodes = cursor.fetchall() # Retorna lista de Rows
+        logger.info(f"Recuperados {len(episodes)} episódios recentes da memória.")
+
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao recuperar episódios recentes: {e}")
+        # Retorna lista vazia em caso de erro
+    finally:
+        if conn:
+            conn.close()
+    return episodes
+
+
 # --- Funções para Semantic Memory / VSS --- #
 
 # ADDED: New function for semantic context retrieval

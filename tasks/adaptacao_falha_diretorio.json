@@ -1,0 +1,10 @@
+{
+  "objective": "Salve o texto 'Teste de diretório inexistente' no arquivo 'nao_existe/teste.txt'.",
+  "context": "O diretório 'nao_existe/' não existe no workspace.",
+  "expected_behavior": [
+    "O Arthur deve detectar a falha ao tentar escrever no diretório inexistente.",
+    "O agente deve planejar e executar a criação do diretório ausente.",
+    "Após a correção, o Arthur deve retomar e salvar o arquivo solicitado.",
+    "A heurística de adaptação deve ser registrada."
+  ]
+}

@@ -1,0 +1,35 @@
+[
+  {
+    "skill_name": "generate_code",
+    "function_name": "generate_code",
+    "params": {
+      "purpose": "Imprimir Olá, mundo! em Python",
+      "language": "python",
+      "construct_type": "script"
+    }
+  },
+  {
+    "skill_name": "write_file",
+    "function_name": "write_file",
+    "params": {
+      "path": "ola.py",
+      "content": "print('Olá, mundo!')",
+      "overwrite": true
+    }
+  },
+  {
+    "skill_name": "execute_code",
+    "function_name": "execute_code",
+    "params": {
+      "code": "print('Olá, mundo!')",
+      "language": "python"
+    }
+  },
+  {
+    "skill_name": "final_answer",
+    "function_name": "final_answer",
+    "params": {
+      "answer": "Arquivo ola.py criado, código executado com sucesso."
+    }
+  }
+]

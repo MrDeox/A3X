@@ -1,6 +1,10 @@
 import logging
 from typing import Optional  # Added for type hinting compatibility if needed later
 import json  # Import json for potentially pretty-printing action input
+import time
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.panel import Panel
+from rich.console import Console
 
 # Assuming project_root setup is handled elsewhere or core modules are in PYTHONPATH
 try:
@@ -26,6 +30,8 @@ async def handle_agent_interaction(
     print(f"> {command}")
     print("-" * 18)  # Separator
 
+    # <<< ADDED: Instantiate Console here >>>
+    console = Console()
     final_response = ""
     agent_outcome = None
 
@@ -33,110 +39,37 @@ async def handle_agent_interaction(
     print("CerebrumX está iniciando o ciclo cognitivo...")  # Feedback inicial updated
     try:
         # --- Iterar sobre os passos do ciclo CerebrumX ---
-        async for step_output in agent.run_cerebrumx_cycle(
-            initial_perception=command
-        ):  # <<< CALL run_cerebrumx_cycle
-            step_type = step_output.get("type")
-            step_content = step_output.get("content")
+        # async for step_output in agent.run_cerebrumx_cycle(
+        #     initial_perception=command
+        # ):
+        # <<< USE agent.run() instead, which returns the final result dictionary >>>
+        final_result = await agent.run(objective=command)
 
-            # --- Handle CerebrumX Cycle Steps --- <<< NEW HANDLERS
-            if step_type == "perception":
-                print("--- 🧠 Perception ---")
-                print(
-                    f"Processed: {json.dumps(step_content, indent=2, ensure_ascii=False)}"
-                )
-                print("-" * 18)
-            elif step_type == "context_retrieval":
-                print("--- 💾 Context Retrieval ---")
-                print(
-                    f"Retrieved: {json.dumps(step_content, indent=2, ensure_ascii=False)}"
-                )
-                print("-" * 25)
-            elif step_type == "planning":
-                print("--- 🗺️ Planning ---")
-                plan_steps = step_content if isinstance(step_content, list) else []
-                if plan_steps:
-                    for i, step in enumerate(plan_steps):
-                        print(f"  {i + 1}. {step}")
-                else:
-                    print("  (No plan generated or plan is empty)")
-                print("-" * 18)
-            elif step_type == "simulation":
-                print("--- 🧪 Simulation ---")
-                sim_outcomes = step_content if isinstance(step_content, list) else []
-                if sim_outcomes:
-                    for i, outcome in enumerate(sim_outcomes):
-                        print(
-                            f"  Step {i + 1}: {json.dumps(outcome, indent=4, ensure_ascii=False)}"
-                        )
-                else:
-                    print("  (No simulation outcomes)")
-                print("-" * 20)
-            elif step_type == "execution_step":
-                step_index = step_output.get("step_index", "N/A")
-                step_result = step_output.get("result", {})
-                status = step_result.get("status", "unknown")
-                title = f"--- ▶️ Execution Step {step_index + 1} ---"
-                if status == "success":
-                    title = f"--- ✅ Execution Step {step_index + 1} (Success) ---"
-                elif status == "error":
-                    title = f"--- ❌ Execution Step {step_index + 1} (Error) ---"
+        # <<< Process the final result dictionary >>>
+        status = final_result.get("status", "unknown")
+        message = final_result.get("message", "No message provided.")
+        results = final_result.get("results", []) # This might contain detailed step outputs if added
 
-                print(title)
-                print(
-                    f"Result: {json.dumps(step_result, indent=2, ensure_ascii=False)}"
-                )
-                print("-" * len(title))
-            elif step_type == "reflection":
-                print("--- 🤔 Reflection ---")
-                print(f"{json.dumps(step_content, indent=2, ensure_ascii=False)}")
-                print("-" * 18)
-            elif step_type == "learning_update":
-                print("--- 🌱 Learning Update ---")
-                print(f"Status: {step_output.get('status', 'unknown')}")
-                print("-" * 23)
-            # --- End CerebrumX Handlers ---
+        console.print(f"[bold green]--- Ciclo Concluído (Status: {status}) ---[/]")
+        console.print(Panel(message, title="Mensagem Final", border_style="green"))
+        if results:
+            console.print(Panel(json.dumps(results, indent=2), title="Resultados Detalhados", border_style="blue"))
 
-            # --- REMOVED OLD ReAct Handlers ---
-            # elif step_output["type"] == "thought":
-            # ... removed ...
-            # elif step_output["type"] == "action":
-            # ... removed ...
-            # elif step_output["type"] == "observation":
-            # ... removed ...
-            # --- End REMOVED ---
+        # <<< Original loop logic removed as agent.run() is not a generator >>>
+        # if isinstance(step_output, dict):
+        #     step_type = step_output.get("type", "unknown")
+        #     data = step_output.get("data", "")
+        #     # ... (rest of the original step handling logic) ...
+        # else:
+        #     logger.warning(f"Received unexpected step output type: {type(step_output)}")
+        #     console.print(Panel(str(step_output), title="Output Inesperado", border_style="yellow"))
 
-            elif step_type == "final_answer":
-                final_response = step_content
-                # Replace Panel with simple print
-                print("--- 🏁 Final Answer ---")
-                print(final_response)
-                print("-" * 22)  # Separator
-                # Keep outcome structure consistent for potential external callers
-                agent_outcome = {
-                    "status": "success",
-                    "action": "cerebrumx_cycle_completed",
-                    "data": {"message": final_response},
-                }
-                break  # Fim do ciclo
-            else:
-                # Fallback para tipos desconhecidos
-                print(f"--- Unknown Step Type: {step_type} ---")
-                print(str(step_output))
-                print("-" * 18)  # Separator
-
-        # Se o loop terminar sem final_answer (ex: max iterations or other reason)
-        if not final_response:
-            final_response = "CerebrumX cycle finished without a final answer."
-            # Replace Panel with simple print
-            print("--- 🏁 Cycle Finished ---")
-            print(final_response)
-            print("-" * 24)  # Separator
-            agent_outcome = agent_outcome or {
-                "status": "finished",
-                "action": "cerebrumx_cycle_ended",
-                "data": {"message": final_response},
-            }
+        # Keep outcome structure consistent for potential external callers
+        agent_outcome = {
+            "status": "success",
+            "action": "cerebrumx_cycle_completed",
+            "data": {"message": message},
+        }
 
     except Exception as e:
         logger.exception(
@@ -182,3 +115,55 @@ async def stream_direct_llm(prompt: str, llm_url_override: Optional[str] = None)
         logger.exception("Error during direct LLM stream:")
         # No rich formatting
         print(f"\n[Error Streaming] {stream_err}")
+
+
+async def _handle_task_argument(agent: CerebrumXAgent, task_arg: str):
+    """Lida com a execução de uma tarefa única passada via --task."""
+    console.print(Panel(f"Executando Tarefa: [bold cyan]{task_arg}[/]", title="A³X Task Mode", expand=False))
+    start_time = time.time()
+
+    # Use a context manager for the progress bar
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True, # Remove progress bar on completion
+    ) as progress:
+        progress_task_id = progress.add_task("[cyan]Processando tarefa...", total=None) # Indeterminate
+
+        try:
+            # <<< CORRECTED: Call agent.run instead of agent.run_cerebrumx_cycle >>>
+            # Passar a tarefa para o método run do agente
+            # Como run não é mais um gerador, esperamos o resultado final
+            final_result = await agent.run(task_arg)
+
+            # Processar e exibir o resultado final
+            end_time = time.time()
+            duration = end_time - start_time
+            progress.stop_task(progress_task_id)
+            progress.update(progress_task_id, description="[green]Tarefa Concluída[/]")
+
+            status = final_result.get("status", "unknown")
+            message = final_result.get("message", "Nenhuma mensagem final.")
+            results_list = final_result.get("results", []) # Lista de resultados dos passos
+
+            if status == "completed":
+                console.print(Panel(f"[bold green]Sucesso![/] ({duration:.2f}s)\n{message}", title="Resultado Final", border_style="green"))
+            elif status == "failed":
+                console.print(Panel(f"[bold yellow]Falha.[/] ({duration:.2f}s)\n{message}", title="Resultado Final", border_style="yellow"))
+            elif status == "error":
+                console.print(Panel(f"[bold red]Erro Crítico![/] ({duration:.2f}s)\n{message}", title="Resultado Final", border_style="red"))
+            else:
+                 console.print(Panel(f"[bold blue]Status Desconhecido: {status}[/] ({duration:.2f}s)\n{message}", title="Resultado Final", border_style="blue"))
+
+            # Opcional: Exibir resultados detalhados dos passos
+            # if results_list:
+            #     console.print("\n--- Detalhes da Execução ---")
+            #     for i, step_res in enumerate(results_list):
+            #         console.print(f"Passo {i+1}: {step_res}")
+            #     console.print("---------------------------")
+
+        except Exception as e:
+            progress.stop_task(progress_task_id)
+            progress.update(progress_task_id, description="[red]Erro[/]")
+            logger.exception(f"Erro fatal ao executar tarefa '{task_arg}'")
+            console.print(Panel(f"[bold red]Erro Crítico Inesperado:[/] {e}", title="Erro Fatal", border_style="red"))

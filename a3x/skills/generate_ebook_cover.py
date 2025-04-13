@@ -11,6 +11,7 @@ from a3x.core.skills import skill
 from PIL import Image
 from a3x.core.config import SD_API_URL_BASE, PROJECT_ROOT
 import io
+from a3x.core.context import Context
 
 # Configure logger for the skill
 logger = logging.getLogger(__name__)
@@ -45,11 +46,10 @@ DEFAULT_PAYLOAD = {
     parameters={
         "title": (str, ...),
         "description": (str, ...),
-        "target_audience": (str, ...),
-        "ctx": (Context, None)
+        "target_audience": (str, ...)
     }
 )
-async def generate_ebook_cover(title: str, description: str, target_audience: str, ctx: Optional[Dict[str, Any]] = None) -> str:
+async def generate_ebook_cover(title: str, description: str, target_audience: str, ctx: Optional[Context] = None) -> str:
     """
     Generates an ebook cover image using the Stable Diffusion WebUI API based on the
     provided title, description, and target audience.
