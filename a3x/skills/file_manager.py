@@ -12,9 +12,13 @@ from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT
 from a3x.core.skills import skill
 from a3x.core.validators import validate_workspace_path
 from a3x.core.context import SharedTaskContext
+from a3x.core.context_accessor import ContextAccessor
 
 # Initialize logger
 logger = logging.getLogger(__name__)
+
+# Initialize a ContextAccessor instance for use in skills
+_context_accessor = ContextAccessor()
 
 # Define constants
 MAX_ITEMS = 1000  # Limit for number of items listed
@@ -208,70 +212,81 @@ class FileManagerSkill:
 
     @skill(
         name="read_file",
-        description="Reads the content of a specified file within the workspace.",
+        description="Reads the contents of a file at the specified path.",
         parameters={
-            "path": {"type": str, "description": "The relative path to the file."},
-            "start_line": {"type": int, "default": 0, "description": "Start reading from this line number (0-indexed, default: 0)."},
-            "end_line": {"type": Optional[int], "default": None, "description": "Stop reading at this line number (inclusive, default: None for end of file)."}
-        },
+            "path": {"type": "string", "description": "The path to the file to read."},
+            "shared_task_context": {"type": "SharedTaskContext", "description": "The shared context for accessing task-related data.", "optional": True}
+        }
     )
     @validate_workspace_path(arg_name="path", check_existence=True, target_type="file")
     async def read_file(
         self,
         path: str,
-        start_line: int = 0,
-        end_line: int | None = None,
+        shared_task_context: Optional[SharedTaskContext] = None,
         # Injected by decorator:
         resolved_path: Path = None,  # Re-added = None
         original_path_str: str = None,  # Re-added = None
         agent_memory: Optional[Dict] = None,  # Keep agent_memory optional if needed
-        shared_task_context: Optional[SharedTaskContext] = None 
     ) -> dict:
-        """Reads file content. Path validation via decorator."""
-        logger.debug(
-            f"Skill 'read_file' requested for: '{original_path_str}', Resolved: '{resolved_path}'"
-        )
-
-        file_ext = resolved_path.suffix.lower()
-        if file_ext not in TEXT_EXTENSIONS:
-            logger.warning(
-                f"Attempted read of unsupported extension: {file_ext} in '{original_path_str}'"
-            )
-            return {
-                "status": "error",
-                "action": "read_file_failed_unsupported_ext",
-                "data": {
-                    "message": f"Extension '{file_ext}' not supported for reading. Allowed: {', '.join(TEXT_EXTENSIONS)}"
-                },
-            }
-
+        """
+        Reads the contents of a file at the specified path.
+        
+        Args:
+            path (str): The path to the file to read.
+            shared_task_context (SharedTaskContext, optional): The shared context for the current task.
+        
+        Returns:
+            dict: The contents of the file if successful, or an error message if the file cannot be read.
+        """
+        log_prefix = "[read_file]"
+        logger.info(f"{log_prefix} Attempting to read file at path: {path}")
+        
+        # Update context accessor if shared_task_context is provided
+        if shared_task_context:
+            _context_accessor.set_context(shared_task_context)
+            logger.info(f"{log_prefix} Updated ContextAccessor with task ID: {shared_task_context._task_id}")
+        
         try:
-            file_size = resolved_path.stat().st_size
-            if file_size > MAX_READ_SIZE:
-                logger.warning(
-                    f"Attempted read of large file: {file_size} bytes in '{original_path_str}'"
-                )
+            # Check if file exists
+            if not os.path.exists(path):
+                error_msg = f"File not found: {path}"
+                logger.error(f"{log_prefix} {error_msg}")
                 return {
                     "status": "error",
-                    "action": "read_file_failed_too_large",
-                    "data": {
-                        "message": f"File too large ({file_size / (1024 * 1024):.2f} MB). Limit: {MAX_READ_SIZE // (1024 * 1024)} MB."
-                    },
+                    "action": "read_file_failed",
+                    "data": {"message": f"Error: {error_msg}"},
                 }
-        except OSError as e:
-            logger.error(
-                f"OSError checking size of '{original_path_str}': {e}", exc_info=True
-            )
-            return {
-                "status": "error",
-                "action": "read_file_failed_stat_error",
-                "data": {"message": f"Error checking file size: {e}"},
-            }
-
-        try:
-            with open(resolved_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
+            
+            # Check if it's actually a file
+            if not os.path.isfile(path):
+                error_msg = f"Path is not a file: {path}"
+                logger.error(f"{log_prefix} {error_msg}")
+                return {
+                    "status": "error",
+                    "action": "read_file_failed",
+                    "data": {"message": f"Error: {error_msg}"},
+                }
+            
+            # Check if file is readable
+            if not os.access(path, os.R_OK):
+                error_msg = f"File is not readable (permission denied): {path}"
+                logger.error(f"{log_prefix} {error_msg}")
+                return {
+                    "status": "error",
+                    "action": "read_file_failed",
+                    "data": {"message": f"Error: {error_msg}"},
+                }
+            
+            # Read the file contents
+            with open(path, 'r', encoding='utf-8') as file:
+                content = file.read()
+            
+            logger.info(f"{log_prefix} Successfully read file: {path} ({len(content)} characters)")
+            
+            # Update the shared context with the last read file path using ContextAccessor
+            _context_accessor.set_last_read_file(path)
+            logger.info(f"{log_prefix} Updated context with last read file: {path}")
+            
             max_len_preview = 500
             content_preview = content[:max_len_preview] + (
                 "..." if len(content) > max_len_preview else ""
@@ -293,11 +308,8 @@ class FileManagerSkill:
 
             if shared_task_context:
                 context_data_key = f"file_content:{original_path_str}"
-                context_metadata = {"file_size_bytes": file_size, "lines_read": line_count}
+                context_metadata = {"file_size_bytes": len(content), "lines_read": line_count}
                 tags = ["file_read", "data_loaded"]
-                if start_line > 0 or end_line is not None:
-                    tags.append("partial_read")
-                
                 shared_task_context.set(
                     key=context_data_key, 
                     value=file_content, 
@@ -313,33 +325,13 @@ class FileManagerSkill:
                 logger.debug(f"Updated shared context with key '{context_data_key}'")
 
             return result_payload
-        except PermissionError:
-            logger.error(
-                f"Permission error reading file: {original_path_str}", exc_info=True
-            )
-            return {
-                "status": "error",
-                "action": "read_file_failed",
-                "data": {
-                    "message": f"Permission denied to read file: '{original_path_str}'"
-                },
-            }
-        except IsADirectoryError:
-            return {
-                "status": "error",
-                "action": "read_file_failed",
-                "data": {
-                    "message": f"Path is a directory, not a file: '{original_path_str}'"
-                },
-            }
         except Exception as e:
-            logger.exception(f"Unexpected error reading file '{original_path_str}':")
+            error_msg = f"Failed to read file {path}: {str(e)}"
+            logger.error(f"{log_prefix} {error_msg}", exc_info=True)
             return {
                 "status": "error",
                 "action": "read_file_failed",
-                "data": {
-                    "message": f"Unexpected error reading file '{original_path_str}': {e}"
-                },
+                "data": {"message": f"Error: {error_msg}"},
             }
 
     @skill(

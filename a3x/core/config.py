@@ -70,6 +70,8 @@ LLAMA_SERVER_ARGS = os.getenv(
     f"-m {default_model_path} -c 4096 -ngl 24 --host 0.0.0.0 --port 8080 --log-disable" # Use f-string for absolute path, increased default context
 ).split()
 LLAMA_HEALTH_ENDPOINT = os.getenv("LLAMA_HEALTH_ENDPOINT", "http://127.0.0.1:8080/health")
+# <<< ADDED: Explicit server URL for API calls >>>
+LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080")
 LLAMA_SERVER_STARTUP_TIMEOUT = int(os.getenv("LLAMA_SERVER_STARTUP_TIMEOUT", 240))
 SD_API_CHECK_ENDPOINT = os.getenv("SD_API_CHECK_ENDPOINT", "http://127.0.0.1:7861/sdapi/v1/progress")
 SD_SERVER_STARTUP_TIMEOUT = int(os.getenv("SD_SERVER_STARTUP_TIMEOUT", 180))

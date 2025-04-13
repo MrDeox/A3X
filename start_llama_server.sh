@@ -2,7 +2,7 @@
 # Script to start llama-server with the optimal configuration based on benchmark results
 
 # Path to the model
-MODEL_PATH="/home/arthur/projects/A3X/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"
+MODEL_PATH="/home/arthur/projects/A3X/models/google_gemma-3-4b-it-Q4_K_S.gguf"
 
 # Optimal ngl value based on benchmark (CPU only for best performance)
 NGL_VALUE=0

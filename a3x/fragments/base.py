@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Dict, Any, List, Optional, AsyncGenerator, Tuple, Type
+from typing import Dict, Any, List, Optional, AsyncGenerator, Tuple, Type, Callable, Awaitable
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -11,6 +11,10 @@ from a3x.core.self_optimizer import FragmentState
 # Placeholder for shared components if needed
 # from a3x.core.llm_interface import LLMInterface
 # from a3x.core.skills import SkillRegistry
+
+from a3x.core.context import SharedTaskContext  # Added import for SharedTaskContext
+from a3x.core.tool_registry import ToolRegistry  # Added import for ToolRegistry
+from a3x.core.context_accessor import ContextAccessor  # Added import for ContextAccessor
 
 logger = logging.getLogger(__name__)
 
@@ -29,76 +33,115 @@ class BaseFragment(ABC):
     """
     Classe base abstrata para todos os Fragments especializados no A³X.
     Define a interface comum para execução, atualização de métricas e otimização.
+    A lógica dos Fragments é desacoplada para promover modularidade e evolução futura,
+    alinhando-se aos princípios de 'Fragmentação Cognitiva' e 'Hierarquia Cognitiva em Pirâmide'.
+    Cada Fragment deve encapsular sua própria lógica, interagindo com o sistema apenas por meio
+    de interfaces bem definidas e do SharedTaskContext para dados compartilhados.
     """
     FRAGMENT_NAME: str = "BaseFragment"
 
-    def __init__(self, name: str, skills: List[str], prompt_template: str, llm_interface=None, skill_registry=None, config: Optional[Dict] = None):
-        fragment_name = name if name else self.FRAGMENT_NAME
-        self.state = FragmentState(fragment_name, skills, prompt_template)
-        self.config = config or {}
-        # Placeholder for dependencies (LLM, Skills) - inject or load dynamically
-        # self.llm = llm_interface or LLMInterface()
-        # self.skill_registry = skill_registry or SkillRegistry()
+    def __init__(self, fragment_def: FragmentDef, tool_registry: Optional[ToolRegistry] = None):
+        self.fragment_def = fragment_def
+        self._logger = logging.getLogger(__name__)
+        self.state = FragmentState(fragment_def.name, fragment_def.skills, fragment_def.prompt_template)
+        self.config = {}
         self.optimizer = self._create_optimizer()
-        logger.info(f"Fragment '{self.state.name}' initialized with {len(self.state.skills)} skills.")
+        self._tool_registry = tool_registry or ToolRegistry()
+        self._context_accessor = ContextAccessor()
+        self._logger.info(f"Fragment '{self.state.name}' initialized with {len(self.state.skills)} skills.")
 
     def _create_optimizer(self):
         """Instantiates the optimizer for this fragment."""
         pass # Implementado por subclasses
 
-    async def run_and_optimize(self, task_objective: str, context: Optional[Dict] = None) -> Tuple[Dict, List[Dict]]:
+    @abstractmethod
+    async def get_purpose(self, context: Optional[Dict] = None) -> str:
+        pass
+
+    def set_context(self, shared_task_context: SharedTaskContext) -> None:
         """
-        Método wrapper que executa o Fragment, atualiza métricas e aciona o otimizador.
-        Retorna o resultado final da execução e a lista completa de resultados intermediários.
+        Sets the SharedTaskContext for this Fragment via the ContextAccessor.
+        
+        Args:
+            shared_task_context: The SharedTaskContext instance to use.
         """
-        start_time = time.time()
-        final_result = {"status": "error", "message": "Execution did not yield a final result.", "type": "error"} # Ensure type exists
-        execution_trace: List[Dict] = [] # Store all yielded results
+        self._context_accessor.set_context(shared_task_context)
+        self._logger.info(f"Context set for Fragment '{self.state.name}' with task ID: {shared_task_context.task_id}")
 
-        try:
-            async for step_result in self.execute(task_objective, context):
-                execution_trace.append(step_result)
-                # The last result is assumed to be the final one for status checking
-                final_result = step_result
-
-            # Ensure final_result has a status if execute finishes without error but no explicit status
-            if "status" not in final_result:
-                 final_result["status"] = "completed" # Assume completed if generator finishes
-                 logger.warning(f"Fragment '{self.state.name}' execution finished without explicit status. Assuming 'completed'.")
-
-
-        except Exception as e:
-             logger.error(f"Exception during Fragment '{self.state.name}' execution for task '{task_objective[:50]}...': {e}", exc_info=True)
-             error_message = f"Unhandled exception: {e}"
-             final_result = {"status": "error", "type": "error", "message": error_message}
-             # Ensure at least one result exists for metric update and trace
-             if not execution_trace:
-                 execution_trace.append(final_result)
-             else:
-                 # Append error to existing trace if possible
-                 execution_trace.append(final_result)
-
-        finally:
-            # --- Update Metrics and Optimize ---
-            end_time = time.time()
-            duration = end_time - start_time
-            # Make sure 'status' exists before checking
-            is_success = final_result.get("status") == "success"
-
-            self.state.update_metrics(success=is_success, execution_time=duration)
-            logger.info(f"Fragment '{self.state.name}' metrics updated. {self.state.get_status_summary()}")
-
-            if self.optimizer:
+    async def run_and_optimize(
+        self,
+        objective: str,
+        tools: List[Callable[[str, Dict[str, Any]], Awaitable[str]]] = None,
+        max_iterations: int = 5,
+        context: Optional[Dict] = None,
+        shared_task_context: Optional[SharedTaskContext] = None  # Kept for backward compatibility
+    ) -> str:
+        """
+        Executa o Fragment com o objetivo fornecido, utilizando as ferramentas disponíveis.
+        Este método serve como ponto de entrada principal para a execução do Fragment,
+        garantindo que a lógica interna seja desacoplada e que a interação com outros componentes
+        seja feita por meio de interfaces claras.
+        """
+        if context is None:
+            context = {}
+        if shared_task_context and not self._context_accessor._context:
+            self.set_context(shared_task_context)
+        # Use provided tools if any, otherwise fetch from registry based on skills
+        if tools is None:
+            tools = []
+            for skill in self.state.skills:
                 try:
-                    optimized = await self.optimizer.optimize_if_needed()
-                    if optimized:
-                        logger.info(f"Optimizer ran for Fragment '{self.state.name}'.")
-                except Exception as opt_err:
-                    logger.error(f"Error during Fragment '{self.state.name}' optimization: {opt_err}", exc_info=True)
+                    tool = self._tool_registry.get_tool(skill)
+                    tools.append(tool)
+                except KeyError:
+                    self._logger.warning(f"Tool for skill '{skill}' not found in registry.")
+        self._logger.info(f"Running {self.__class__.__name__} with objective: {objective}")
+        result = await self.execute_task(objective, tools, context)
+        self._logger.info(f"Completed {self.__class__.__name__} with result: {result}")
+        return result
 
-        # Return the *last* result yielded by execute() AND the full trace
-        return final_result, execution_trace
+    async def execute_task(
+        self,
+        objective: str,
+        tools: List[Callable[[str, Dict[str, Any]], Awaitable[str]]] = None,
+        context: Optional[Dict] = None,
+        shared_task_context: Optional[SharedTaskContext] = None  # Kept for backward compatibility
+    ) -> str:
+        """
+        Implementação específica da execução da tarefa pelo Fragment.
+        Subclasses devem sobrescrever este método para encapsular sua lógica interna,
+        mantendo o desacoplamento do restante do sistema.
+        """
+        if context is None:
+            context = {}
+        if shared_task_context and not self._context_accessor._context:
+            self.set_context(shared_task_context)
+        if tools is None:
+            tools = []
+            for skill in self.state.skills:
+                try:
+                    tool = self._tool_registry.get_tool(skill)
+                    tools.append(tool)
+                except KeyError:
+                    self._logger.warning(f"Tool for skill '{skill}' not found in registry.")
+        # Default implementation - can be overridden by subclasses
+        return await self._default_execute(objective, tools, context)
 
+    async def _default_execute(
+        self,
+        objective: str,
+        tools: List[Callable[[str, Dict[str, Any]], Awaitable[str]]],
+        context: Dict
+    ) -> str:
+        # Simple execution without optimization
+        if tools:
+            tool = tools[0]  # Use the first tool by default
+            input_data = {"objective": objective, "context": context}
+            # Add context accessor data if available
+            if self._context_accessor._context:
+                input_data["shared_task_context"] = self._context_accessor._context
+            return await tool(objective, input_data)
+        return f"No tools available to execute objective: {objective}"
 
     def get_name(self) -> str:
         return self.state.name
@@ -111,11 +154,6 @@ class BaseFragment(ABC):
 
     def get_status_summary(self) -> str:
          return self.state.get_status_summary()
-
-    @abstractmethod
-    def get_purpose(self) -> str:
-         """Returns a one-sentence description of the fragment's main goal."""
-         pass
 
     def get_description_for_routing(self) -> str:
         """Generates a description string suitable for the routing LLM prompt."""
@@ -134,48 +172,79 @@ class ManagerFragment(BaseFragment):
     Managers coordinate other Fragments or Skills within a specific domain.
     They receive a sub-task from the Orchestrator and decide how to fulfill it
     by delegating to lower-level components.
+    A lógica dos Managers é desacoplada para permitir evolução futura e modularidade,
+    alinhando-se aos princípios de 'Fragmentação Cognitiva'.
     """
-    async def coordinate_execution(self, sub_task: str, context: Any) -> Dict[str, Any]:
-        """
-        Core logic for the Manager.
-        Analyzes the sub_task and delegates to appropriate skills/fragments.
-        This method MUST be implemented by subclasses.
+    def __init__(self, fragment_def: FragmentDef, tool_registry: Optional[ToolRegistry] = None):
+        super().__init__(fragment_def, tool_registry)
+        self._sub_fragments: List[BaseFragment] = []
 
-        Args:
-            sub_task: The specific objective assigned by the Orchestrator.
-            context: The execution context (e.g., history, workspace).
+    def add_sub_fragment(self, fragment: BaseFragment):
+        self._sub_fragments.append(fragment)
+        self._logger.info(f"Added sub-fragment {fragment.__class__.__name__} to {self.__class__.__name__}")
 
-        Returns:
-            A dictionary representing the outcome of the coordinated execution.
-            Should typically align with the standard fragment result format.
+    async def coordinate_execution(
+        self,
+        objective: str,
+        tools: List[Callable[[str, Dict[str, Any]], Awaitable[str]]] = None,
+        context: Dict = None,
+        shared_task_context: Optional[SharedTaskContext] = None  # Kept for backward compatibility
+    ) -> str:
         """
-        # Subclasses must implement this logic, e.g., using LLM calls or rules
-        # to select and execute the correct skill(s).
-        self.logger.warning(f"Manager {self.name}: coordinate_execution not implemented!")
-        return {
-            "status": "error",
-            "action": f"{self.name}_coordination_failed",
-            "data": {"message": "Coordination logic not implemented in manager."},
-        }
+        Coordena a execução de sub-fragments para atingir o objetivo.
+        Este método encapsula a lógica de delegação, mantendo o desacoplamento
+        entre os Fragments e promovendo a modularidade.
+        """
+        if context is None:
+            context = {}
+        if shared_task_context and not self._context_accessor._context:
+            self.set_context(shared_task_context)
+        if tools is None:
+            tools = []
+            for skill in self.state.skills:
+                try:
+                    tool = self._tool_registry.get_tool(skill)
+                    tools.append(tool)
+                except KeyError:
+                    self._logger.warning(f"Tool for skill '{skill}' not found in registry.")
+        self._logger.info(f"Coordinating execution for objective: {objective} with {len(self._sub_fragments)} sub-fragments")
+        results = []
+        for fragment in self._sub_fragments:
+            self._logger.info(f"Executing sub-fragment: {fragment.__class__.__name__}")
+            result = await fragment.run_and_optimize(objective, tools, max_iterations=3, context=context)
+            results.append(result)
+            self._logger.info(f"Sub-fragment {fragment.__class__.__name__} result: {result}")
+        return self.synthesize_results(objective, results, context)
 
-    async def execute_task(self, sub_task: str, context: Any) -> Dict[str, Any]:
-        """
-        Overrides the BaseFragment execute_task.
-        Instead of running a ReAct loop directly, it calls the coordination logic.
-        """
-        self.logger.info(f"Manager {self.name}: Starting coordination for sub-task: '{sub_task}'")
-        try:
-            # Delegate the core work to the coordination method
-            result = await self.coordinate_execution(sub_task, context)
-            self.logger.info(f"Manager {self.name}: Coordination finished. Status: {result.get('status')}")
-            return result
-        except Exception as e:
-            self.logger.exception(f"Manager {self.name}: Error during coordination.")
-            return {
-                "status": "error",
-                "action": f"{self.name}_coordination_error",
-                "data": {"message": f"Exception during coordination: {str(e)}"},
-            }
+    async def synthesize_results(
+        self,
+        objective: str,
+        results: List[str],
+        context: Dict
+    ) -> str:
+        # Default synthesis - can be overridden
+        return f"Results for {objective}: {'; '.join(results)}"
+
+    async def execute_task(
+        self,
+        objective: str,
+        tools: List[Callable[[str, Dict[str, Any]], Awaitable[str]]] = None,
+        context: Optional[Dict] = None,
+        shared_task_context: Optional[SharedTaskContext] = None  # Kept for backward compatibility
+    ) -> str:
+        if context is None:
+            context = {}
+        if shared_task_context and not self._context_accessor._context:
+            self.set_context(shared_task_context)
+        if tools is None:
+            tools = []
+            for skill in self.state.skills:
+                try:
+                    tool = self._tool_registry.get_tool(skill)
+                    tools.append(tool)
+                except KeyError:
+                    self._logger.warning(f"Tool for skill '{skill}' not found in registry.")
+        return await self.coordinate_execution(objective, tools, context)
 
 # <<< END NEW >>>
 

@@ -5,12 +5,13 @@ import os
 import signal
 import sys
 import platform
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List
 from pathlib import Path
 import subprocess
 import time
 import psutil
 import requests
+import httpx
 
 import a3x.servers.sd_api_server 
 
@@ -62,6 +63,28 @@ except Exception as e:
 
 # Dictionary to keep track of managed processes
 managed_processes = {}
+
+# Define server configurations in a structured way
+SERVER_CONFIGS = {
+    "llama": {
+        "binary": LLAMA_SERVER_BINARY,
+        "args": LLAMA_SERVER_ARGS, # This is already a list from config
+        "health_endpoint": LLAMA_HEALTH_ENDPOINT,
+        "startup_timeout": LLAMA_SERVER_STARTUP_TIMEOUT,
+        "log_file": SERVER_LOG_FILE, # Log server stdout/stderr here
+        "cwd": PROJECT_ROOT, # Run from project root usually
+    },
+    "stable_diffusion": {
+        # Example config for SD server (adjust as needed)
+        "binary": sys.executable, # Usually run as python module
+        "args": ["-m", SD_SERVER_MODULE], # Example args
+        "health_endpoint": SD_API_CHECK_ENDPOINT,
+        "startup_timeout": SD_SERVER_STARTUP_TIMEOUT,
+        "log_file": SERVER_LOG_FILE,
+        "cwd": PROJECT_ROOT,
+    }
+    # Add other servers here
+}
 
 async def _check_server_ready(name: str, url: str, timeout: int) -> bool:
     """Checks if a server endpoint is responsive."""
@@ -451,83 +474,286 @@ if __name__ == "__main__":
         print("Event loop closed.") 
 
 class ServerManager:
-    def __init__(self, host='127.0.0.1', port=8080, ngl=20):
-        self.host = host
-        self.port = port
-        self.ngl = ngl
-        self.server_process = None
-        self.llm_url = f"http://{self.host}:{self.port}"
-        logger.info(f"Initialized ServerManager with LLM URL: {self.llm_url} and ngl: {self.ngl}")
+    """Manages the lifecycle of external server processes (LLM, SD, etc.)."""
 
-    def start_server(self):
-        """Start the llama-server if it's not already running."""
-        if self.is_server_running():
-            logger.info("llama-server is already running.")
-            return
+    def __init__(self):
+        self._processes: Dict[str, asyncio.subprocess.Process] = {}
+        self._log_files: Dict[str, object] = {} # Store file handles
 
-        logger.info("Starting llama-server...")
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-        llama_server_path = os.path.join(project_root, "llama.cpp", "build", "bin", "llama-server")
-        model_path = os.path.join(project_root, "models", "gemma-3-4b-it-Q6_K.gguf")
+    async def start_server(self, server_name: str) -> bool:
+        """Starts the specified server process and waits for it to become healthy."""
+        if server_name in self._processes and self._processes[server_name].returncode is None:
+            logger.info(f"Server '{server_name}' is already running (PID: {self._processes[server_name].pid}).")
+            # Optionally check health again even if running
+            return await self.check_server_status(server_name)
 
-        if not os.path.exists(llama_server_path):
-            logger.error(f"llama-server not found at {llama_server_path}")
-            raise FileNotFoundError(f"llama-server binary not found at {llama_server_path}")
-
-        if not os.path.exists(model_path):
-            logger.error(f"Model file not found at {model_path}")
-            raise FileNotFoundError(f"Model file not found at {model_path}")
-
-        cmd = [
-            llama_server_path,
-            "-m", model_path,
-            "-ngl", str(self.ngl)
-        ]
-
-        logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
-        self.server_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        time.sleep(3)  # Give the server a moment to start
-
-        if self.server_process.poll() is not None:
-            error_output = self.server_process.stderr.read() if self.server_process.stderr else "No error output"
-            logger.error(f"Failed to start llama-server: {error_output}")
-            raise RuntimeError(f"Failed to start llama-server: {error_output}")
-
-        max_retries = 10
-        for attempt in range(max_retries):
-            if self.is_server_running():
-                logger.info("llama-server started successfully.")
-                return
-            time.sleep(1)
-
-        logger.error("llama-server failed to start after multiple attempts.")
-        raise RuntimeError("llama-server failed to start after multiple attempts.")
-
-    def stop_server(self):
-        """Stop the llama-server if it's running."""
-        if self.server_process and self.is_server_running():
-            logger.info("Stopping llama-server...")
-            parent = psutil.Process(self.server_process.pid)
-            for child in parent.children(recursive=True):
-                child.terminate()
-            parent.terminate()
-            self.server_process.wait(timeout=5)
-            logger.info("llama-server stopped.")
-        else:
-            logger.info("llama-server is not running.")
-        self.server_process = None
-
-    def is_server_running(self):
-        """Check if the llama-server is running by querying its health endpoint."""
-        try:
-            response = requests.get(f"{self.llm_url}/health", timeout=2)
-            return response.status_code == 200
-        except requests.exceptions.RequestException:
-            if self.server_process and self.server_process.poll() is None:
-                return True
+        if server_name not in SERVER_CONFIGS:
+            logger.error(f"Unknown server name: '{server_name}'. Cannot start.")
             return False
 
-    def get_llm_interface(self):
-        """Return an instance of a minimal LLM interface."""
-        # Since LLMInterface class doesn't exist, return a minimal object or None
-        return None  # Or define a minimal class or function call here if needed 
+        config = SERVER_CONFIGS[server_name]
+        binary = config["binary"]
+        args = config["args"]
+        cwd = config.get("cwd", None)
+        health_endpoint = config.get("health_endpoint")
+        startup_timeout = config.get("startup_timeout", 60)
+        log_file_path = config.get("log_file")
+
+        if not os.path.exists(binary):
+             logger.error(f"Server binary not found for '{server_name}' at path: {binary}")
+             # Attempt to use default path if config one failed?
+             # Example: binary = "/path/to/default/llama-server"
+             # Or just return False
+             return False
+
+        command = [binary] + args
+        logger.info(f"Starting server '{server_name}' with command: {' '.join(command)}")
+        log_prefix = f"[{server_name.upper()}_SERVER]"
+
+        log_handle = None
+        if log_file_path:
+            try:
+                # Ensure log directory exists
+                os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+                log_handle = open(log_file_path, "a") # Append mode
+                self._log_files[server_name] = log_handle
+                stdout_redir = log_handle
+                stderr_redir = log_handle
+                logger.info(f"Redirecting {server_name} stdout/stderr to {log_file_path}")
+            except Exception as e:
+                logger.error(f"Failed to open log file {log_file_path} for {server_name}: {e}")
+                stdout_redir = asyncio.subprocess.PIPE # Fallback to pipe
+                stderr_redir = asyncio.subprocess.PIPE
+        else:
+            stdout_redir = asyncio.subprocess.PIPE
+            stderr_redir = asyncio.subprocess.PIPE
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=stdout_redir,
+                stderr=stderr_redir,
+                cwd=cwd,
+                # Potentially set environment variables if needed
+                # env=os.environ.copy()
+            )
+            self._processes[server_name] = process
+            logger.info(f"Server '{server_name}' process started with PID: {process.pid}")
+
+        except FileNotFoundError:
+            logger.error(f"Command not found: {command[0]}. Ensure the server binary path is correct and executable.")
+            if log_handle: log_handle.close()
+            if server_name in self._log_files: del self._log_files[server_name]
+            return False
+        except Exception as e:
+            logger.exception(f"Failed to start server '{server_name}' process:")
+            if log_handle: log_handle.close()
+            if server_name in self._log_files: del self._log_files[server_name]
+            return False
+
+        # Wait for the server to become healthy
+        if health_endpoint:
+            start_time = time.monotonic()
+            is_healthy = False
+            logger.info(f"Waiting for '{server_name}' server to become healthy at {health_endpoint} (timeout: {startup_timeout}s)...")
+            while time.monotonic() - start_time < startup_timeout:
+                if process.returncode is not None:
+                     logger.error(f"Server '{server_name}' process terminated prematurely with code {process.returncode}. Check logs.")
+                     break # Exit health check loop
+
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as client: # Short timeout for health check
+                        response = await client.get(health_endpoint)
+                        if response.is_success:
+                            logger.info(f"Server '{server_name}' is healthy (status code: {response.status_code}).")
+                            is_healthy = True
+                            break
+                        else:
+                             logger.debug(f"Health check for '{server_name}' failed: {response.status_code}. Retrying...")
+                except httpx.RequestError as e:
+                    logger.debug(f"Health check connection error for '{server_name}': {e}. Server likely not ready yet. Retrying...")
+                
+                await asyncio.sleep(2) # Wait before retrying health check
+
+            if not is_healthy:
+                logger.error(f"Server '{server_name}' did not become healthy within the {startup_timeout}s timeout.")
+                await self.stop_server(server_name) # Attempt to clean up
+                return False
+        else:
+            logger.warning(f"No health endpoint configured for server '{server_name}'. Assuming started successfully after a short delay.")
+            await asyncio.sleep(5) # Arbitrary delay if no health check
+
+        return True # Server started (and potentially healthy)
+
+    async def stop_server(self, server_name: str) -> bool:
+        """Stops the specified server process gracefully."""
+        if server_name not in self._processes:
+            logger.info(f"Server '{server_name}' not found in managed processes.")
+            return True # Already stopped or never started by this manager
+
+        process = self._processes[server_name]
+        if process.returncode is not None:
+            logger.info(f"Server '{server_name}' (PID: {process.pid}) already terminated with code {process.returncode}.")
+        else:
+            logger.info(f"Stopping server '{server_name}' (PID: {process.pid})...")
+            try:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=10.0) # Wait for graceful termination
+                logger.info(f"Server '{server_name}' terminated gracefully.")
+            except asyncio.TimeoutError:
+                logger.warning(f"Server '{server_name}' did not terminate gracefully after 10s. Sending KILL signal.")
+                try:
+                    process.kill()
+                    await process.wait() # Ensure kill completes
+                    logger.info(f"Server '{server_name}' killed.")
+                except ProcessLookupError:
+                     logger.warning(f"Server '{server_name}' process already gone when trying to kill.")
+                except Exception as e:
+                    logger.exception(f"Error killing server '{server_name}':")
+                    # Process might be orphaned, but report error
+            except ProcessLookupError:
+                 logger.warning(f"Server '{server_name}' process already gone when trying to terminate.")
+            except Exception as e:
+                logger.exception(f"Error terminating server '{server_name}':")
+                # Return False? Or assume it might be stopped?
+
+        # Clean up
+        del self._processes[server_name]
+        if server_name in self._log_files:
+             try:
+                 self._log_files[server_name].close()
+             except Exception as e:
+                 logger.error(f"Error closing log file for {server_name}: {e}")
+             del self._log_files[server_name]
+             
+        return True
+
+    async def stop_all_servers(self):
+        """Stops all managed server processes."""
+        server_names = list(self._processes.keys()) # Get keys before iterating
+        logger.info(f"Stopping all managed servers: {server_names}")
+        for server_name in server_names:
+            await self.stop_server(server_name)
+        logger.info("All managed servers stopped.")
+
+    async def check_server_status(self, server_name: str) -> bool:
+        """Checks if the server process is running and optionally checks health endpoint."""
+        if server_name not in self._processes:
+             return False # Not managed or already stopped
+        process = self._processes[server_name]
+        if process.returncode is not None:
+             logger.info(f"Server '{server_name}' process has terminated (code: {process.returncode}).")
+             return False # Process has exited
+
+        # Process is running, check health endpoint if configured
+        config = SERVER_CONFIGS.get(server_name, {})
+        health_endpoint = config.get("health_endpoint")
+        if health_endpoint:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(health_endpoint)
+                    is_healthy = response.is_success
+                    logger.debug(f"Health check for running server '{server_name}': {'Healthy' if is_healthy else 'Unhealthy'} (Status: {response.status_code})")
+                    return is_healthy
+            except httpx.RequestError:
+                logger.debug(f"Health check failed for running server '{server_name}'. Assuming unhealthy/not ready.")
+                return False # Cannot connect, assume not healthy
+        else:
+            # No health endpoint, just check if process is running (which it is at this point)
+            logger.debug(f"Server '{server_name}' process is running (PID: {process.pid}). No health endpoint to check.")
+            return True
+
+    # --- Context Manager for easy use in tests ---
+    # <<< Corrected: Use @asynccontextmanager or return an object with __aenter__/__aexit__ >>>
+    # Option 1: Using a helper class (as previously attempted, but correcting usage)
+    # Define the context manager class *inside* the ServerManager or globally if preferred
+    class _ServerContextManager:
+        """Helper async context manager class."""
+        def __init__(self, manager: 'ServerManager', name: str):
+            self._manager = manager
+            self._name = name
+            self._started = False
+            logger.debug(f"[CM Helper '{self._name}'] Initialized.")
+
+        async def __aenter__(self):
+            logger.debug(f"[CM Helper '{self._name}'] Entering async context...")
+            self._started = await self._manager.start_server(self._name)
+            if not self._started:
+                raise RuntimeError(f"Failed to start managed server '{self._name}'")
+            logger.debug(f"[CM Helper '{self._name}'] Server started, returning self.")
+            return self # Return the context manager instance itself
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            logger.debug(f"[CM Helper '{self._name}'] Exiting async context (Exc type: {exc_type})...")
+            if self._started: # Only try to stop if __aenter__ succeeded
+                logger.debug(f"[CM Helper '{self._name}'] Stopping server...")
+                await self._manager.stop_server(self._name)
+                logger.debug(f"[CM Helper '{self._name}'] Server stop initiated.")
+            else:
+                 logger.debug(f"[CM Helper '{self._name}'] Server was not started by __aenter__, skipping stop.")
+            # Return False to propagate exceptions, True to suppress
+            return False 
+
+    def managed_server(self, server_name: str):
+        """Returns an async context manager instance to start/stop a server."""
+        logger.debug(f"Creating context manager for server '{server_name}'.")
+        # Return an *instance* of the helper class
+        return ServerManager._ServerContextManager(self, server_name)
+        
+    # Option 2: Using @asynccontextmanager (simpler if logic fits)
+    # from contextlib import asynccontextmanager
+    # @asynccontextmanager
+    # async def managed_server_alt(self, server_name: str):
+    #     logger.debug(f"[CM Decorator] Entering context for server '{server_name}'")
+    #     started = False
+    #     try:
+    #         started = await self.start_server(server_name)
+    #         if not started:
+    #             raise RuntimeError(f"Failed to start managed server '{server_name}'")
+    #         yield # Yield control to the 'with' block
+    #     finally:
+    #         logger.debug(f"[CM Decorator] Exiting context for server '{server_name}'")
+    #         if started:
+    #             await self.stop_server(server_name)
+
+# Example usage (for testing ServerManager itself):
+async def main():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    manager = ServerManager()
+    
+    try:
+        logger.info("Starting LLAMA server via manager...")
+        started = await manager.start_server("llama")
+        if started:
+            logger.info("LLAMA server started successfully.")
+            await asyncio.sleep(5) # Keep it running for a bit
+            status = await manager.check_server_status("llama")
+            logger.info(f"LLAMA server status check: {'Running/Healthy' if status else 'Stopped/Unhealthy'}")
+        else:
+            logger.error("Failed to start LLAMA server.")
+            
+    finally:
+        logger.info("Stopping LLAMA server...")
+        await manager.stop_server("llama")
+        logger.info("LLAMA server stop requested.")
+
+    # Example using context manager
+    # try:
+    #     logger.info("Testing context manager...")
+    #     async with manager.managed_server("llama"):
+    #          logger.info("Inside context manager - server should be running.")
+    #          await asyncio.sleep(3)
+    #          status = await manager.check_server_status("llama")
+    #          logger.info(f"Status inside CM: {status}")
+    #     logger.info("Exited context manager - server should be stopped.")
+    #     await asyncio.sleep(1)
+    #     status = await manager.check_server_status("llama")
+    #     logger.info(f"Status after CM: {status}")
+    # except Exception as e:
+    #      logger.error(f"Error during context manager test: {e}")
+
+
+if __name__ == "__main__":
+    # This is mainly for direct testing of the server manager
+    # asyncio.run(main())
+    pass 
