@@ -11,6 +11,7 @@ from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT
 # Importar usando paths relativos
 from a3x.core.skills import skill
 from a3x.core.validators import validate_workspace_path
+from a3x.core.context import SharedTaskContext
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -224,6 +225,7 @@ class FileManagerSkill:
         resolved_path: Path = None,  # Re-added = None
         original_path_str: str = None,  # Re-added = None
         agent_memory: Optional[Dict] = None,  # Keep agent_memory optional if needed
+        shared_task_context: Optional[SharedTaskContext] = None 
     ) -> dict:
         """Reads file content. Path validation via decorator."""
         logger.debug(
@@ -275,15 +277,42 @@ class FileManagerSkill:
                 "..." if len(content) > max_len_preview else ""
             )
 
-            return {
+            line_count = len(content.splitlines())
+            file_content = content
+
+            result_payload = {
                 "status": "success",
                 "action": "file_read",
                 "data": {
                     "filepath": original_path_str,
-                    "content": content,
+                    "content": file_content,
                     "message": f"File '{original_path_str}' read successfully (Preview: {content_preview})",
+                    "lines_read": line_count,
                 },
             }
+
+            if shared_task_context:
+                context_data_key = f"file_content:{original_path_str}"
+                context_metadata = {"file_size_bytes": file_size, "lines_read": line_count}
+                tags = ["file_read", "data_loaded"]
+                if start_line > 0 or end_line is not None:
+                    tags.append("partial_read")
+                
+                shared_task_context.set(
+                    key=context_data_key, 
+                    value=file_content, 
+                    source="read_file", 
+                    tags=tags, 
+                    metadata=context_metadata
+                )
+                shared_task_context.set(
+                    key="last_file_read_path",
+                    value=original_path_str,
+                    source="read_file"
+                )
+                logger.debug(f"Updated shared context with key '{context_data_key}'")
+
+            return result_payload
         except PermissionError:
             logger.error(
                 f"Permission error reading file: {original_path_str}", exc_info=True
