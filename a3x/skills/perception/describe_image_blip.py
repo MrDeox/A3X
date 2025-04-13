@@ -1,7 +1,7 @@
 """Skill to describe an image using the BLIP model."""
 
 from pathlib import Path
-from typing import Annotated, Any, Dict
+from typing import Annotated, Any, Dict, Optional
 import logging
 import torch
 
@@ -20,17 +20,21 @@ from a3x.core.context import Context
 
 @skill(
     name="describe_image_blip",
-    description="Descreve uma imagem usando o modelo BLIP (requer transformers e torch).",
+    description="Analyzes an image using BLIP and provides a textual description.",
     parameters={
-        "image_path": (str, ...)
+        "context": {"type": Context, "description": "Execution context for logger and potentially model path."},
+        "image_path": {"type": str, "description": "The file path to the image to analyze."},
+        "prompt": {"type": Optional[str], "default": None, "description": "Optional text prompt to guide the description."}
     }
 )
 async def describe_image_blip(
-    ctx, image_path: str
+    context: Context,
+    image_path: str,
+    prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Describes an image using the BLIP model via transformers."""
     # <<< Need to access logger from ctx, assuming it has a .log attribute >>>
-    logger = ctx.log if hasattr(ctx, 'log') else logging.getLogger(__name__)
+    logger = context.log if hasattr(context, 'log') else logging.getLogger(__name__)
 
     if not isinstance(image_path, Path):
          # The executor might pass the raw string from JSON, ensure it's a Path

@@ -1,14 +1,31 @@
 from typing import Dict, Any, Optional
 import logging
+from a3x.core.skills import skill
+from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)
 
-def adjust_llm_parameters(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+@skill(
+    name="adjust_llm_parameters",
+    description="Adjusts LLM parameters like temperature or max tokens for subsequent calls.",
+    parameters={
+        "context": {"type": Context, "description": "The execution context provided by the agent."},
+        "temperature": {"type": Optional[float], "default": None, "description": "The temperature setting (sampling randomness)."},
+        "max_tokens": {"type": Optional[int], "default": None, "description": "Maximum number of tokens to generate."}
+    }
+)
+async def adjust_llm_parameters(
+    context: Context,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None
+) -> Dict[str, Any]:
     """
     Ajusta automaticamente os parâmetros do LLM com base no histórico de respostas para melhorar a geração de conteúdo.
     
     Args:
         context: Objeto de contexto contendo memória e informações do agente.
+        temperature: The temperature setting (sampling randomness).
+        max_tokens: Maximum number of tokens to generate.
     
     Returns:
         Dict[str, Any]: Resultado do ajuste, incluindo os novos parâmetros e uma mensagem de status.

@@ -11,6 +11,7 @@ from a3x.core.prompt_builder import (
 )  # Assuming this exists or will be created
 from a3x.core.llm_interface import LLMInterface # <-- IMPORT CLASS
 from a3x.core.agent import _ToolExecutionContext # Import context type for hinting
+from a3x.core.context import Context # Added import
 
 # from core.skills_utils import create_skill_response
 
@@ -56,17 +57,18 @@ planner_logger = logging.getLogger(__name__)
 
 @skill(
     name="hierarchical_planner",
-    description="Breaks down a complex objective into a sequence of smaller, actionable steps using available tools.",
+    description="Generates a hierarchical plan to achieve a high-level objective using available skills.",
     parameters={
-        "objective": (str, ...),  # The main user objective
-        "available_tools": (str, ...),  # Descriptions of tools the agent can use
-        # context is implicitly passed by the agent/tool executor
-    },
+        "context": {"type": Context, "description": "Execution context providing agent state and tools."},
+        "goal": {"type": str, "description": "The high-level objective to be achieved."},
+        "max_depth": {"type": int, "default": 3, "description": "Maximum depth of the plan hierarchy (default: 3)."}
+    }
 )
 async def hierarchical_planner(
-    objective: str, 
-    available_tools: str, 
-    ctx: _ToolExecutionContext # <-- Accept the context object directly
+    context: Context,
+    goal: str,
+    max_depth: int = 3,
+    plan_history: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Generates a multi-step plan (list of strings) to achieve the given objective.
@@ -75,10 +77,10 @@ async def hierarchical_planner(
     Returns a dictionary: {'status': 'success', 'data': {'plan': [...]}} on success,
     or {'status': 'error', 'data': {'message': '...'}} on failure.
     """
-    planner_logger.info(f"Generating plan for objective: '{objective[:100]}...'")
+    planner_logger.info(f"Generating plan for objective: '{goal[:100]}...'")
     # Access components directly from ctx
-    llm_interface = ctx.llm_interface 
-    memory_context = ctx.memory.get_memory() # Example: get memory if needed
+    llm_interface = context.llm_interface 
+    memory_context = context.memory.get_memory() # Example: get memory if needed
     
     if not llm_interface:
         planner_logger.error("LLMInterface not found in execution context.")
@@ -109,8 +111,8 @@ async def hierarchical_planner(
     planner_system_prompt = DEFAULT_PLANNER_SYSTEM_PROMPT
 
     prompt_messages = build_planning_prompt(
-        objective,
-        available_tools,
+        goal,
+        context.available_tools,
         planner_system_prompt + learned_heuristics_prompt_section,
     )
 

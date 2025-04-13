@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Any, Optional
 from a3x.core.skills import skill  # <<< Update import
 from a3x.core.db_utils import add_episodic_record # <<< Corrected import name
+from a3x.core.context import Context # Added import
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -12,21 +13,26 @@ logger = logging.getLogger(__name__)
 # Renamed function, added decorator, and updated signature
 @skill(
     name="execute_code",
-    description="Executes a block of Python code in a secure sandbox environment (Firejail).",
+    description="Executes a given code snippet in a specified language within a sandboxed environment.",
     parameters={
-        "code": (str, ...),
-        "language": (str, "python"),
-        "timeout": (float, ...),
-    },
+        "context": {"type": Context, "description": "The execution context provided by the agent."},
+        "code": {"type": str, "description": "The code snippet to execute."},
+        "language": {"type": Optional[str], "default": "python", "description": "The programming language of the snippet (default: python)."},
+        "timeout": {"type": Optional[int], "default": 60, "description": "Maximum execution time in seconds (default: 60)."}
+    }
 )
 def execute_code(
-    code: str, language: str = "python", timeout: float = ...
+    context: Context,
+    code: str,
+    language: str = "python",
+    timeout: int = 60,
 ) -> dict:
     """
     Executa um bloco de código Python em um sandbox Firejail.
     Realiza uma análise AST básica para segurança antes da execução.
 
     Args:
+        context (SkillContext): The execution context provided by the agent.
         code (str): The Python code to execute.
         language (str, optional): The programming language (must be 'python'). Defaults to "python".
         timeout (float, optional): Maximum execution time in seconds. Defaults to ... (implicit default).

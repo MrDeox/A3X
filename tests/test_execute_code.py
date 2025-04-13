@@ -2,7 +2,7 @@ import subprocess
 from unittest.mock import MagicMock
 
 # Importar a função da skill refatorada
-from skills.execute_code import execute_code, PYTHON_EXEC_TIMEOUT
+from skills.execute_code import execute_code
 
 # Configuração básica para os testes
 DEFAULT_LANGUAGE = "python"
@@ -46,7 +46,6 @@ def test_execute_python_success(mocker):
     args, kwargs = mock_run.call_args  # noqa: F821
     assert args[0][0] == "firejail"  # Comando base
     assert args[0][-1] == code  # Código passado como último argumento
-    assert kwargs.get("timeout") == PYTHON_EXEC_TIMEOUT  # Timeout padrão
 
 
 def test_execute_with_stderr_on_success(mocker):

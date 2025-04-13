@@ -1,13 +1,14 @@
 # skills/simulation.py
 import logging
 import json
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from a3x.core.skills import skill
 # Correct import
 from a3x.core.llm_interface import LLMInterface # <-- IMPORT CLASS
 # Import context type for hinting
 from a3x.core.agent import _ToolExecutionContext 
+from a3x.core.context import Context # Added import
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +28,14 @@ Resultado Simulado:
 
 @skill(
     name="simulate_step",
-    description="Simula mentalmente o resultado provável de um passo do plano com base no contexto atual.",
+    description="Simulates the outcome of a planned step without actually executing it.",
     parameters={
-        "step": (str, ...),  # Passo do plano a ser simulado (obrigatório)
-        # Context (ctx) is implicitly passed
-    },
+        "context": {"type": Context, "description": "Execution context for LLM access and state info."},
+        "step": {"type": str, "description": "The planned step to simulate."},
+        "current_state": {"type": Optional[Dict[str, Any]], "default": None, "description": "Optional dictionary representing the current world/system state."}
+    }
 )
-# Updated function signature
-async def simulate_step(step: str, ctx: _ToolExecutionContext) -> Dict[str, Any]:
+async def simulate_step(context: Context, step: str, current_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Simulates the likely outcome of executing a plan step given the current context.
     Uses the LLMInterface from the execution context.
@@ -45,9 +46,9 @@ async def simulate_step(step: str, ctx: _ToolExecutionContext) -> Dict[str, Any]
         Dict[str, Any]: A dictionary containing the simulation result.
     """
     # Get components from context
-    logger = ctx.logger
-    llm_interface = ctx.llm_interface
-    memory_context = ctx.memory.get_memory() # Get current memory context
+    logger = context.logger
+    llm_interface = context.llm_interface
+    memory_context = context.memory.get_memory() # Get current memory context
 
     if not llm_interface:
         logger.error("LLMInterface not found in execution context for simulation.")

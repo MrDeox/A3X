@@ -3,6 +3,9 @@ import random
 import logging
 import argparse
 from pathlib import Path
+from typing import Optional, Dict
+from a3x.core.skills import skill
+from a3x.core.context import Context
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -12,9 +15,28 @@ logger = logging.getLogger(__name__)
 FAKE_AUTHORS = ["Alex Thornton", "Sarah Chen", "Marcus Bellwether", "Jasmine Kaur", "Leo Maxwell", "Digital Nomad Press", "NicheMaster Guides"]
 
 # --- Skill Function ---
-def generate_ebook(niche_summary_context: str, target_audience: str, chapters: int) -> dict:
+@skill(
+    name="generate_ebook_from_niche",
+    description="Generates the complete markdown content for an ebook based on a given niche and optional outline.",
+    parameters={
+        "context": {"type": Context, "description": "The execution context provided by the agent."},
+        "niche_topic": {"type": str, "description": "The central topic or niche for the ebook."},
+        "target_audience": {"type": str, "description": "The intended audience for the ebook."},
+        "num_chapters": {"type": int, "default": 5, "description": "The desired number of chapters (default: 5)."},
+        "chapters_outline": {"type": Optional[Dict[str, str]], "default": None, "description": "Optional pre-defined outline as a dictionary {chapter_title: chapter_description}."},
+        "writing_style": {"type": Optional[str], "default": "informative and engaging", "description": "Desired writing style (e.g., 'conversational', 'academic')."}
+    }
+)
+def generate_ebook_from_niche(
+    context: Context,
+    niche_topic: str,
+    target_audience: str,
+    num_chapters: int = 5,
+    chapters_outline: Optional[Dict[str, str]] = None,
+    writing_style: Optional[str] = "informative and engaging"
+) -> dict:
     """Generates placeholder e-book content based on niche information."""
-    logger.info(f"Generating e-book content. Niche: '{niche_summary_context[:50]}...', Audience: '{target_audience[:50]}...', Chapters: {chapters}")
+    logger.info(f"Generating e-book content. Niche: '{niche_topic[:50]}...', Audience: '{target_audience[:50]}...', Chapters: {num_chapters}")
 
     # --- LLM Simulation - Replace with actual LLM calls --- 
     # TODO: Integrate with a real Language Model (e.g., OpenAI API, local model via API) 
@@ -26,12 +48,12 @@ def generate_ebook(niche_summary_context: str, target_audience: str, chapters: i
     placeholder_topic = "Your Niche Topic" # Default topic
     try:
         # Attempt a very basic keyword extraction (replace with proper NLP/LLM call)
-        keywords_in_summary = [kw for kw in ["Notion", "Etsy", "Imposter Syndrome", "Stoic", "Midjourney", "Obsidian", "No-Code"] if kw.lower() in niche_summary_context.lower()]
+        keywords_in_summary = [kw for kw in ["Notion", "Etsy", "Imposter Syndrome", "Stoic", "Midjourney", "Obsidian", "No-Code"] if kw.lower() in niche_topic.lower()]
         if keywords_in_summary:
             placeholder_topic = keywords_in_summary[0] 
         else: 
             # Very crude topic guess
-             summary_words = niche_summary_context.split()
+             summary_words = niche_topic.split()
              if len(summary_words) > 5:
                  placeholder_topic = " ".join(summary_words[2:5]).replace("for", "").strip().title()
     except Exception as e:
@@ -49,7 +71,7 @@ def generate_ebook(niche_summary_context: str, target_audience: str, chapters: i
     markdown_content += f"*By {generated_author}*\n\n"
     markdown_content += f"## Introduction\n\nWelcome to this guide on {placeholder_topic}. This book is specifically designed for {target_audience}. In the following chapters, we will explore practical steps and insights to help you master this area.\n\n[Placeholder: Add more engaging introduction content here, outlining the book's promise and structure.]\n\n"
 
-    for i in range(1, chapters + 1):
+    for i in range(1, num_chapters + 1):
         markdown_content += f"## Chapter {i}: [Placeholder Chapter Title {i}]\n\n"
         markdown_content += f"[Placeholder: Detailed content for chapter {i} focusing on a specific aspect of {placeholder_topic}, tailored for {target_audience}. Include practical tips, examples, and actionable advice.]\n\n"
     
@@ -76,6 +98,8 @@ def generate_ebook(niche_summary_context: str, target_audience: str, chapters: i
 # --- Main Execution for Standalone Testing ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate e-book content (simulated) from a niche.")
+    parser.add_argument("--niche-topic", type=str, required=True, help="The central topic or niche for the ebook.")
+    parser.add_argument("--target-audience", type=str, required=True, help="The intended audience for the ebook.")
     parser.add_argument("--niche-summary-context", type=str, required=True, help="Summary context of the niche")
     parser.add_argument("--target-audience", type=str, required=True, help="Description of the target audience")
     parser.add_argument("--chapters", type=int, default=8, help="Number of chapters for the e-book")

@@ -79,26 +79,39 @@ def parse_llm_response(
                 path_match = re.search(r"(?:file|arquivo|path|diretório|directory)[\s:]*['\"]?([^\s'\"\,\)]+)", response, re.IGNORECASE)
                 content_match = re.search(r"(?:content|conteúdo|texto|text)[\s:]*['\"]?([^\n'\"\,\)]+)", response, re.IGNORECASE)
                 if path_match:
-                    action_input_fallback["file_path"] = path_match.group(1)
-                if content_match:
-                    action_input_fallback["content"] = content_match.group(1)
-                # Registrar heurística de parsing adaptativo
-                try:
-                    from a3x.core.learning_logs import log_heuristic_with_traceability
-                    import datetime
-                    plan_id = f"plan-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                    execution_id = f"exec-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                    heuristic = {
-                        "type": "parsing_fallback",
-                        "raw_response": response[:500],
-                        "action_inferred": action_fallback,
-                        "action_input_inferred": action_input_fallback,
-                    }
-                    log_heuristic_with_traceability(heuristic, plan_id, execution_id, validation_status="pending_manual")
-                    agent_logger.info("[Agent Parse FALLBACK] Heurística de parsing adaptativo registrada.")
-                except Exception as log_err:
-                    agent_logger.warning(f"[Agent Parse FALLBACK] Falha ao registrar heurística de parsing: {log_err}")
-                return thought, action_fallback, action_input_fallback
+                    # Se o path foi extraído, assume uma operação de arquivo
+                    # Assume que o nome da action é o verbo extraído (list, read, write, etc.)
+                    action_input_fallback["path"] = path_match.group(1)
+                    if action_match: # Usa a action extraída se disponível
+                        action_fallback = action_match.group(1).lower().strip()
+                        # Tenta mapear para um nome de skill conhecido (simplificado)
+                        # Registrar heurística de parsing adaptativo
+                        try:
+                            from a3x.core.learning_logs import log_heuristic_with_traceability
+                            import datetime
+                            plan_id = f"plan-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+                            execution_id = f"exec-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+                            heuristic = {
+                                "type": "parsing_fallback",
+                                "raw_response": response[:500],
+                                "action_inferred": action_fallback,
+                                "action_input_inferred": action_input_fallback,
+                            }
+                            log_heuristic_with_traceability(heuristic, plan_id, execution_id, validation_status="pending_manual")
+                            agent_logger.info("[Agent Parse FALLBACK] Heurística de parsing adaptativo registrada.")
+                        except Exception as log_err:
+                            agent_logger.warning(f"[Agent Parse FALLBACK] Falha ao registrar heurística de parsing: {log_err}")
+                        return thought, action_fallback, action_input_fallback
+                    else:
+                        agent_logger.error(
+                            f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response, e fallback também falhou.\nResponse:\n{response}"
+                        )
+                        return None, None, None # Critical parsing failure
+                else:
+                    agent_logger.error(
+                        f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response, e fallback também falhou.\nResponse:\n{response}"
+                    )
+                    return None, None, None # Critical parsing failure
             else:
                 agent_logger.error(
                     f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response, e fallback também falhou.\nResponse:\n{response}"
@@ -215,7 +228,7 @@ def parse_orchestrator_response(
         agent_logger.debug("[Agent Parse DEBUG] Stripped ``` markdown block.")
 
     # Replace potential curly quotes just in case
-    cleaned_response = cleaned_response.replace("“", '"').replace("”", '"')
+    cleaned_response = cleaned_response.replace(""", '"').replace(""", '"')
 
     try:
         parsed_json = json.loads(cleaned_response)

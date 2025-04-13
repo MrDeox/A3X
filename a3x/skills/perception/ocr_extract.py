@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 # Core A3X imports
 from a3x.core.skills import skill
+from a3x.core.context import Context
 
 # Dependencies for OCR - require installation:
 # pip install pytesseract Pillow
@@ -14,6 +15,7 @@ try:
     import pytesseract
     from PIL import Image, UnidentifiedImageError
     from pytesseract import Output
+    import cv2 # OpenCV
     _ocr_dependencies_installed = True
 except ImportError as e:
     _ocr_dependencies_installed = False
@@ -30,13 +32,18 @@ DEFAULT_OCR_CONF_THRESHOLD = 60 # Only include results with confidence >= 60%
 
 @skill(
     name="extract_text_boxes_from_image",
-    description="Extracts text segments, their bounding boxes ([x1, y1, x2, y2]), and confidence scores from an image file using Tesseract OCR.",
+    description="Performs OCR on an image and returns text content along with bounding box coordinates.",
     parameters={
-        "image_path": (Path, ...), # Required Path parameter
-        "confidence_threshold": (int, DEFAULT_OCR_CONF_THRESHOLD) # Optional confidence threshold (0-100)
+        "context": {"type": Context, "description": "Execution context (not typically used here)."},
+        "image_path": {"type": str, "description": "Path to the image file for OCR."},
+        "confidence_threshold": {"type": int, "default": DEFAULT_OCR_CONF_THRESHOLD, "description": f"Minimum confidence level (0-100) for detected text (default: {DEFAULT_OCR_CONF_THRESHOLD})."}
     }
 )
-async def extract_text_boxes_from_image(ctx: Any, image_path: Path, confidence_threshold: int = DEFAULT_OCR_CONF_THRESHOLD) -> Dict[str, Any]:
+async def extract_text_boxes_from_image(
+    context: Context,
+    image_path: str,
+    confidence_threshold: int = DEFAULT_OCR_CONF_THRESHOLD
+) -> Dict[str, Any]:
     """
     Performs OCR on an image file to extract text blocks with bounding boxes and confidence.
 

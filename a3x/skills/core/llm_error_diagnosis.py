@@ -52,10 +52,10 @@ def _parse_llm_diagnosis_response(response_text: str) -> Dict[str, Any]:
     name="llm_error_diagnosis",
     description="Analyzes error messages, tracebacks, and execution context using an LLM to provide a semantic diagnosis and suggest potential corrective actions or a recovery plan.",
     parameters={
-        "error_message": (str, ...),
-        "traceback": (str, None), # Optional traceback string
-        "execution_context": (dict, None), # Optional context (objective, failed_step, last_action, etc.)
-        # Removed llm_url parameter, it should be retrieved from context
+        "ctx": {"type": "Context", "description": "The execution context."},
+        "error_message": {"type": "str", "description": "The error message encountered."},
+        "traceback": {"type": "str", "description": "Optional traceback string associated with the error."},
+        "execution_context": {"type": "dict", "description": "Optional context dict (objective, failed_step, last_action, etc.)."}
     },
 )
 async def llm_error_diagnosis_skill(

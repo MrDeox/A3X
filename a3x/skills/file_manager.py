@@ -87,8 +87,8 @@ class FileManagerSkill:
         name="list_directory",
         description="Lists files and directories within a specified sub-directory of the workspace.",
         parameters={
-            "directory": (str, "Relative path to the directory (default: '.')"),
-            "extension": (str, "Filter by file extension (e.g., '.txt', optional)"),
+            "directory": {"type": str, "default": ".", "description": "Relative path to the directory (default: '.')"},
+            "extension": {"type": Optional[str], "default": None, "description": "Filter by file extension (e.g., '.txt', optional)"}
         },
     )
     @validate_workspace_path(
@@ -209,9 +209,9 @@ class FileManagerSkill:
         name="read_file",
         description="Reads the content of a specified file within the workspace.",
         parameters={
-            "path": (str, ...),
-            "start_line": (int, 0),  # Default to start from the beginning
-            "end_line": (int, None),  # REVERTED TYPE HINT for @skill compatibility
+            "path": {"type": str, "description": "The relative path to the file."},
+            "start_line": {"type": int, "default": 0, "description": "Start reading from this line number (0-indexed, default: 0)."},
+            "end_line": {"type": Optional[int], "default": None, "description": "Stop reading at this line number (inclusive, default: None for end of file)."}
         },
     )
     @validate_workspace_path(arg_name="path", check_existence=True, target_type="file")
@@ -317,10 +317,10 @@ class FileManagerSkill:
         name="write_file",
         description="Writes content to a specified file within the workspace.",
         parameters={
-            "path": (str, ...),
-            "content": (str, ...),
-            "overwrite": (bool, False),
-            "create_backup_flag": (bool, True),
+            "path": {"type": str, "description": "The relative path to the file."},
+            "content": {"type": str, "description": "The content to write to the file."},
+            "overwrite": {"type": bool, "default": False, "description": "Whether to overwrite the file if it exists (default: False)."},
+            "create_backup_flag": {"type": bool, "default": True, "description": "Whether to create a backup before writing (default: True)."}
         },
     )
     @validate_workspace_path(arg_name="path", check_existence=False, target_type="file")
@@ -426,8 +426,8 @@ class FileManagerSkill:
         name="append_to_file",
         description="Appends content to an existing file within the workspace. Creates the file if it does not exist.",
         parameters={
-            "path": (str, "The relative path to the file within the workspace."),
-            "content": (str, "The content to append to the file."),
+            "path": {"type": str, "description": "The relative path to the file within the workspace."},
+            "content": {"type": str, "description": "The content to append to the file."}
         },
     )
     @validate_workspace_path(arg_name="path", target_type="file", check_existence=False)
@@ -505,9 +505,9 @@ class FileManagerSkill:
         name="delete_path",
         description="Deletes a specified file or directory within the workspace. Backup is mandatory.",
         parameters={
-            "path": (str, ...),
-            "backup": (bool, True),
-        },  # Backup defaults to True and is mandatory
+            "path": {"type": str, "description": "The relative path to the file or directory to delete."},
+            "backup": {"type": bool, "default": True, "description": "Whether to create a backup before deleting (default: True, mandatory)."}
+        },
     )
     @validate_workspace_path(arg_name="path", target_type="any", check_existence=True)
     async def delete_path(

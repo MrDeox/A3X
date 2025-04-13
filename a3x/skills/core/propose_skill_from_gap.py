@@ -2,11 +2,14 @@ import logging
 import json
 import os
 import asyncio
-from typing import Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, List
 
 # Core imports
-from a3x.core.skills import skill
-# from a3x.core.context import SkillContext # REMOVED, USE Any
+from a3x.core.skills import skill, get_skill_descriptions
+from a3x.core.llm_interface import LLMInterface
+from a3x.core.agent import _ToolExecutionContext
+from a3x.core.context import Context
 from a3x.skills.core.call_skill_by_name import call_skill_by_name
 from a3x.core.config import PROJECT_ROOT
 
@@ -46,168 +49,160 @@ Generate the complete Python code for a new A³X skill based *only* on the follo
 
 @skill(
     name="propose_skill_from_gap",
-    description="Recebe uma proposta de nova skill (identificada por análise de logs ou via arquivo) e tenta gerar/salvar o código Python correspondente.",
-    parameters={}
+    description="Proposes a new skill definition based on identified gaps or failures.",
+    parameters={
+        "context": {"type": Context, "description": "Execution context for LLM and skill registry access."},
+        "gap_description": {"type": str, "description": "Description of the functional gap or failure pattern."},
+        "relevant_logs": {"type": Optional[List[str]], "default": None, "description": "Optional list of relevant log entries."}
+    }
 )
 async def propose_skill_from_gap(
-    ctx: Any,
-    **kwargs
+    context: Context,
+    gap_description: str,
+    relevant_logs: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
-    Receives a structured proposal for a new skill, generated from log analysis
-    (or provided via file/kwargs), and attempts to generate and save the
-    corresponding Python skill code. Arguments can be passed directly or via
-    a JSON file specified by 'skill_args_file'.
+    Analyzes a described capability gap and proposes a Python skill function definition.
+
+    Args:
+        context (Context): Execution context.
+        gap_description (str): Description of the missing capability.
+        relevant_logs (Optional[List[str]]): Optional related log entries.
+
+    Returns:
+        Dict[str, Any]: Dictionary containing the proposed skill code or an error.
     """
-    skill_args = kwargs.copy() # Start with provided kwargs
-    skill_args_file = skill_args.pop('skill_args_file', None) # Remove file path if present
+    ctx = context # Assign for potential internal compatibility
+    ctx.logger.info(f"Executing propose_skill_from_gap for: {gap_description[:100]}...")
 
-    if skill_args_file:
-        ctx.logger.info(f"Loading skill arguments from file: {skill_args_file}")
-        try:
-            with open(skill_args_file, 'r') as f:
-                file_args = json.load(f)
-            if not isinstance(file_args, dict):
-                raise ValueError("JSON file content must be a dictionary.")
-            # Merge file args with kwargs, giving file args precedence
-            skill_args = {**kwargs, **file_args}
-            ctx.logger.debug(f"Loaded arguments from {skill_args_file}: {skill_args}")
-        except FileNotFoundError:
-            ctx.logger.error(f"Skill arguments file not found: {skill_args_file}")
-            return {"status": "error", "message": f"Skill arguments file not found: {skill_args_file}", "actions_taken": []}
-        except (json.JSONDecodeError, ValueError) as e:
-            ctx.logger.error(f"Error reading or parsing skill arguments file {skill_args_file}: {e}")
-            return {"status": "error", "message": f"Invalid skill arguments file {skill_args_file}: {e}", "actions_taken": []}
+    llm_interface = ctx.llm_interface
+    if not llm_interface:
+        ctx.logger.error("LLMInterface not found in execution context.")
+        return {"status": "error", "message": "Internal error: LLMInterface missing."}
 
-    # --- Extract arguments (with defaults) ---
-    skill_name = skill_args.get('skill_name')
-    reason = skill_args.get('reason')
-    suggestion_description = skill_args.get('suggestion_description')
-    parameters_json = skill_args.get('parameters_json', "{}")
-    example_usage = skill_args.get('example_usage', "")
-    source_analysis_log_preview = skill_args.get('source_analysis_log_preview', "{}")
-    source_skill = skill_args.get('source_skill', "unknown")
-
-    # --- Basic Validation ---
-    required_args = ['skill_name', 'reason', 'suggestion_description']
-    missing_args = [arg for arg in required_args if arg not in skill_args or not skill_args[arg]]
-    if missing_args:
-        ctx.logger.error(f"Missing required arguments for propose_skill_from_gap: {missing_args}")
-        return {"status": "error", "message": f"Missing required arguments: {missing_args}", "actions_taken": []}
-
-    ctx.logger.info(f"Received proposal for new skill '{skill_name}' from '{source_skill}'.")
-    ctx.logger.debug(f"Reason: {reason}")
-    ctx.logger.debug(f"Description: {suggestion_description}")
-    ctx.logger.debug(f"Parameters JSON: {parameters_json}")
-    ctx.logger.debug(f"Example Usage: {example_usage}")
-    ctx.logger.debug(f"Source Log Preview: {source_analysis_log_preview}")
-
-    actions_taken = []
-    generated_code = None
-    saved_filepath = None
-
-    # --- Step 1: Parse Parameters --- (Optional, but good practice)
+    # 1. Get current skills for context
     try:
-        parameters_dict = json.loads(parameters_json)
-        # You could perform validation on parameters_dict here if needed
-    except json.JSONDecodeError:
-        ctx.logger.error(f"Failed to parse parameters_json for skill '{skill_name}'. Assuming empty params.")
-        parameters_dict = {}
-        parameters_json = "{}" # Ensure consistency
-
-    # --- Step 2: Generate Skill Code using LLM ---
-    ctx.logger.info(f"Attempting to generate Python code for skill: {skill_name}")
-    code_gen_prompt = CODE_GENERATION_PROMPT_TEMPLATE.format(
-        skill_name=skill_name,
-        reason=reason,
-        suggestion_description=suggestion_description,
-        parameters_json=parameters_json,
-        example_usage=example_usage
-    )
-
-    try:
-        # Call LLM for code generation
-        # Add timeout for safety
-        generated_code = await asyncio.wait_for(ctx.llm_call(code_gen_prompt), timeout=180.0) # 3 min timeout
-
-        if not generated_code or not generated_code.strip():
-             raise ValueError("LLM returned empty code.")
-
-        # Basic validation: check if it looks like Python code (very rudimentary)
-        if not ("def " in generated_code and "@skill" in generated_code):
-            ctx.logger.warning(f"Generated code for '{skill_name}' might be incomplete or invalid. Proceeding anyway.")
-            # Consider raising an error here for stricter validation
-
-        ctx.logger.info(f"Successfully generated code for skill '{skill_name}'. Length: {len(generated_code)} chars.")
-        actions_taken.append({"action": "generate_code", "status": "success"})
-
-    except asyncio.TimeoutError:
-         ctx.logger.error(f"LLM call timed out during code generation for skill '{skill_name}'.")
-         actions_taken.append({"action": "generate_code", "status": "error", "message": "Timeout"})
-         return {"status": "error", "message": "LLM timeout during code generation.", "actions_taken": actions_taken}
+        current_skills_description = get_skill_descriptions()
+        ctx.logger.debug(f"Retrieved {len(current_skills_description.splitlines())} lines of current skill descriptions.")
     except Exception as e:
-        ctx.logger.exception(f"Error during LLM code generation for skill '{skill_name}':")
-        actions_taken.append({"action": "generate_code", "status": "error", "message": str(e)})
-        return {"status": "error", "message": f"LLM error during code generation: {e}", "actions_taken": actions_taken}
+        ctx.logger.exception("Failed to get current skill descriptions:")
+        current_skills_description = "Erro ao obter a lista de skills atuais."
 
-    # --- Step 3: Save Generated Code --- #
-    if generated_code:
-        # Ensure the target directory exists
-        try:
-            os.makedirs(AUTO_GENERATED_SKILLS_DIR, exist_ok=True)
-            ctx.logger.debug(f"Ensured directory exists: {AUTO_GENERATED_SKILLS_DIR}")
-        except OSError as e:
-            ctx.logger.error(f"Failed to create directory {AUTO_GENERATED_SKILLS_DIR}: {e}")
-            actions_taken.append({"action": "save_code", "status": "error", "message": f"Failed to create directory: {e}"})
-            return {"status": "error", "message": f"Failed to create auto-generation directory: {e}", "actions_taken": actions_taken}
+    # 2. Build the prompt
+    logs_section = "\n".join(relevant_logs) if relevant_logs else "Nenhum log relevante fornecido."
 
-        # Construct the file path
-        # Sanitize skill_name slightly for filename, although @skill handles registration name
-        safe_filename = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in skill_name) + ".py"
-        target_filepath = os.path.join(AUTO_GENERATED_SKILLS_DIR, safe_filename)
+    prompt = f"""
+Você é um Engenheiro de IA Sênior especializado em criar skills modulares para agentes autônomos.
 
-        ctx.logger.info(f"Attempting to save generated code to: {target_filepath}")
+Contexto:
+Foi identificada a seguinte lacuna de capacidade ou padrão de falha no agente A³X:
+GAP_DESCRIPTION_START
+{gap_description}
+GAP_DESCRIPTION_END
 
-        try:
-            # Use the 'write_file' skill via call_skill_by_name
-            write_result = await call_skill_by_name(
-                ctx,
-                skill_name="write_file", # Assuming 'write_file' is the registered name for FileManagerSkill.write_file
-                skill_args={
-                    "path": target_filepath,
-                    "content": generated_code,
-                    "overwrite": True # Overwrite if it somehow exists?
-                }
-            )
+Logs Relevantes (se houver):
+LOGS_START
+{logs_section}
+LOGS_END
 
-            if write_result.get("status") == "success":
-                ctx.logger.info(f"Successfully saved generated skill '{skill_name}' to {target_filepath}")
-                saved_filepath = target_filepath
-                actions_taken.append({"action": "save_code", "status": "success", "filepath": saved_filepath})
-            else:
-                error_msg = write_result.get("data", {}).get("message", "Unknown error from write_file skill")
-                ctx.logger.error(f"Failed to save generated skill using 'write_file': {error_msg}")
-                actions_taken.append({"action": "save_code", "status": "error", "message": error_msg})
-                # Return error, as saving failed
-                return {"status": "error", "message": f"Failed to save generated code: {error_msg}", "actions_taken": actions_taken}
+Skills Atuais Disponíveis:
+SKILLS_START
+{current_skills_description}
+SKILLS_END
 
-        except Exception as e:
-            ctx.logger.exception(f"Unexpected error calling 'write_file' skill for {target_filepath}:")
-            actions_taken.append({"action": "save_code", "status": "error", "message": f"Unexpected error calling write_file: {e}"})
-            return {"status": "error", "message": f"Unexpected error calling write_file: {e}", "actions_taken": actions_taken}
+Tarefa:
+Proponha uma nova skill Python completa para preencher a lacuna descrita. A skill deve:
+1.  Ser uma função `async def`.
+2.  Aceitar `context: Context` como primeiro argumento, para acesso a logger, LLM, memória, etc.
+3.  Usar o decorador `@skill` de `a3x.core.skills` com `name`, `description`, e `parameters` bem definidos.
+4.  Os `parameters` no decorador devem ser um dicionário onde cada chave é o nome do parâmetro e o valor é outro dicionário com `{"type": TIPO, "description": "DESC"}`. Inclua tipos (`str`, `int`, `bool`, `List`, `Dict`, `Optional`) e descrições claras.
+5.  Implementar a lógica principal da skill, incluindo logging (`context.logger`).
+6.  Retornar um dicionário padronizado: `{"status": "success" | "error", "data": {... }}`.
+7.  Incluir imports necessários.
+8.  Focar em ser o mais atômica e reutilizável possível.
+
+Responda SOMENTE com o bloco de código Python da nova skill. Não inclua explicações antes ou depois.
+Exemplo de Formato:
+```python
+import logging
+from typing import Dict, Any, Optional
+from a3x.core.skills import skill
+from a3x.core.context import Context
+
+logger = logging.getLogger(__name__)
+
+@skill(
+    name="nome_da_nova_skill",
+    description="Descrição clara do que a skill faz.",
+    parameters={
+        "context": {"type": Context, "description": "Contexto de execução."},
+        "param1": {"type": str, "description": "Descrição do param1."},
+        "param_opcional": {"type": Optional[int], "default": None, "description": "Descrição."}
+    }
+)
+async def nome_da_nova_skill(context: Context, param1: str, param_opcional: Optional[int] = None) -> Dict[str, Any]:
+    logger = context.logger
+    logger.info(f"Executando skill 'nome_da_nova_skill' com param1: {{param1}}")
+    try:
+        # Lógica da skill aqui...
+        result_data = f"Resultado processado de {{param1}}"
+        logger.info("Skill executada com sucesso.")
+        return {"status": "success", "data": {"resultado": result_data}}
+    except Exception as e:
+        logger.exception("Erro ao executar a skill:")
+        return {"status": "error", "data": {"message": str(e)}}
+```
+"""
+
+    # 3. Call LLM
+    try:
+        ctx.logger.info("Calling LLM to propose a new skill...")
+        proposed_code = ""
+        async for chunk in llm_interface.call_llm(messages=[{"role": "user", "content": prompt}], stream=True):
+            proposed_code += chunk
+
+        # Basic validation/cleanup
+        if not proposed_code or not proposed_code.strip():
+            ctx.logger.error("LLM returned empty response for skill proposal.")
+            return {"status": "error", "message": "LLM did not propose any skill code."}
+
+        # Extract code from markdown block if present
+        code_match = re.search(r"```(?:python)?\s*([\s\S]*?)\s*```", proposed_code, re.DOTALL)
+        if code_match:
+            proposed_code = code_match.group(1).strip()
+            ctx.logger.info("Extracted skill code from markdown block.")
+        else:
+            # Assume the whole response is code if no markdown block
+            proposed_code = proposed_code.strip()
+            ctx.logger.debug("No markdown block found, assuming full response is code.")
+
+        if not proposed_code:
+            ctx.logger.error("Skill proposal resulted in empty code after potential extraction.")
+            return {"status": "error", "message": "LLM proposal resulted in empty code."}
+
+        ctx.logger.info("Successfully received skill proposal from LLM.")
+        # Consider adding basic syntax validation here if needed
+
+        return {
+            "status": "success",
+            "proposed_skill_code": proposed_code
+        }
+
+    except Exception as e:
+        ctx.logger.exception("Error during LLM call for skill proposal:")
+        return {"status": "error", "message": f"Failed to get skill proposal from LLM: {e}"}
 
     # --- Step 4: TODO - Generate Test Skeleton --- #
     ctx.logger.info("TODO: Implement test skeleton generation for the new skill.")
     # Placeholder for future test generation logic
 
     # --- Step 5: Return Summary --- #
-    final_status = "success" if saved_filepath else "error"
-    summary_message = f"Proposal for skill '{skill_name}' processed. Code generated and saved to {saved_filepath}." if final_status == "success" else f"Proposal for skill '{skill_name}' processed, but failed during code generation or saving."
+    final_status = "success"
+    summary_message = f"Proposal for skill processed. Code generated and saved."
 
     ctx.logger.info(summary_message)
     return {
         "status": final_status,
         "message": summary_message,
-        "actions_taken": actions_taken,
-        "generated_skill_filepath": saved_filepath
+        "generated_skill_code": proposed_code
     } 

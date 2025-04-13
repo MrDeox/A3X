@@ -19,24 +19,26 @@ logger = logging.getLogger(__name__)
 
 @skill(
     name="append_to_file_path",
-    description="Anexa uma linha de texto a um arquivo especificado, criando diretórios se necessário.",
+    description="Appends text to a file at the given path, ensuring the directory exists.",
     parameters={
-        "path": (str, ...), # Caminho completo ou relativo para o arquivo.
-        "text": (str, ...)  # Texto a ser anexado (uma nova linha será adicionada automaticamente).
+        "context": {"type": Context, "description": "Execution context for logging and path resolution."},
+        "path": {"type": str, "description": "Relative or absolute path to the file."},
+        "text": {"type": str, "description": "The text content to append."}
     }
 )
-async def append_to_file_path(ctx, path: str, text: str) -> Dict[str, str]:
+async def append_to_file_path(context: Context, path: str, text: str) -> Dict[str, str]:
     """
     Appends a line of text to a specified file, creating parent directories if needed.
 
     Args:
-        ctx: The skill execution context (provides logger).
+        context: The skill execution context.
         path: The absolute or relative path to the target file.
         text: The text content to append. A newline will be added.
 
     Returns:
         A dictionary with {"status": "ok"} on success or {"error": ...} on failure.
     """
+    logger = context.logger
     logger.info(f"Attempting to append to file: {path}")
     try:
         # Ensure parent directory exists

@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
     name="audit_proposal",
     description="Executa uma auditoria baseada nas instruções fornecidas pelo usuário, retornando um relatório ou resultado da auditoria.",
     parameters={
-        "instructions": (str, ...),  # Instruções específicas para a auditoria
-        "target_data": (str, None),  # Dados ou caminho para os dados a serem auditados, se aplicável
+        "instructions": {"type": str, "description": "Instruções específicas para a auditoria."},
+        "target_data": {"type": Optional[str], "default": None, "description": "Dados ou caminho para os dados a serem auditados, se aplicável."}
     },
 )
 async def audit_proposal_skill(

@@ -104,6 +104,12 @@ def parse_arguments():
         default=None, # Default to None, setup_logging handles default path
         help="Arquivo para salvar os logs (padrão: logs/a3x_cli.log)"
     )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=20, # Default to 20 steps
+        help="Maximum number of orchestration steps allowed (default: 20)"
+    )
     return parser.parse_args()
 
 # <<< Context Definition (Placeholder/Example) >>>
@@ -128,6 +134,7 @@ async def main():
     logger.info(f"Using NGL: {args.ngl}")
     logger.info(f"Log Level set to: {args.log_level}")
     logger.info(f"Log File path: {args.log_file or 'Default path used'}")
+    logger.info(f"Maximum steps set to: {args.max_steps}")
     
     # Use imported constants directly
     db_path = DATABASE_PATH
@@ -190,7 +197,7 @@ async def main():
 
         # --- Execute Task using run_task --- 
         logger.info(f"[CLI] Starting agent task: {args.task}")
-        result = await agent.run_task(objective=args.task)
+        result = await agent.run_task(objective=args.task, max_steps=args.max_steps)
 
         # --- Handle Result --- 
         if result.get("status") == "success":

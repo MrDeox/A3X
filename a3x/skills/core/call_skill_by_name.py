@@ -6,10 +6,10 @@ import logging
 from typing import Dict, Any, Optional
 import inspect # Added for async check
 import asyncio
-from a3x.core.context import Context
 
 # Core imports
 from a3x.core.skills import skill, get_skill
+from a3x.core.context import Context
 
 # Removed assumption comment about SkillContext
 
@@ -17,13 +17,14 @@ logger = logging.getLogger(__name__)
 
 @skill(
     name="call_skill_by_name",
-    description="Executa outra skill registrada pelo nome, passando os argumentos necessários.",
+    description="Dynamically calls another registered skill by its name with the given arguments.",
     parameters={
-        "skill_name": (str, ...), # Nome da skill a ser chamada
-        "skill_args": (Optional[Dict[str, Any]], None)
+        "ctx": {"type": Context, "description": "The execution context provided by the agent."},
+        "skill_name": {"type": str, "description": "The exact name of the skill to call."},
+        "skill_args": {"type": Optional[Dict[str, Any]], "default": None, "description": "Dictionary of arguments to pass to the target skill." }
     }
 )
-async def call_skill_by_name(ctx, skill_name: str, skill_args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def call_skill_by_name(ctx: Context, skill_name: str, skill_args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Dynamically calls another registered skill by its name using the global registry.
 

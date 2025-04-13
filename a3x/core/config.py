@@ -15,6 +15,7 @@ LLM_LOGS_DIR = MEMORY_DIR / "llm_logs"
 LEARNING_HISTORY_DIR = MEMORY_DIR / "learning_history"
 SELF_EVAL_LOG = MEMORY_DIR / "self_evaluation_log.jsonl"
 LOGS_DIR = PROJECT_ROOT / "logs"
+PROMPT_DIR = PROJECT_ROOT / "a3x" / "prompts"
 
 # Arquivos de log/heurísticas
 SERVER_LOG_FILE = LOGS_DIR / "servers.log"

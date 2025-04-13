@@ -2,11 +2,12 @@ import requests
 import logging
 import json
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Use configurações centralizadas
 # from a3x.core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
 from a3x.core.skills import skill  # Import skill decorator
+from a3x.core.context import Context # Added import
 
 # Configure logger para esta skill
 logger = logging.getLogger(__name__)
@@ -14,45 +15,48 @@ logger = logging.getLogger(__name__)
 
 # Renamed function and added @skill decorator
 @skill(
-    name="generate_code",  # Use the more standard name
-    description="Generates code using the LLM based on a description and context.",
+    name="generate_code",
+    description="Generates code based on a detailed prompt and optional existing code.",
     parameters={
-        "purpose": (str, ...),
-        "language": (str, "python"),
-        "construct_type": (str, "function"),
-        "context": (str, None),
-    },
+        "context": {"type": Context, "description": "Execution context for LLM access."},
+        "prompt": {"type": str, "description": "Detailed prompt specifying the code to be generated."},
+        "language": {"type": Optional[str], "default": "python", "description": "Programming language for the code (e.g., 'python', 'javascript')."},
+        "existing_code": {"type": Optional[str], "default": None, "description": "Optional existing code snippet to modify or build upon."},
+        "construct_type": {"type": Optional[str], "default": "function", "description": "Type of code construct (e.g., 'function', 'class', 'script')."}
+    }
 )
-def generate_code(
-    purpose: str,
-    language: str = "python",
-    construct_type: str = "function",
-    context: str | None = None,
+async def generate_code(
+    context: Context,
+    prompt: str,
+    language: Optional[str] = "python",
+    existing_code: Optional[str] = None,
+    construct_type: Optional[str] = "function"
 ) -> Dict[str, Any]:
     """
     Generates code using the LLM with chat-style prompting and improved code extraction.
 
     Args:
-        purpose (str): Description of what the code should do.
+        context (Context): Execution context for LLM access.
+        prompt (str): Detailed prompt specifying the code to be generated.
         language (str, optional): Programming language. Defaults to 'python'.
-        construct_type (str, optional): Type of construct (e.g., function, class). Defaults to 'function'.
-        context (str | None, optional): Additional context or existing code. Defaults to None.
+        existing_code (str | None, optional): Optional existing code snippet to modify or build upon. Defaults to None.
+        construct_type (str | None, optional): Type of code construct (e.g., 'function', 'class', 'script'). Defaults to 'function'.
 
     Returns:
         Dict[str, Any]: Standardized dictionary with status, action, and data (code).
     """
     logger.info(f"Executing skill 'generate_code' for language '{language}'")
     logger.debug(
-        f"Purpose: {purpose}, Construct: {construct_type}, Context provided: {context is not None}"
+        f"Purpose: {prompt}, Construct: {construct_type}, Context provided: {existing_code is not None}"
     )
 
     # Basic validation (purpose is mandatory)
-    if not purpose:
-        logger.error("Parameter 'purpose' is mandatory for generate_code.")
+    if not prompt:
+        logger.error("Parameter 'prompt' is mandatory for generate_code.")
         return {
             "status": "error",
             "action": "code_generation_failed",
-            "data": {"message": "Error: Code purpose (purpose) was not specified."},
+            "data": {"message": "Error: Code purpose (prompt) was not specified."},
         }
 
     try:
@@ -63,13 +67,13 @@ def generate_code(
         system_prompt = f"You are an expert {language} programming assistant. Your task is to generate concise and functional code."
         # User prompt with the specific purpose and context
         user_prompt_lines = [
-            f"Generate ONLY the {language} code for the following task: {purpose}."
+            f"Generate ONLY the {language} code for the following task: {prompt}."
         ]
         if construct_type:
             user_prompt_lines.append(f"The code should be a {construct_type}.")
-        if context:
+        if existing_code:
             user_prompt_lines.append(
-                f"Consider the following context or existing code:\n```\n{context}\n```"
+                f"Consider the following context or existing code:\n```\n{existing_code}\n```"
             )
         user_prompt_lines.append(
             "Respond ONLY with the raw code block (e.g., within ```<lang>...``` or just the code itself), without any explanation before or after."

@@ -40,29 +40,31 @@ PROMPT_BACKUP_DIR = Path(PROJECT_ROOT) / ".a3x" / "prompt_backups"
 # --- Skill Definition ---
 @skill(
     name="apply_prompt_refinement_from_logs",
-    description="Aplica um refinamento de prompt sugerido (gerado por refine_decision_prompt) ao arquivo decision_prompt.txt.",
+    description="Applies a suggested prompt refinement to a target skill's configuration/prompt file.",
     parameters={
-        "suggested_prompt": (str, ...), # O texto completo do novo prompt sugerido.
-        "original_log_filename": (str, ...), # Nome do arquivo de log que originou a sugestão (para rastreabilidade).
-        # Context (ctx) is implicitly passed
+        "context": {"type": _ToolExecutionContext, "description": "Execution context for file system access."},
+        "target_skill_name": {"type": str, "description": "The name of the skill whose prompt should be updated."},
+        "suggested_prompt": {"type": str, "description": "The new suggested prompt content."},
+        "prompt_file_path": {"type": Optional[str], "default": None, "description": "Optional explicit path to the prompt file if different from default location."}
     }
 )
-# Updated function signature with correct context type
 async def apply_prompt_refinement_from_logs(
-    ctx: _ToolExecutionContext, # <-- Correct type hint
-    suggested_prompt: str, 
-    original_log_filename: str
+    context: _ToolExecutionContext,
+    target_skill_name: str,
+    suggested_prompt: str,
+    prompt_file_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Applies the suggested refined prompt to the main decision_prompt.txt file,
     creating a backup of the old version first.
     """
-    ctx.logger.info(f"Attempting to apply prompt refinement from log: {original_log_filename}")
+    context.logger.info(f"Attempting to apply prompt refinement from log: {prompt_file_path}")
 
     # Ensure backup directory exists
     try:
         PROMPT_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     except OSError as e:
+        context.logger.error(f"Failed to create prompt backup directory {PROMPT_BACKUP_DIR}: {e}")
         ctx.logger.error(f"Failed to create prompt backup directory {PROMPT_BACKUP_DIR}: {e}")
         return {"status": "error", "message": f"Failed to create backup directory: {e}"}
 

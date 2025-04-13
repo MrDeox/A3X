@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 
 @skill(
     name="final_answer",
-    description="Provides the final answer to the user's request when the objective is complete.",
-    parameters={"answer": (str, ...)},  # Parâmetro 'answer' é uma string obrigatória
+    description="Provides the final answer or summary to the user.",
+    parameters={
+        "answer": {"type": str, "description": "The final answer or summary text."}
+    }
 )
 def final_answer(answer: str) -> dict:
     """

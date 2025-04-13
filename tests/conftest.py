@@ -158,15 +158,13 @@ def agent_instance(
     mock_parser,
     mock_tool_executor,
     mock_db,
-    mock_llm_url,
 ):
     """Provides a fully mocked Agent instance for testing basic execution flow."""
     # Mock load_agent_state which might be called during init
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr("a3x.core.agent.load_agent_state", lambda *args, **kwargs: {})
-        # Instantiate ReactAgent with the provided mock_llm_url and a mock system_prompt
-        # The other mock fixtures are used by tests to patch module-level functions
-        agent_obj = ReactAgent(llm_url=mock_llm_url, system_prompt="mock_system_prompt")
+        # Instantiate ReactAgent with the provided mock_llm_interface
+        agent_obj = ReactAgent(llm_interface=mock_llm_interface, system_prompt="mock_system_prompt")
         # ADDED: Explicitly assign the mock DB to the agent instance
         agent_obj._memory = mock_db
     return agent_obj  # Return the agent object
@@ -181,7 +179,6 @@ def cerebrumx_agent_instance(
     mock_parser,
     mock_tool_executor,
     mock_db,
-    mock_llm_url,
 ):  # Re-use the same mock dependencies
     """Provides a fully mocked CerebrumXAgent instance."""
     # Mock load_agent_state which might be called during init
@@ -192,8 +189,9 @@ def cerebrumx_agent_instance(
         # Import CerebrumXAgent here to avoid circular dependency issues
         from a3x.core.cerebrumx import CerebrumXAgent  # Correct import path
 
+        # Instantiate CerebrumXAgent with the provided mock_llm_interface
         agent_obj = CerebrumXAgent(
-            llm_url=mock_llm_url, system_prompt="mock_cerebrumx_prompt"
+            llm_interface=mock_llm_interface, system_prompt="mock_cerebrumx_prompt"
         )
         # ADDED: Explicitly assign the mock DB to the agent instance
         agent_obj._memory = mock_db

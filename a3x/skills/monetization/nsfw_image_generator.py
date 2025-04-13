@@ -49,17 +49,26 @@ def format_lora_string(lora_filename: str, weight: float = 0.7) -> str:
 
 @skill(
     name="nsfw_image_generator",
-    description="Gera imagens NSFW usando a API Stable Diffusion com base em um perfil de persona JSON e um LoRA opcional.",
+    description="Generates an NSFW image based on a persona file and optional overrides.",
     parameters={
-        "persona_path": (str, ...),
-        "num_images": (int, 1),
-        "lora_weight": (float, 0.7),
-        "override_prompt": (Optional[str], None),
-        "override_negative_prompt": (Optional[str], None),
-        "override_lora_filename": (Optional[str], None)
+        "context": {"type": Context, "description": "Execution context for LLM access and file paths."},
+        "persona_path": {"type": str, "description": "Path to the persona JSON file."},
+        "num_images": {"type": int, "default": 1, "description": "Number of images to generate (default: 1)."},
+        "lora_weight": {"type": float, "default": 0.7, "description": "Weight for the LoRA model (default: 0.7)."},
+        "override_prompt": {"type": Optional[str], "default": None, "description": "Optional prompt to override the persona's visual prompt."},
+        "override_negative_prompt": {"type": Optional[str], "default": None, "description": "Optional negative prompt to override defaults."},
+        "override_lora_filename": {"type": Optional[str], "default": None, "description": "Optional specific LoRA filename to use."}
     }
 )
-async def generate_nsfw_image(ctx, persona_path: str, num_images: int = 1, lora_weight: float = 0.7, override_prompt: Optional[str] = None, override_negative_prompt: Optional[str] = None, override_lora_filename: Optional[str] = None) -> Dict[str, Any]:
+async def generate_nsfw_image(
+    context: Context,
+    persona_path: str,
+    num_images: int = 1,
+    lora_weight: float = 0.7,
+    override_prompt: Optional[str] = None,
+    override_negative_prompt: Optional[str] = None,
+    override_lora_filename: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Generates NSFW images via Stable Diffusion Web UI API based on a persona file.
 

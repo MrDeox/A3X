@@ -7,6 +7,7 @@ from a3x.core.skills import skill
 from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
 from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
 from a3x.core.context import Context
+from a3x.core.context import SharedTaskContext
 import os
 
 reflect_logger = logging.getLogger(__name__)
@@ -35,9 +36,12 @@ REFLECTION_PROMPT_TEMPLATE_FAILURE = """
 **Erro(s) Encontrado(s):**
 {errors_str}
 
+**Contexto Compartilhado Final:**
+{context_summary}
+
 **Resultado Final:** Falha
 
-**Tarefa:** Analise a execução falha acima. Identifique a causa raiz do erro ou a sequência de ações que levou à falha. Com base nisso, formule UMA ÚNICA heurística NEGATIVA e ACIONÁVEL (uma regra geral ou dica sobre o que *evitar*) que possa ser usada para prevenir falhas semelhantes em situações futuras. A heurística deve ser concisa (1-2 frases).
+**Tarefa:** Analise a execução falha acima, incluindo o estado final do Contexto Compartilhado. Identifique a causa raiz do erro ou a sequência de ações que levou à falha. Considere se o contexto compartilhado contém informações que poderiam ter ajudado a evitar a falha, ou se ele contribuiu para o erro. Com base nisso, formule UMA ÚNICA heurística NEGATIVA e ACIONÁVEL (uma regra geral ou dica sobre o que *evitar*) que possa ser usada para prevenir falhas semelhantes em situações futuras. A heurística deve ser concisa (1-2 frases).
 
 **Heurística Gerada (O que evitar):**
 """
@@ -46,16 +50,19 @@ REFLECTION_PROMPT_TEMPLATE_FAILURE = """
     name="reflect_on_failure",
     description="Reflete sobre uma execução falha para extrair heurísticas preventivas.",
     parameters={
-        "objective": (str, ...),
-        "plan": (List[str], ...),
-        "execution_results": (List[Dict[str, Any]], ...)
+        "ctx": {"type": "Context", "description": "The execution context."},
+        "objective": {"type": "str", "description": "The original objective that failed."},
+        "plan": {"type": "List[str]", "description": "The plan that was being executed."},
+        "execution_results": {"type": "List[Dict[str, Any]]", "description": "The results of each step of the plan execution."},
+        "final_task_context": {"type": "SharedTaskContext", "description": "The final state of the shared task context for analysis.", "optional": True}
     }
 )
 async def reflect_on_failure(
     ctx: Context,
     objective: str,
     plan: List[str],
-    execution_results: List[Dict[str, Any]]
+    execution_results: List[Dict[str, Any]],
+    final_task_context: Optional[SharedTaskContext] = None
 ) -> Dict[str, Any]:
     """Reflects on a failed execution to extract preventative heuristics."""
     reflect_logger.info(f"Reflecting on failure for objective: {objective[:100]}...")
@@ -67,10 +74,22 @@ async def reflect_on_failure(
     if not errors_str:
         errors_str = "(Nenhum erro detalhado registrado nos resultados)"
 
+    # Prepare shared context summary for prompt
+    context_summary = "(No shared context provided or empty)"
+    if final_task_context:
+        all_context_entries = final_task_context.get_all_entries()
+        if all_context_entries:
+            summary_lines = ["Shared Context Snapshot:"]
+            for key, entry in all_context_entries.items():
+                value_str = str(entry.value)[:70] + ('...' if len(str(entry.value)) > 70 else '')
+                summary_lines.append(f"  - {key}: Value='{value_str}', Source='{entry.source}', Tags={entry.tags}")
+            context_summary = "\n".join(summary_lines)
+
     prompt = REFLECTION_PROMPT_TEMPLATE_FAILURE.format(
         objective=objective,
         plan_str=plan_str,
-        errors_str=errors_str
+        errors_str=errors_str,
+        context_summary=context_summary
     )
 
     # Get LLMInterface instance from context or create a fallback

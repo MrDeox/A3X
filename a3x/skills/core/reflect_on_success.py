@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 from a3x.core.skills import skill
 from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
 from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
-from a3x.core.context import Context
+from a3x.core.context import Context, SharedTaskContext
 import os
 from pathlib import Path
 
@@ -36,9 +36,12 @@ REFLECTION_PROMPT_TEMPLATE_SUCCESS = """
 **Resultados Detalhados:**
 {results_str}
 
+**Contexto Compartilhado Final:**
+{context_summary}
+
 **Resultado Final:** Sucesso
 
-**Tarefa:** Analise a execução bem-sucedida acima. Identifique o fator chave ou a sequência de ações mais importante que levou ao sucesso. Com base nisso, formule UMA ÚNICA heurística POSITIVA e ACIONÁVEL (uma regra geral ou dica) que possa ser usada em situações futuras semelhantes. A heurística deve ser concisa (1-2 frases).
+**Tarefa:** Analise a execução bem-sucedida acima, incluindo o uso do Contexto Compartilhado. Identifique o fator chave ou a sequência de ações mais importante que levou ao sucesso. Considere como o contexto compartilhado ajudou (ou não). Com base nisso, formule UMA ÚNICA heurística POSITIVA e ACIONÁVEL (uma regra geral ou dica) que possa ser usada em situações futuras semelhantes. A heurística deve ser concisa (1-2 frases).
 
 **Heurística Gerada:**
 """
@@ -47,16 +50,19 @@ REFLECTION_PROMPT_TEMPLATE_SUCCESS = """
     name="reflect_on_success",
     description="Reflete sobre uma execução bem-sucedida para extrair heurísticas e aprendizados.",
     parameters={
-        "objective": (str, ...),
-        "plan": (List[str], ...),
-        "execution_results": (List[Dict[str, Any]], ...)
+        "ctx": {"type": "Context", "description": "O contexto de execução, fornecendo acesso a LLM, logger, etc."},
+        "objective": {"type": "str", "description": "O objetivo geral da tarefa que foi executada."},
+        "plan": {"type": "List[str]", "description": "A sequência de passos (ações/skills) que foram executadas."},
+        "execution_results": {"type": "List[Dict[str, Any]]", "description": "Uma lista de dicionários, cada um representando o resultado de um passo do plano."},
+        "final_task_context": {"type": "SharedTaskContext", "description": "The final state of the shared task context for analysis.", "optional": True}
     }
 )
 async def reflect_on_success(
     ctx: Context,
     objective: str,
     plan: List[str],
-    execution_results: List[Dict[str, Any]]
+    execution_results: List[Dict[str, Any]],
+    final_task_context: Optional[SharedTaskContext] = None
 ) -> Dict[str, Any]:
     """Reflects on a successful execution to extract heuristics."""
     reflect_logger.info(f"Reflecting on success for objective: {objective[:100]}...")
@@ -65,10 +71,23 @@ async def reflect_on_success(
     plan_str = "\n".join([f"- {step}" for step in plan])
     results_str = "\n".join([f"- Passo {i+1}: Status={res.get('status')}, Saída={str(res.get('output', 'N/A'))[:100]}..." for i, res in enumerate(execution_results)])
 
+    # Prepare shared context summary for prompt
+    context_summary = "(No shared context provided or empty)"
+    if final_task_context:
+        all_context_entries = final_task_context.get_all_entries()
+        if all_context_entries:
+            summary_lines = ["Shared Context Snapshot:"]
+            for key, entry in all_context_entries.items():
+                # Basic summary: key, value (truncated), source, tags
+                value_str = str(entry.value)[:70] + ('...' if len(str(entry.value)) > 70 else '')
+                summary_lines.append(f"  - {key}: Value='{value_str}', Source='{entry.source}', Tags={entry.tags}")
+            context_summary = "\n".join(summary_lines)
+
     prompt = REFLECTION_PROMPT_TEMPLATE_SUCCESS.format(
         objective=objective,
         plan_str=plan_str,
-        results_str=results_str
+        results_str=results_str,
+        context_summary=context_summary
     )
 
     # Get LLMInterface instance from context or create a fallback
@@ -130,6 +149,10 @@ async def main_test():
             self.llm_interface = LLMInterface(llm_url=os.getenv("LLM_API_URL", DEFAULT_LLM_URL))
             self.logger = reflect_logger
             self.workspace_root = Path(".")
+            # Mock SharedTaskContext for testing
+            self.shared_task_context = SharedTaskContext(task_id="test-task", initial_objective="test")
+            self.shared_task_context.set("initial_data", {"value": 1}, source="setup")
+            self.shared_task_context.set("processed_data", {"value": 2}, source="step1", tags=["intermediate"])
 
     mock_ctx = MockContext()
 
@@ -149,7 +172,8 @@ async def main_test():
         ctx=mock_ctx,
         objective=test_objective,
         plan=test_plan,
-        execution_results=test_results
+        execution_results=test_results,
+        final_task_context=mock_ctx.shared_task_context
     )
 
     print("\n--- Test Result ---")

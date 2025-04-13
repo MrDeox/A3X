@@ -41,48 +41,30 @@ class SkillInputSchema(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
+def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
     """
-    Decorador para registrar uma função como uma skill disponível para o agente.
+    Decorator to register a function as a skill available to the agent.
 
     Args:
-        name: O nome único da skill (usado pelo LLM).
-        description: Uma descrição clara do que a skill faz.
-        parameters: Um dicionário onde as chaves são os nomes dos parâmetros
-                    e os valores são tuplas (tipo_python, default_value).
-                    Use ... (Ellipsis) como default_value para parâmetros obrigatórios.
+        name: The unique name of the skill (used by the LLM).
+        description: A clear description of what the skill does.
+        parameters: A dictionary where keys are parameter names and values are
+                    dictionaries containing 'type', 'description', and optionally 'default'.
+                    Example:
+                    {
+                        "path": {"type": str, "description": "Path to the file"}, # Required
+                        "content": {"type": str, "default": "", "description": "Content to write"} # Optional
+                    }
     """
 
     def decorator(func: Callable):
         logger.debug(f"Registering skill: {name}")
 
-        # Validar assinatura da função contra parâmetros declarados
+        # Validate function signature against declared parameters
         sig = inspect.signature(func)
         func_params = sig.parameters
         declared_param_names = set(parameters.keys())
         func_param_names = set(func_params.keys())
-
-        # Verificar se a função aceita 'agent_memory' (opcional)
-        takes_memory = "agent_memory" in func_param_names
-        if takes_memory:
-            func_param_names.remove(
-                "agent_memory"
-            )  # Não incluir na validação de schema
-
-        # ADDED: Check for 'agent_history' as well
-        takes_history = "agent_history" in func_param_names
-        if takes_history:
-            func_param_names.remove(
-                "agent_history"
-            )  # Do not include in schema validation
-
-        # --- Start Modification: Ignore 'self' for method signature validation ---
-        is_method = "self" in func_param_names
-        if is_method:
-            func_param_names.remove(
-                "self"
-            )  # Remove 'self' before comparing with declared params
-        # --- End Modification ---
 
         # Define parameters to ignore during signature validation
         ignored_params = {
@@ -92,11 +74,8 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
             "resolved_path",
             "original_path_str",
             "kwargs",
-            "ctx"
         }
 
-        # Verificar se todos os parâmetros declarados estão na assinatura da função
-        # <<< MODIFIED: Remove ignored params before check >>>
         func_params_to_validate = func_param_names - ignored_params
         if not declared_param_names.issubset(func_params_to_validate):
             missing_in_func = declared_param_names - func_params_to_validate
@@ -104,64 +83,54 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
                 f"Skill '{name}': Parameters {missing_in_func} declared in decorator but not found in function signature (excluding {ignored_params})."
             )
 
-        # Verificar se a função não tem parâmetros extras
-        # <<< MODIFIED: Remove ignored params before check >>>
         extra_in_func = func_params_to_validate - declared_param_names
         if extra_in_func:
-            raise TypeError(
-                f"Skill '{name}': Parameters {extra_in_func} found in function signature but not declared in decorator (excluding {ignored_params})."
-            )
-
-        # Criar schema Pydantic dinamicamente
-        param_details = {}
-        for param_name, param_info in parameters.items():
-            # Handle both (type,) and (type, default) formats
-            if isinstance(param_info, (list, tuple)):
-                if len(param_info) == 1:
-                    param_type = param_info[0]
-                    default_value = inspect.Parameter.empty # Indicate no default
-                elif len(param_info) == 2:
-                    param_type, default_value = param_info
-                    # <<< FIX: Correctly check against inspect.Parameter.empty >>>
-                    is_required = (default_value is inspect.Parameter.empty)
-                    default_desc = f" (default: {default_value})" if not is_required else ""
-                else:
-                    logger.warning(f"Invalid parameter format for '{param_name}' in skill '{name}'. Expected (type,) or (type, default).")
-                    continue
+            # Allow extra function params if they have defaults (might be context injected later)
+            has_defaults = all(func_params[p].default != inspect.Parameter.empty for p in extra_in_func)
+            if not has_defaults:
+                 raise TypeError(
+                     f"Skill '{name}': Parameters {extra_in_func} found in function signature without default values but not declared in decorator (excluding {ignored_params})."
+                 )
             else:
-                 logger.warning(f"Invalid parameter format for '{param_name}' in skill '{name}'. Expected tuple or list.")
-                 continue
+                 logger.debug(f"Skill '{name}': Parameters {extra_in_func} found in function signature with defaults but not in decorator. Allowed.")
 
-            # Validate against function signature if possible (optional but good practice)
-            if param_name not in func_params:
-                logger.warning(f"Parameter '{param_name}' defined in @skill for '{name}' but not found in function signature.")
-                # Continue registering, but log warning
 
-            param_details[param_name] = {
-                # Store the actual type object, not its string representation
-                "type_obj": param_type,
-                "type_str": str(param_type.__name__) if hasattr(param_type, '__name__') else str(param_type), # Keep string for logging/display
-                "required": default_value is inspect.Parameter.empty,
-                "default": default_value if default_value is not inspect.Parameter.empty else None
+        # Create Pydantic schema dynamically
+        pydantic_fields = {}
+        param_details_for_registry = {} # Store details for SKILL_REGISTRY
+
+        # <<< REVISED SCHEMA GENERATION LOGIC >>>
+        for param_name, param_config in parameters.items():
+            if not isinstance(param_config, dict) or "type" not in param_config or "description" not in param_config:
+                raise TypeError(f"Skill '{name}': Invalid parameter config for '{param_name}'. Expected dict with 'type' and 'description'.")
+
+            param_type = param_config["type"]
+            param_desc = param_config["description"]
+            param_default = param_config.get("default", ...) # Use Ellipsis as default sentinel for required
+
+            # Store details for the registry (similar to before but using new structure)
+            param_details_for_registry[param_name] = {
+                 "type_obj": param_type,
+                 "type_str": str(param_type.__name__) if hasattr(param_type, '__name__') else str(param_type),
+                 "required": param_default is ...,
+                 "default": None if param_default is ... else param_default, # Store None if required, else the default
+                 "description": param_desc
             }
 
-        # Criar schema Pydantic dinamicamente
-        pydantic_fields = {}
-        for param_name, param_info in param_details.items():
+            # Prepare for Pydantic model
             # Use the actual type object for Pydantic model creation
-            field_type = param_info["type_obj"]
-            field_default = param_info["default"] if not param_info["required"] else ... # Use Ellipsis for required fields
-            pydantic_fields[param_name] = (field_type, field_default)
+            # Use the extracted default (... or actual default)
+            pydantic_fields[param_name] = (param_type, param_default)
 
-        # Nome do schema dinâmico (para melhor debug/docs)
+        # <<< END REVISED SCHEMA GENERATION LOGIC >>>
+
+        # Dynamic schema name
         schema_name = f"{name.capitalize()}SkillSchema"
         try:
-            # <<< CORRECTED: Removed __config__, inherit from base class >>>
             dynamic_schema = create_model(
                 schema_name,
                 __base__=SkillInputSchema,
-                __module__=func.__module__, # Helps with docs/debugging
-                # __config__ is no longer needed here
+                __module__=func.__module__,
                 **pydantic_fields
             )
         except Exception as e:
@@ -172,13 +141,15 @@ def skill(name: str, description: str, parameters: Dict[str, tuple[type, Any]]):
                 f"Invalid Pydantic schema definition for skill '{name}'."
             ) from e
 
-        # Registrar a skill
+        # Register the skill
         SKILL_REGISTRY[name] = {
             "function": func,
             "description": description,
-            "parameters": parameters,  # Mantém a definição original para referência
-            "schema": dynamic_schema,  # Schema Pydantic para validação
-            "takes_memory": takes_memory,  # Indica se a skill usa memória
+            # <<< Store the NEW parameter config in registry >>>
+            "parameters": param_details_for_registry, # Store the processed details
+            "schema": dynamic_schema,
+            "takes_memory": "agent_memory" in func_params, # Check original signature
+            "takes_history": "agent_history" in func_params # Check original signature
         }
         logger.info(f"Successfully registered skill: {name}")
         return func

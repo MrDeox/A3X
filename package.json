@@ -1,0 +1,33 @@
+{
+  "contributes": {
+    "commands": [
+      {
+        "command": "a3x.runTask",
+        "title": "A³X: Executar Task",
+        "category": "A³X"
+      },
+      {
+        "command": "a3x.showPanel",
+        "title": "A³X: Mostrar Painel",
+        "category": "A³X"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "a3x-sidebar",
+          "title": "A³X Assistant",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "a3x-sidebar": [
+        {
+          "id": "a3x-chat",
+          "name": "Chat"
+        }
+      ]
+    }
+  }
+} 

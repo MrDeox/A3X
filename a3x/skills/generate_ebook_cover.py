@@ -42,11 +42,11 @@ DEFAULT_PAYLOAD = {
 
 @skill(
     name="generate_ebook_cover",
-    description="Gera uma imagem de capa para um ebook com base no título, descrição e público-alvo.",
+    description="Gera uma imagem de capa de e-book usando um modelo de difusão estável.",
     parameters={
-        "title": (str, ...),
-        "description": (str, ...),
-        "target_audience": (str, ...)
+        "title": {"type": str, "description": "O título do e-book para a capa."},
+        "description": {"type": str, "description": "Uma breve descrição do e-book para inspirar a capa."},
+        "target_audience": {"type": str, "description": "O público-alvo do e-book."}
     }
 )
 async def generate_ebook_cover(title: str, description: str, target_audience: str, ctx: Optional[Context] = None) -> str:

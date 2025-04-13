@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
     name="open_url",
     description="Opens the specified URL in a new browser instance (closes any previous one). Stores the page for subsequent actions.",
     parameters={
-        "url": (str, ...),  # Ellipsis means the parameter is required
+        "url": {"type": str, "description": "The URL to open."},
     },
 )
 async def open_url(url: str) -> Dict[str, Any]:
@@ -59,7 +59,7 @@ async def open_url(url: str) -> Dict[str, Any]:
     name="click_element",
     description="Clicks an element on the currently open web page specified by a CSS selector.",
     parameters={
-        "selector": (str, ...),
+        "selector": {"type": str, "description": "The CSS selector for the element to click."},
     },
 )
 async def click_element(selector: str) -> Dict[str, Any]:
@@ -100,8 +100,8 @@ async def click_element(selector: str) -> Dict[str, Any]:
     name="fill_form_field",
     description="Fills a form field on the currently open web page, identified by a CSS selector, with the specified value.",
     parameters={
-        "selector": (str, ...),
-        "value": (str, ...),
+        "selector": {"type": str, "description": "The CSS selector for the form field."},
+        "value": {"type": str, "description": "The value to fill into the field." },
     },
 )
 async def fill_form_field(selector: str, value: str) -> Dict[str, Any]:
@@ -139,7 +139,7 @@ async def fill_form_field(selector: str, value: str) -> Dict[str, Any]:
     name="get_page_content",
     description="Retrieves the HTML content of the currently open page, optionally filtered by a CSS selector.",
     parameters={
-        "selector": (str, None),  # Type is str, default is None making it optional
+        "selector": {"type": Optional[str], "default": None, "description": "Optional CSS selector to get content from a specific element."},
     },
 )
 async def get_page_content(selector: Optional[str] = None) -> Dict[str, Any]:

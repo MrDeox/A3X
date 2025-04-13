@@ -9,6 +9,7 @@ from a3x.core.skills import skill
 from a3x.core.llm_interface import LLMInterface
 from a3x.core.config import PROJECT_ROOT
 from a3x.core.agent import _ToolExecutionContext
+from a3x.core.skills import SkillContext
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +68,19 @@ def extract_json_from_markdown(text: str) -> Optional[Dict[str, Any]]:
 
 @skill(
     name="persona_generator",
-    description="Gera uma persona fictícia +18 detalhada (nome, bio, tags, prompt visual, estilo) e salva como JSON.",
+    description="Generates a detailed buyer persona based on a niche description and target audience.",
     parameters={
-        "niche": (str, ...),
-        "platform": (str, ...),
-        "number_of_personas": (int, 1)
+        "context": {"type": SkillContext, "description": "Execution context for LLM access."},
+        "niche": {"type": str, "description": "Description of the niche market."},
+        "target_audience": {"type": Optional[str], "default": None, "description": "Specific description of the target audience within the niche."},
+        "num_personas": {"type": Optional[int], "default": 1, "description": "Number of distinct personas to generate (default: 1)."}
     }
 )
 async def generate_persona(
-    ctx: _ToolExecutionContext,
+    context: SkillContext,
     niche: str,
-    platform: str,
-    number_of_personas: int = 1
+    target_audience: Optional[str] = None,
+    num_personas: Optional[int] = 1
 ) -> Dict[str, Any]:
     """
     Generates a fictional +18 persona profile using an LLM call and saves it to a JSON file.
@@ -92,14 +94,14 @@ async def generate_persona(
     Returns:
         A dictionary indicating success or failure, including the path to the saved persona file.
     """
-    logger = ctx.logger
-    llm_interface = ctx.llm_interface
+    logger = context.logger
+    llm_interface = context.llm_interface
     
     if not llm_interface:
         logger.error("LLMInterface not found in execution context for persona generation.")
         return {"status": "error", "message": "Internal error: LLMInterface missing."}
         
-    logger.info(f"Starting persona generation for niche '{niche}' on platform '{platform}'...")
+    logger.info(f"Starting persona generation for niche '{niche}' on platform '{target_audience}'...")
 
     full_response_content = ""
     json_data = None

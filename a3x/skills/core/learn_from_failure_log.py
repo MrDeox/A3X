@@ -49,8 +49,8 @@ Gere APENAS a heurística extraída, sem nenhum texto adicional antes ou depois.
     name="learn_from_failure_log",
     description="Gera uma heurística concisa a partir de uma análise de falha detalhada.",
     parameters={
-        "failure_analysis": (str, ...)
-        # Context (ctx) is implicitly passed
+        "failure_analysis": {"type": "str", "description": "The detailed failure analysis log entry."},
+        "ctx": {"type": "Context", "description": "The execution context."}
     }
 )
 # Updated function signature

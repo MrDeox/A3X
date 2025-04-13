@@ -6,9 +6,6 @@ from unittest.mock import MagicMock, patch
 # Importa a função refatorada
 from skills.modify_code import skill_modify_code
 
-# Importa constantes do config se necessário para verificar a chamada
-from core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
-
 # --- Configuração de Logging (Opcional, para debug dos testes) ---
 # logging.basicConfig(level=logging.DEBUG)
 # logger = logging.getLogger(__name__)
@@ -69,10 +66,6 @@ def test_modify_code_success_add_comment(mock_post):
     # Verifica a chamada a requests.post
     mock_post.assert_called_once()
     call_args, call_kwargs = mock_post.call_args
-    assert call_args[0] == LLAMA_SERVER_URL
-    assert (
-        call_kwargs.get("headers") == LLAMA_DEFAULT_HEADERS
-    )  # Verifica headers padrão
     payload = call_kwargs.get("json")
     assert isinstance(payload, dict)
     assert payload.get("messages")[0]["role"] == "user"

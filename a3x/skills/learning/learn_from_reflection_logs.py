@@ -12,6 +12,7 @@ from a3x.core.learning_logs import load_recent_reflection_logs
 from a3x.core.llm_interface import LLMInterface
 from a3x.core.agent import _ToolExecutionContext
 from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE, LLM_LOGS_DIR
+from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +22,15 @@ HEURISTIC_LOG_PATH = Path(LEARNING_LOGS_DIR) / HEURISTIC_LOG_FILE
 
 @skill(
     name="learn_from_reflection_logs",
-    description="Analisa logs da skill de reflexão para extrair aprendizados. Pode analisar os N mais recentes ou um log específico por offset.",
+    description="Analyzes recent reflection logs to extract patterns and suggest improvements.",
     parameters={
-        "n_logs": (int, 10),  # Analisa os N últimos logs (se offset não for usado).
-        "log_offset": (Optional[int], None) # Default to None to prioritize n_logs
+        "context": {"type": Context, "description": "Execution context for memory access."},
+        "n_logs": {"type": int, "default": 10, "description": "Number of recent reflection logs to analyze (default: 10)."}
     }
 )
 async def learn_from_reflection_logs(
-    ctx: _ToolExecutionContext, 
-    n_logs: int = 10, 
-    log_offset: Optional[int] = None # Default None
+    context: Context,
+    n_logs: int = 10
 ) -> Dict[str, Any]:
     """
     Analyzes reflection logs to extract learning points for system evolution.
@@ -45,7 +45,8 @@ async def learn_from_reflection_logs(
     Returns:
         A dictionary containing the synthesized insights from the log(s) or an error.
     """
-    ctx.logger.info(f"Executing learn_from_reflection_logs skill. Offset: {log_offset}, N_logs: {n_logs}")
+    ctx = context
+    ctx.logger.info(f"Executing learn_from_reflection_logs skill. N_logs: {n_logs}")
 
     # Get LLM interface
     llm_interface = ctx.llm_interface
@@ -56,39 +57,14 @@ async def learn_from_reflection_logs(
     logs_to_process: List[Dict[str, Any]] = []
     log_load_description = ""
 
-    # Determine which log(s) to load based on parameters
-    if log_offset is not None and log_offset >= 0:
-        # Offset is prioritized
-        target_offset = log_offset
-        ctx.logger.info(f"Loading specific log with offset: {target_offset}")
-        log_load_description = f"log at offset {target_offset}"
-        try:
-            # Load enough logs to potentially reach the offset
-            # We load offset + 1 logs, and if successful, take the last one (which is at the desired offset from the end)
-            all_logs_for_offset = load_recent_reflection_logs(n=target_offset + 1)
-            if len(all_logs_for_offset) > target_offset:
-                 # Python list index -1 is last, -2 second last...
-                 # So offset 0 needs index -1, offset 1 needs index -2 etc.
-                 target_index = -1 - target_offset
-                 logs_to_process = [all_logs_for_offset[target_index]]
-            else:
-                 # Not enough logs were available
-                 ctx.logger.error(f"Log offset {target_offset} exceeds the number of available logs ({len(all_logs_for_offset)})." )
-                 return {"error": f"Offset {target_offset} excede número de logs disponíveis ({len(all_logs_for_offset)})."}
-
-        except Exception as e:
-            ctx.logger.exception(f"Failed to load reflection logs for offset {target_offset}:" )
-            return {"error": f"Failed to load reflection logs for offset {target_offset}: {e}"}
-
-    else:
-        # Use n_logs (default behavior)
-        ctx.logger.info(f"Loading last {n_logs} logs.")
-        log_load_description = f"last {n_logs} logs"
-        try:
-            logs_to_process = load_recent_reflection_logs(n=n_logs)
-        except Exception as e:
-            ctx.logger.exception("Failed to load reflection logs:")
-            return {"error": f"Failed to load reflection logs: {e}"}
+    # Use n_logs (default behavior)
+    ctx.logger.info(f"Loading last {n_logs} logs.")
+    log_load_description = f"last {n_logs} logs"
+    try:
+        logs_to_process = load_recent_reflection_logs(n=n_logs)
+    except Exception as e:
+        ctx.logger.exception("Failed to load reflection logs:")
+        return {"error": f"Failed to load reflection logs: {e}"}
 
     if not logs_to_process:
         ctx.logger.warning(f"No reflection logs found for the specified criteria ({log_load_description}).")

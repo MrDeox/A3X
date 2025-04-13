@@ -9,10 +9,11 @@ from datetime import timezone
 from pathlib import Path
 from collections import namedtuple
 import asyncio # Added import
+import time # <<< ADDED for timing execution
 
 # Import base agent and other necessary core components
 from a3x.core.agent import ReactAgent, is_introspective_query
-from a3x.core.skills import get_skill_descriptions
+from a3x.core.skills import get_skill_descriptions, get_skill_registry
 from a3x.core.tool_executor import execute_tool, _ToolExecutionContext
 
 # Centralized config and memory manager
@@ -29,6 +30,10 @@ from ..skills.core.learn_from_failure_log import learn_from_failure_log
 from ..skills.core.reflect_on_failure import reflect_on_failure # <<< ADDED import
 # Generalization/Consolidation skills will be called within _reflect_and_learn
 
+# <<< ADDED Fragment Registry Import >>>
+from a3x.fragments.registry import FragmentRegistry
+from a3x.fragments.base import BaseFragment # Import base class for type hinting
+
 # Initialize logger for this module
 cerebrumx_logger = logging.getLogger(__name__) # <<< Rename logger? agent_logger already exists in ReactAgent
 
@@ -44,10 +49,13 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
     Incorpora percepção, planejamento, execução ReAct, reflexão e aprendizado em um único fluxo.
     """
 
-    def __init__(self, system_prompt: str, llm_url: Optional[str] = None, tools_dict: Optional[Dict[str, Dict[str, Any]]] = None, exception_policy=None):
+    def __init__(self, system_prompt: str, llm_url: Optional[str] = None, tools_dict: Optional[Dict[str, Dict[str, Any]]] = None, exception_policy=None, agent_config: Optional[Dict] = None):
         """Inicializa o Agente CerebrumX."""
+        # Initialize ReactAgent first
         super().__init__(system_prompt, llm_url, tools_dict=tools_dict)
         self.agent_logger.info("[CerebrumX INIT] Agente CerebrumX inicializado (Ciclo Unificado).")
+        self.config = agent_config or {}
+
         # Configuração centralizada para MemoryManager
         memory_config = {
             "SEMANTIC_INDEX_PATH": a3x_config.SEMANTIC_INDEX_PATH,
@@ -55,13 +63,25 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
             "EPISODIC_RETRIEVAL_LIMIT": a3x_config.EPISODIC_RETRIEVAL_LIMIT,
         }
         self.memory_manager = MemoryManager(memory_config)
+
         # ExceptionPolicy configurável
         if exception_policy is None:
             from a3x.core.exception_policy import ExceptionPolicy
             self.exception_policy = ExceptionPolicy()
         else:
             self.exception_policy = exception_policy
-        # No initial_perception needed here if run takes objective
+
+        # <<< ADDED Fragment Registry Initialization >>>
+        # Pass shared dependencies (LLM, skills) and config to the registry
+        # Using self.tools as a simplified skill registry for now
+        # TODO: Implement a proper SkillRegistry class if needed
+        self.fragment_registry = FragmentRegistry(
+            llm_interface=self.llm, # Pass the LLM interface from ReactAgent
+            skill_registry=get_skill_registry(), # Pass the actual skill registry
+            config=self.config # Pass the main agent config
+        )
+        self.agent_logger.info(f"[CerebrumX INIT] Fragment Registry inicializado. {len(self.fragment_registry.list_available_fragments())} fragments carregados.")
+        # <<< END ADDED Section >>>
 
     # --- Novo Ciclo Cognitivo Unificado ---
     async def run(self, objective: str) -> Dict[str, Any]: # Now returns final result dict
@@ -70,13 +90,11 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         Perceber -> Planejar -> Executar -> Refletir & Aprender.
         Retorna um dicionário com o resultado final ou o status da execução.
         """
-        import time
+        start_time = time.time()
         from a3x.core.auto_evaluation import auto_evaluate_task
-        # Import moved to top level to avoid potential issues inside methods
         from a3x.core.db_utils import add_episodic_record
 
         self.agent_logger.info(f"--- Iniciando Ciclo Cognitivo Unificado --- Objetivo: {objective[:100]}..." )
-        start_time = time.time()
 
         # 1. Percepção (Simplificado)
         perception = self._perceive(objective)
@@ -91,51 +109,65 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
             self.exception_policy.handle(e, context="Erro durante recuperação de contexto")
             context = {"combined_summary": "Erro ao recuperar contexto.", "semantic_results": [], "episodic_results": [], "query": perception.get("processed", "")}
 
-        # 3. Planejamento
-        plan = await self._plan(perception, context)
-        self.agent_logger.info(f"Plano gerado: {plan}")
-        if not plan:
-             self.agent_logger.error("Falha ao gerar plano. Abortando ciclo.")
-             return {"status": "error", "message": "Falha crítica no planejamento."}
+        # 3. Seleção de Fragment (Roteamento da Tarefa)
+        selected_fragment = await self._select_fragment(perception, context)
 
-        # 4. Execução do Plano
-        final_status, final_message, execution_results = await self._execute_plan(plan, context, objective)
-        self.agent_logger.info(f"Execução do plano finalizada. Status: {final_status}")
+        # 4. Execução via Fragment Selecionado
+        final_status = "error"
+        final_message = "Nenhum fragment apropriado foi selecionado para a tarefa."
+        execution_trace = [] # Trace da execução do fragment
+        selected_fragment_name = "N/A"
+
+        if selected_fragment:
+            selected_fragment_name = selected_fragment.get_name()
+            self.agent_logger.info(f"Fragment '{selected_fragment_name}' selecionado. Iniciando execução...")
+            final_fragment_result, execution_trace = await self._execute_fragment(selected_fragment, perception["processed"], context)
+            final_status = final_fragment_result.get("status", "error")
+            # Get message from final_answer or observation or default message
+            final_message = final_fragment_result.get("final_answer") or final_fragment_result.get("observation") or final_fragment_result.get("message", "Fragment execution finished with no message.")
+            self.agent_logger.info(f"Execução do Fragment '{selected_fragment_name}' finalizada. Status: {final_status}")
+        else:
+            self.agent_logger.error(f"Falha ao selecionar fragment para o objetivo: {objective[:100]}...")
+            # Optionally, try a default fragment or report error
+            # Update metrics for routing failure?
 
         # 5. Reflexão e Aprendizado Pós-Execução
-        await self._reflect_and_learn(perception, plan, execution_results, final_status)
+        await self._reflect_and_learn(perception, selected_fragment_name, execution_trace, final_status)
 
         # 6. Autoavaliação Cognitiva
         end_time = time.time()
         heuristics_used = []
-        for res in execution_results:
-            if "heuristic" in res.get("data", {}):
-                heuristics_used.append(res["data"]["heuristic"])
+        # for res in execution_trace:
+        #     if "heuristic" in res.get("data", {}):
+        #         heuristics_used.append(res["data"]["heuristic"])
+
+        # The concept of a linear "plan" changes. We use the selected fragment name.
         auto_evaluate_task(
             objective=objective,
-            plan=plan,
-            execution_results=execution_results,
+            plan=[f"Route to: {selected_fragment_name}"], # Represent plan as routing decision
+            execution_results=execution_trace,
             heuristics_used=heuristics_used,
             start_time=start_time,
             end_time=end_time
         )
 
-        # 7. Validação de heurísticas aplicada ao ciclo real
-        try:
-            from a3x.core.heuristics_validator import validate_heuristics
-            task_info = {
-                "objective": objective,
-                "plan": plan,
-                "execution_results": execution_results
-            }
-            validate_heuristics([task_info])
-            self.agent_logger.info("[HeuristicsValidator] Validação de heurísticas executada ao final do ciclo.")
-        except Exception as e:
-            self.agent_logger.warning(f"[HeuristicsValidator] Falha ao validar heurísticas: {e}")
+        # 7. Validação de heurísticas (Se aplicável ao nível do orquestrador)
+        # This might be more relevant within fragments or based on consolidated learning
+        # try:
+        #     from a3x.core.heuristics_validator import validate_heuristics
+        #     task_info = {
+        #         "objective": objective,
+        #         "selected_fragment": selected_fragment_name,
+        #         "execution_results": execution_trace
+        #     }
+        #     # validate_heuristics([task_info]) # Needs adaptation for fragment context
+        #     self.agent_logger.info("[HeuristicsValidator] Validação de heurísticas executada ao final do ciclo (adaptar para fragments).")
+        # except Exception as e:
+        #     self.agent_logger.warning(f"[HeuristicsValidator] Falha ao validar heurísticas: {e}")
 
         # 8. Retornar Resultado Final
-        self.agent_logger.info("--- Ciclo Cognitivo Unificado Concluído --- ")
-        return {"status": final_status, "message": final_message, "results": execution_results}
+        self.agent_logger.info("--- Ciclo Cognitivo Unificado Concluído --- Fragment: {selected_fragment_name}")
+        return {"status": final_status, "message": final_message, "fragment_used": selected_fragment_name, "results": execution_trace} # Return trace
 
     # --- Métodos Internos do Ciclo ---
 
@@ -254,281 +286,113 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         }
         return final_context
 
-    async def _plan(self, perception: Dict[str, Any], context: Dict[str, Any]) -> List[str]:
-        """Gera um plano de execução baseado na percepção e contexto."""
-        self.agent_logger.info("--- Gerando Plano de Execução ---")
+    async def _select_fragment(self, perception: Dict[str, Any], context: Dict[str, Any]) -> Optional[BaseFragment]:
+        """
+        Seleciona o Fragment mais apropriado para a tarefa usando o FragmentRegistry.
+        """
         objective = perception.get("processed", "")
-        context_summary = context.get("combined_summary", "")
-        tool_descs = get_skill_descriptions()
+        self.agent_logger.info(f"Roteando tarefa: '{objective[:100]}...' para um Fragment adequado.")
 
-        # Consultar heurísticas relevantes
-        heuristics_context = None
-        # Exemplo placeholder:
-        # try:
-        #     consult_result = await execute_tool(...) # Chamar consult_learned_heuristics
-        #     if consult_result["status"] == "success":
-        #         heuristics_context = ... # Formatar resultado
-        # except Exception as e:
-        #     self.agent_logger.warning(f"Erro ao consultar heurísticas: {e}")
-
-        # Gerar plano usando o LLM
-        try:
-            from a3x.core.planner import generate_plan
-            plan_to_execute = await generate_plan(
-                objective=objective,
-                tool_descriptions=tool_descs,
-                agent_logger=self.agent_logger,
-                llm_url=self.llm_url,
-                heuristics_context=heuristics_context
-            )
-            return plan_to_execute if plan_to_execute is not None else []
-        except Exception as e:
-            self.agent_logger.exception(f"Erro fatal durante a geração do plano: {e}")
-            # Tentar gerar um plano de fallback simples (apenas Final Answer com erro)
-            return [f"Use the final_answer tool to report planning failure: {e}"]
-
-    async def _execute_plan(self, plan: List[str], context: Dict[str, Any], original_objective: str) -> Tuple[str, str, List[Dict[str, Any]]]:
-        """Executa um plano iterando sobre cada passo usando o ciclo ReAct."""
-        self.agent_logger.info(f"[ExecutePlan] Iniciando execução do plano com {len(plan)} passos via ReAct.")
-        execution_results: List[Dict[str, Any]] = []
-        final_status = "unknown"
-        final_message = "Execução iniciada, mas nenhum passo concluído."
-        error_occurred = False
-        critical_error_message = None # Para erros fatais fora do loop ReAct
-
-        # Criar contexto para execução de skills (usado por _perform_react_iteration)
-        exec_context = _ToolExecutionContext(logger=self.agent_logger, workspace_root=self.workspace_root, llm_url=self.llm_url, tools_dict=self.tools)
-
-        # --- Execução via ReAct para TODOS os planos --- #
-        # Initialize history for this plan execution
-        self._history = []
+        if not objective:
+             self.agent_logger.error("Objetivo vazio, impossível selecionar fragment.")
+             return None
 
         try:
-            for i, step in enumerate(plan):
-                step_log_prefix = f"[ExecutePlan Step {i+1}/{len(plan)}]"
-                self.agent_logger.info(f"{step_log_prefix} Executando: '{step}'")
-
-                step_results_agg = [] # Agregador para resultados deste passo
-                last_observation = None
-                last_thought = "N/A"
-                last_action = "N/A"
-                step_final_answer = None
-
-                try:
-                    async for react_output in self._perform_react_iteration(step, step_log_prefix):
-                        step_results_agg.append(react_output) # Log raw output
-
-                        if react_output.get("type") == "thought":
-                            last_thought = react_output.get("content", "N/A")
-                        elif react_output.get("type") == "action":
-                            last_action = react_output.get("name", "N/A")
-                        elif react_output.get("type") == "observation":
-                            last_observation = react_output.get("content")
-                        elif react_output.get("type") == "final_answer":
-                            step_final_answer = react_output.get("content", "No final answer provided for step.")
-                            self.agent_logger.info(f"{step_log_prefix} Passo considerado concluído pelo LLM (Final Answer). Resposta: {step_final_answer[:100]}...")
-                            break # Sair do loop ReAct para este passo
-                        elif react_output.get("type") == "error":
-                            error_occurred = True
-                            final_status = "failed"
-                            critical_error_message = react_output.get("content", "Erro desconhecido na iteração ReAct.")
-                            self.agent_logger.error(f"{step_log_prefix} Erro durante iteração ReAct: {critical_error_message}")
-
-                            # --- Aprendizado Imediato de Falha --- #
-                            failure_context = {
-                                "objective": original_objective,
-                                "failed_step": step,
-                                "failed_step_index": i,
-                                "plan": plan,
-                                "last_thought": last_thought,
-                                "last_action": last_action,
-                                "last_observation": str(last_observation) if last_observation else "N/A",
-                                "error_message": critical_error_message
-                            }
-                            try:
-                                self.agent_logger.warning(f"{step_log_prefix} Tentando refletir e aprender com a falha ReAct...")
-                                reflection_result = await execute_tool(tool_name="reflect_on_failure", action_input=failure_context, tools_dict=self.tools, context=exec_context)
-                                failure_analysis = reflection_result.get("data", {}).get("explanation", "Falha na análise.")
-                                self.agent_logger.info(f"{step_log_prefix} Análise da falha ReAct obtida: {failure_analysis[:100]}...")
-
-                                learn_input = {"failure_analysis": failure_analysis, "objective": original_objective, "error_message": critical_error_message}
-                                learn_result = await execute_tool(tool_name="learn_from_failure_log", action_input=learn_input, tools_dict=self.tools, context=exec_context)
-                                learned_heuristic = learn_result.get("data", {}).get("heuristic")
-                                if learned_heuristic:
-                                    self.agent_logger.info(f"{step_log_prefix} Heurística de falha ReAct registrada: {learned_heuristic[:100]}...")
-                                    # O log no arquivo JSONL é feito dentro da skill agora
-                            except Exception as learn_err:
-                                self.agent_logger.error(f"{step_log_prefix} Erro durante o aprendizado da falha ReAct: {learn_err}", exc_info=True)
-                            break # Sair do loop ReAct para este passo
-
-                    # Fim do loop ReAct para o passo atual
-                    # Adicionar resultado agregado do passo à lista geral
-                    execution_results.append({
-                        "step": step,
-                        "react_trace": step_results_agg,
-                        "step_status": "error" if error_occurred else "completed",
-                        "step_final_answer": step_final_answer # Pode ser None se não houve Final Answer explícito
-                    })
-
-                    if error_occurred:
-                        self.agent_logger.warning(f"{step_log_prefix} Erro detectado, interrompendo execução do plano.")
-                        break # Interromper execução do plano completo
-
-                except Exception as step_react_err:
-                    # Erro inesperado DENTRO do loop _perform_react_iteration
-                    self.agent_logger.exception(f"{step_log_prefix} Erro não capturado dentro do loop ReAct para o passo: '{step}'")
-                    error_occurred = True
-                    final_status = "error"
-                    critical_error_message = f"Erro crítico inesperado no loop ReAct: {step_react_err}"
-                    # Adicionar um resultado de erro para este passo
-                    execution_results.append({
-                        "step": step,
-                        "react_trace": step_results_agg, # Pode ter resultados parciais
-                        "step_status": "error",
-                        "error_message": critical_error_message
-                    })
-                    break # Interromper execução do plano
-
-            # Fim do loop principal do plano
-            if not error_occurred:
-                final_status = "completed"
-                # Usar a resposta final do último passo ReAct ou uma mensagem padrão
-                last_step_result = execution_results[-1] if execution_results else {}
-                final_message = last_step_result.get("step_final_answer", "Plano concluído com sucesso (sem resposta final explícita do último passo).")
+            selected_fragment = await self.fragment_registry.select_fragment_for_task(objective, context)
+            if selected_fragment:
+                 self.agent_logger.info(f"Fragment '{selected_fragment.get_name()}' selecionado pelo registry.")
+                 return selected_fragment
             else:
-                 # Status já 'failed' ou 'error', a mensagem de erro foi definida no loop
-                 final_message = critical_error_message or "Falha na execução do plano (causa específica não registrada)."
+                 self.agent_logger.warning("Nenhum fragment específico foi selecionado pelo registry.")
+                 # TODO: Implementar fallback ou estratégia de erro
+                 # Could try a 'GeneralPurposeFragment' or return None
+                 return None
+        except Exception as e:
+             self.agent_logger.error(f"Erro durante a seleção de fragment: {e}", exc_info=True)
+             return None
 
-        except Exception as outer_err:
-            # Erro inesperado FORA do loop principal do plano (e.g., erro no setup do loop)
-            self.agent_logger.exception("Erro crítico inesperado durante a execução geral do plano:")
-            final_status = "error"
-            final_message = f"Erro crítico na execução do plano: {outer_err}"
-            # Adicionar um registro de erro geral se execution_results estiver vazio
-            if not execution_results:
-                execution_results.append({"step": "N/A", "status": "error", "message": final_message})
+    async def _execute_fragment(self, fragment: BaseFragment, objective: str, context: Optional[Dict]) -> Tuple[Dict, List[Dict]]:
+        """
+        Executa o método run_and_optimize do Fragment selecionado.
+        """
+        self.agent_logger.info(f"Executando Fragment '{fragment.get_name()}' para objetivo: {objective[:100]}...")
+        final_result = {"status": "error", "message": "Fragment execution failed to start.", "type": "error"}
+        execution_trace = []
 
-        # Limpar histórico após execução do plano
-        self._history = []
+        try:
+            # Chama o método wrapper do fragment que lida com execução, métricas e otimização
+            final_result, execution_trace = await fragment.run_and_optimize(objective, context)
+            self.agent_logger.info(f"Fragment '{fragment.get_name()}' terminou. Status final: {final_result.get('status')}")
 
-        return final_status, final_message, execution_results
+        except Exception as e:
+            self.agent_logger.exception(f"Erro não capturado durante a execução do Fragment '{fragment.get_name()}':")
+            error_message = f"Unhandled exception during fragment execution: {e}"
+            final_result = {"status": "error", "type": "error", "message": error_message}
+            # Append error to trace if possible
+            execution_trace.append(final_result)
+
+        return final_result, execution_trace
 
     # --- Reflexão e Aprendizado Pós-Execução --- #
-    async def _reflect_and_learn(self, perception: Dict[str, Any], plan: List[str], execution_results: List[Dict[str, Any]], final_status: str):
-        """Chama a skill 'learning_cycle' para análise pós-execução."""
-        self.agent_logger.info("--- Iniciando Fase de Reflexão e Aprendizado (via Skill Learning Cycle) --- ")
+    async def _reflect_and_learn(self, perception: Dict[str, Any], fragment_name: str, execution_trace: List[Dict[str, Any]], final_status: str):
+        """
+        Analisa os resultados da execução do Fragment e aplica estratégias de aprendizado.
+        """
+        self.agent_logger.info(f"Iniciando Reflexão e Aprendizado para Fragment '{fragment_name}' (Status: {final_status})...")
+
+        # Create execution context for reflection skills
+        # Note: Reflection skills might need access to the *Orchestrator's* tools
+        # or potentially tools specific to reflection/analysis.
+        exec_context = _ToolExecutionContext(
+            logger=self.agent_logger,
+            workspace_root=self.workspace_root,
+            llm_url=self.llm_url,
+            tools_dict=self.tools # Or a specific subset for reflection
+        )
+
         try:
-            # Criar contexto para a skill learning_cycle
-            exec_context = _ToolExecutionContext(logger=self.agent_logger, workspace_root=self.workspace_root, llm_url=self.llm_url, tools_dict=self.tools)
+            objective = perception.get("processed", "")
+            if final_status == "success":
+                # --- Learn from Success ---
+                self.agent_logger.info(f"Refletindo sobre o sucesso do Fragment '{fragment_name}'...")
+                reflection_params = {
+                    "objective": objective,
+                    "plan": [f"Executed by: {fragment_name}"], # Simplified plan
+                    "execution_trace": execution_trace,
+                    "ctx": exec_context # Pass context
+                }
+                # Call success reflection skill (ensure it exists and is appropriate)
+                # success_reflection = await reflect_on_success(**reflection_params)
+                # ... process reflection results ...
+                self.agent_logger.info("(Placeholder) Success reflection completed.")
 
-            learning_cycle_input = {
-                "objective": perception.get("processed", "N/A"),
-                "plan": plan,
-                "execution_results": execution_results,
-                "final_status": final_status,
-                "agent_tools": self.tools, # Passar o dicionário de ferramentas
-                "agent_workspace": str(self.workspace_root), # Passar como string
-                "agent_llm_url": self.llm_url
-            }
-            learning_result = await execute_tool(tool_name="learning_cycle", action_input=learning_cycle_input, tools_dict=self.tools, context=exec_context)
-            # Logar resultado do ciclo de aprendizado
-            result_status = learning_result.get("status", "error")
-            result_message = learning_result.get("data", {}).get("message", "Falha desconhecida no ciclo de aprendizado.")
-            self.agent_logger.info(f"Resultado do Learning Cycle: {result_status} - {result_message}")
+            else: # Handle 'error' or other non-success statuses
+                # --- Learn from Failure ---
+                self.agent_logger.warning(f"Refletindo sobre a falha do Fragment '{fragment_name}'...")
+                # Find the last error message in the trace
+                last_error_msg = "Unknown error during fragment execution"
+                for step in reversed(execution_trace):
+                    if step.get("status") == "error" or step.get("type") == "error":
+                        last_error_msg = step.get("message", last_error_msg)
+                        break
+                    # Check nested data if applicable (depends on trace structure)
+                    if isinstance(step.get("data"), dict) and step["data"].get("status") == "error":
+                         last_error_msg = step["data"].get("message", last_error_msg)
+                         break
 
-        except Exception as e:
-            self.agent_logger.exception("Erro fatal durante a fase de reflexão e aprendizado:")
-        finally:
-             self.agent_logger.info("--- Fase de Reflexão e Aprendizado Concluída --- ")
+                failure_params = {
+                    "objective": objective,
+                    "plan": [f"Executed by: {fragment_name}"], # Simplified plan
+                    "execution_trace": execution_trace,
+                    "error_message": last_error_msg,
+                    "ctx": exec_context
+                }
+                # Call failure reflection skill
+                # failure_reflection = await reflect_on_failure(**failure_params)
+                # ... process reflection results ...
+                self.agent_logger.warning(f"(Placeholder) Failure reflection completed. Error: {last_error_msg[:100]}...")
 
-    async def _attempt_recovery(self, suggestions: List[str], step_log_prefix: str) -> bool:
-        """
-        Attempts simple recovery actions based on LLM suggestions.
-        """
-        import os
-        import re
-        import datetime
-        from datetime import timezone
-        from pathlib import Path
-        from a3x.core.learning_logs import log_heuristic_with_traceability
+        except Exception as reflect_err:
+            self.agent_logger.error(f"Erro durante a fase de Reflexão e Aprendizado: {reflect_err}", exc_info=True)
 
-        self.agent_logger.info(f"{step_log_prefix} Analyzing {len(suggestions)} suggestions for recovery actions.")
-        for suggestion in suggestions:
-            suggestion_lower = suggestion.lower()
-            self.agent_logger.debug(f"{step_log_prefix} Evaluating suggestion: '{suggestion}'")
-
-            if "retry" in suggestion_lower:
-                self.agent_logger.info(f"{step_log_prefix} Recovery action: Retrying step based on suggestion '{suggestion}'.")
-                return True
-
-            install_match = re.search(r"(?:install|instalar) (?:dependency|dependência|package|pacote) ['\"]?([\w\-\.]+)['\"]?", suggestion, re.IGNORECASE)
-            if install_match:
-                dep_name = install_match.group(1).strip()
-                self.agent_logger.warning(f"{step_log_prefix} Sugestão de instalar dependência '{dep_name}' detectada. Por segurança, apenas logando a sugestão.")
-                try: # Try block for logging
-                    plan_id = f"plan-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                    execution_id = f"exec-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                    recovery_heuristic = {"type": "recovery_suggestion", "trigger_suggestion": suggestion, "action_taken": "Suggested install dependency", "details": {"dependency": dep_name}, "context": {"step_log_prefix": step_log_prefix}}
-                    log_heuristic_with_traceability(recovery_heuristic, plan_id, execution_id, validation_status="pending_manual")
-                    self.agent_logger.info(f"{step_log_prefix} Logged recovery heuristic (suggest install dependency).")
-                except Exception as log_err: # Corresponding except for logging try
-                    self.agent_logger.exception(f"{step_log_prefix} Failed to log recovery heuristic (install dependency): {log_err}")
-                continue
-
-            if "permission" in suggestion_lower or "permissão" in suggestion_lower:
-                self.agent_logger.warning(f"{step_log_prefix} Sugestão de correção de permissões detectada. Apenas logando a sugestão.")
-                try: # Try block for logging
-                    plan_id = f"plan-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                    execution_id = f"exec-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                    recovery_heuristic = {"type": "recovery_suggestion", "trigger_suggestion": suggestion, "action_taken": "Suggested fix permissions", "details": {}, "context": {"step_log_prefix": step_log_prefix}}
-                    log_heuristic_with_traceability(recovery_heuristic, plan_id, execution_id, validation_status="pending_manual")
-                    self.agent_logger.info(f"{step_log_prefix} Logged recovery heuristic (suggest fix permissions).")
-                except Exception as log_err: # Corresponding except for logging try
-                    self.agent_logger.exception(f"{step_log_prefix} Failed to log recovery heuristic (fix permissions): {log_err}")
-                continue
-
-            alt_skill_match = re.search(r"(?:use|utilize|chame|call) skill ['\"]?(\w+)['\"]?", suggestion, re.IGNORECASE)
-            if alt_skill_match:
-                alt_skill = alt_skill_match.group(1)
-                self.agent_logger.info(f"{step_log_prefix} Sugestão de chamar skill alternativa '{alt_skill}' detectada. (Implementação futura)")
-                continue
-
-            # Corrected: Added create_match definition
-            create_match = re.search(r"(?:create|criar) (?:directory|diretório) ['\"]?([^'\"]+)['\"]?", suggestion, re.IGNORECASE)
-            if create_match:
-                dir_to_create = create_match.group(1).strip()
-                if not os.path.isabs(dir_to_create):
-                     dir_to_create_abs = self.workspace_root / dir_to_create
-                else:
-                     dir_to_create_abs = Path(dir_to_create)
-                self.agent_logger.info(f"{step_log_prefix} Recovery action: Attempting to create directory '{dir_to_create_abs}' based on suggestion '{suggestion}'.")
-                try:
-                    if dir_to_create_abs.exists():
-                         self.agent_logger.info(f"{step_log_prefix} Directory '{dir_to_create_abs}' already exists. Recovery considered successful.")
-                         try: # Try block for logging
-                             plan_id = f"plan-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                             execution_id = f"exec-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                             recovery_heuristic = {"type": "recovery_success", "trigger_suggestion": suggestion, "action_taken": "Confirmed directory exists", "details": {"directory": str(dir_to_create_abs)}, "context": {"step_log_prefix": step_log_prefix}}
-                             log_heuristic_with_traceability(recovery_heuristic, plan_id, execution_id, validation_status="confirmed_effective")
-                             self.agent_logger.info(f"{step_log_prefix} Logged recovery heuristic (directory exists).")
-                         except Exception as log_err: # Corresponding except for logging try
-                             self.agent_logger.exception(f"{step_log_prefix} Failed to log recovery heuristic (directory exists): {log_err}")
-                         return True
-
-                    dir_to_create_abs.mkdir(parents=True, exist_ok=True)
-                    self.agent_logger.info(f"{step_log_prefix} Successfully created directory '{dir_to_create_abs}'.")
-                    try: # Try block for logging
-                        plan_id = f"plan-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                        execution_id = f"exec-recovery-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                        recovery_heuristic = {"type": "recovery_success", "trigger_suggestion": suggestion, "action_taken": "Created directory", "details": {"directory": str(dir_to_create_abs)}, "context": {"step_log_prefix": step_log_prefix}}
-                        log_heuristic_with_traceability(recovery_heuristic, plan_id, execution_id, validation_status="confirmed_effective")
-                        self.agent_logger.info(f"{step_log_prefix} Logged recovery heuristic (directory created).")
-                    except Exception as log_err: # Corresponding except for logging try
-                        self.agent_logger.exception(f"{step_log_prefix} Failed to log recovery heuristic (directory created): {log_err}")
-                    return True
-                except Exception as e:
-                    self.agent_logger.error(f"{step_log_prefix} Failed to create directory '{dir_to_create_abs}': {e}")
-                    return False # Explicitly indicate recovery failed here
-
-        self.agent_logger.info(f"{step_log_prefix} No actionable recovery suggestion found or recovery failed.")
-        return False
+        self.agent_logger.info("Fase de Reflexão e Aprendizado concluída.")

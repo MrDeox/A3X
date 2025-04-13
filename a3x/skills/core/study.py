@@ -15,10 +15,11 @@ logger = logging.getLogger(__name__)
         "fazendo perguntas, resumindo, relacionando conceitos e aplicando o que aprendeu de forma adaptativa."
     ),
     parameters={
-        "task": (str, ...),
-        "context": (dict, None),
-        "vision": (str, None),  # Ex: screenshot, texto da tela, etc
-        "resources": (list, None),  # Lista de arquivos, links, docs, etc
+        "ctx": {"type": "Context", "description": "The execution context."},
+        "task": {"type": "str", "description": "The specific learning task to perform."},
+        "context": {"type": "dict", "description": "Optional dictionary providing surrounding context for the task."},
+        "vision": {"type": "str", "description": "Optional visual input (e.g., screenshot text, file content)."},
+        "resources": {"type": "list", "description": "Optional list of resource identifiers (files, links) to study."}
     },
 )
 async def study_skill(

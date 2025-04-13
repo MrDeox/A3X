@@ -11,15 +11,14 @@ from typing import Dict, Any, Optional
 import asyncio
 
 # Core imports
-from a3x.core.skills import skill
-
-# Direct imports of helper skill functions
+from a3x.core.skills import skill, get_skill_registry
 from a3x.skills.core.call_skill_by_name import call_skill_by_name
 from a3x.skills.core.append_to_file_path import append_to_file_path
 from a3x.skills.learning.learn_from_reflection_logs import learn_from_reflection_logs
 from a3x.skills.learning.synthesize_learning_insights import synthesize_learning_insights
 from a3x.skills.learning.apply_prompt_refinement_from_logs import apply_prompt_refinement_from_logs
 from a3x.skills.simulate import simulate_decision_reflection
+from a3x.core.context import Context
 
 # Assume SkillContext provides access to logger
 
@@ -32,12 +31,16 @@ logger = logging.getLogger(__name__)
 
 @skill(
     name="auto_improve_simulation_prompt",
-    description="Executa um ciclo completo de simulação->aprendizado->refinamento para melhorar o prompt da skill simulate_decision_reflection.",
+    description="Automatically tries to improve the prompt for the simulate_arthur_response skill based on recent interactions.",
     parameters={
-        "user_input": (Optional[str], None) # Opcional – se não for passado, use um padrão
+        "context": {"type": Context, "description": "Execution context for LLM, memory, and skill access."},
+        "user_input": {"type": Optional[str], "default": None, "description": "Optional specific user input to focus the improvement on."}
     }
 )
-async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) -> Dict[str, Any]:
+async def auto_improve_simulation_prompt(
+    context: Context, # Renamed ctx to context
+    user_input: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Orchestrates the simulate, learn, and refine cycle for the simulation prompt
     using directly imported helper skill functions.
@@ -49,9 +52,9 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
     Returns:
         A dictionary summarizing the results of the auto-improvement cycle.
     """
-    ctx.logger.info("--- Starting Auto Prompt Improvement Cycle --- ")
+    context.logger.info("--- Starting Auto Prompt Improvement Cycle --- ")
     start_time_absolute = datetime.datetime.now(datetime.timezone.utc)
-    ctx.logger.info(f"[TIMER] Cycle started at: {start_time_absolute.isoformat()}")
+    context.logger.info(f"[TIMER] Cycle started at: {start_time_absolute.isoformat()}")
     last_timestamp = start_time_absolute
 
     # ---> Initial LLM Readiness Check <---
@@ -70,7 +73,7 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
 
     # --- Step 1: Determine Input --- #
     simulation_input = user_input if user_input else DEFAULT_USER_INPUT
-    ctx.logger.info(f"Using simulation input: '{simulation_input}'")
+    context.logger.info(f"Using simulation input: '{simulation_input}'")
 
     # Storage for results
     simulated_reflection = "[Simulation not run or failed]"
@@ -81,21 +84,21 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
 
     # --- Helper: Use directly imported skill functions --- #
     async def run_dependent_skill(skill_name: str, skill_args: Dict = {}, required: bool = True):
-        ctx.logger.info(f"Calling '{skill_name}' via imported call_skill_by_name...")
+        context.logger.info(f"Calling '{skill_name}' via imported call_skill_by_name...")
         try:
             # Directly use the imported function
-            result = await call_skill_by_name(ctx, skill_name=skill_name, skill_args=skill_args)
+            result = await call_skill_by_name(context, skill_name=skill_name, skill_args=skill_args)
 
             if "error" in result:
-                ctx.logger.error(f"Call to '{skill_name}' failed: {result['error']}")
+                context.logger.error(f"Call to '{skill_name}' failed: {result['error']}")
                 if required:
                     raise ValueError(f"Required dependent skill '{skill_name}' failed: {result['error']}")
             else:
-                 ctx.logger.info(f"Call to '{skill_name}' successful.")
+                 context.logger.info(f"Call to '{skill_name}' successful.")
             return result
         except Exception as e:
             # Catch potential errors if call_skill_by_name itself fails unexpectedly
-            ctx.logger.exception(f"Unexpected error calling call_skill_by_name for '{skill_name}':")
+            context.logger.exception(f"Unexpected error calling call_skill_by_name for '{skill_name}':")
             if required:
                 raise ValueError(f"Critical failure during call_skill_by_name execution for '{skill_name}'.") from e
             return {"error": f"Unexpected error calling call_skill_by_name: {e}"}
@@ -103,7 +106,7 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
     try:
         # --- Step 2: Simulate Reflection --- #
         step2_start_time = datetime.datetime.now(datetime.timezone.utc)
-        ctx.logger.info(f"[TIMER] Before Simulate Reflection. Elapsed since start: {(step2_start_time - start_time_absolute).total_seconds():.2f}s. Since last step: {(step2_start_time - last_timestamp).total_seconds():.2f}s")
+        context.logger.info(f"[TIMER] Before Simulate Reflection. Elapsed since start: {(step2_start_time - start_time_absolute).total_seconds():.2f}s. Since last step: {(step2_start_time - last_timestamp).total_seconds():.2f}s")
         last_timestamp = step2_start_time
         sim_result = await run_dependent_skill(
             skill_name="simulate_decision_reflection",
@@ -114,7 +117,7 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
 
         # --- Step 3: Learn from Logs --- #
         step3_start_time = datetime.datetime.now(datetime.timezone.utc)
-        ctx.logger.info(f"[TIMER] Before Learn from Logs. Elapsed since start: {(step3_start_time - start_time_absolute).total_seconds():.2f}s. Since last step: {(step3_start_time - last_timestamp).total_seconds():.2f}s")
+        context.logger.info(f"[TIMER] Before Learn from Logs. Elapsed since start: {(step3_start_time - start_time_absolute).total_seconds():.2f}s. Since last step: {(step3_start_time - last_timestamp).total_seconds():.2f}s")
         last_timestamp = step3_start_time
         learn_result = await run_dependent_skill(
             skill_name="learn_from_reflection_logs",
@@ -124,7 +127,7 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
 
         # --- Step 4: Apply Refinement --- #
         step4_start_time = datetime.datetime.now(datetime.timezone.utc)
-        ctx.logger.info(f"[TIMER] Before Apply Refinement. Elapsed since start: {(step4_start_time - start_time_absolute).total_seconds():.2f}s. Since last step: {(step4_start_time - last_timestamp).total_seconds():.2f}s")
+        context.logger.info(f"[TIMER] Before Apply Refinement. Elapsed since start: {(step4_start_time - start_time_absolute).total_seconds():.2f}s. Since last step: {(step4_start_time - last_timestamp).total_seconds():.2f}s")
         last_timestamp = step4_start_time
         refine_result = await run_dependent_skill(
             skill_name=APPLY_REFINEMENT_SKILL,
@@ -140,15 +143,15 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
             # Include the error from refine_result if available
             refine_error = refine_result.get("error", "Unknown refinement error")
             final_status = f"Ciclo concluído, mas refinamento do prompt falhou: {refine_error}"
-            ctx.logger.warning(f"Prompt refinement step failed: {refine_error}")
+            context.logger.warning(f"Prompt refinement step failed: {refine_error}")
 
     except Exception as cycle_error:
-        ctx.logger.exception("Error during auto-improvement cycle execution:")
+        context.logger.exception("Error during auto-improvement cycle execution:")
         final_status = f"Ciclo interrompido por erro: {cycle_error}"
         # insights, new_prompt, etc., will retain their default error state or last value
 
     # --- Call the refactored logging function ---
-    await _log_cycle_history(ctx, start_time_absolute, simulation_input,
+    await _log_cycle_history(context, start_time_absolute, simulation_input,
                              simulated_reflection, insights, refinement_status,
                              new_prompt, final_status)
 
@@ -162,7 +165,7 @@ async def auto_improve_simulation_prompt(ctx, user_input: Optional[str] = None) 
     }
     end_time_absolute = datetime.datetime.now(datetime.timezone.utc)
     total_duration = (end_time_absolute - start_time_absolute).total_seconds()
-    ctx.logger.info(f"[TIMER] --- Auto Prompt Improvement Cycle Finished: {final_status} --- Total Duration: {total_duration:.2f}s")
+    context.logger.info(f"[TIMER] --- Auto Prompt Improvement Cycle Finished: {final_status} --- Total Duration: {total_duration:.2f}s")
     return summary_result
 
 # --- Step 5: Log History (Refactored into helper) --- #

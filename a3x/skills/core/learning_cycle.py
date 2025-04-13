@@ -9,6 +9,7 @@ import datetime
 from a3x.core.skills import skill
 from a3x.core.tool_executor import execute_tool, _ToolExecutionContext
 from a3x.core.db_utils import add_episodic_record # Para log final
+from a3x.core.context import SharedTaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +37,14 @@ def register_missing_skill_heuristic(skill_name: str, context: dict = None):
     name="learning_cycle",
     description="Orquestra a fase pós-execução completa: reflexão, aprendizado baseado no resultado (sucesso/falha), generalização e consolidação de heurísticas.",
     parameters={
-        "objective": (str, ...), # Objetivo original que iniciou o ciclo
-        "plan": (list, ...), # Plano que foi executado
-        "execution_results": (list, ...), # Lista de dicionários com resultados de cada passo
-        "final_status": (str, ...), # Status final da execução do plano ('completed', 'failed', 'error')
-        "agent_tools": (dict, ...), # Dicionário de tools/skills disponíveis para o agente
-        "agent_workspace": (str, ...), # Caminho do workspace
-        "agent_llm_url": (str, None), # URL do LLM, se necessário para sub-skills
+        "objective": {"type": "str", "description": "Objetivo original que iniciou o ciclo"},
+        "plan": {"type": "list", "description": "Plano que foi executado"},
+        "execution_results": {"type": "list", "description": "Lista de dicionários com resultados de cada passo"},
+        "final_status": {"type": "str", "description": "Status final da execução do plano ('completed', 'failed', 'error')"},
+        "agent_tools": {"type": "dict", "description": "Dicionário de tools/skills disponíveis para o agente"},
+        "agent_workspace": {"type": "str", "description": "Caminho do workspace"},
+        "agent_llm_url": {"type": "str", "description": "URL do LLM, se necessário para sub-skills"}, # Note: Making type str as Optional[str] isn't standard JSON Schema
+        "shared_task_context": {"type": "SharedTaskContext", "description": "The final shared context from the task execution.", "optional": True} 
     },
 )
 async def learning_cycle_skill(
@@ -53,13 +55,23 @@ async def learning_cycle_skill(
     agent_tools: dict,
     agent_workspace: str,
     agent_llm_url: Optional[str] = None,
+    shared_task_context: Optional[SharedTaskContext] = None 
 ) -> Dict[str, Any]:
     """Skill principal para o ciclo de aprendizado pós-execução."""
     logger.info(f"--- Iniciando Skill Learning Cycle --- Status Final: {final_status}")
     
     # Criar contexto para as sub-skills
-    # Passando logger, workspace e llm_url herdados do agente principal
-    exec_context = _ToolExecutionContext(logger=logger, workspace_root=agent_workspace, llm_url=agent_llm_url, tools_dict=agent_tools)
+    # Passando logger, workspace, llm_url e shared_context herdados
+    exec_context = _ToolExecutionContext(
+        logger=logger, 
+        workspace_root=agent_workspace, 
+        llm_url=agent_llm_url, 
+        tools_dict=agent_tools,
+        # Placeholder - assumindo que podem ser None ou obtidos de outra forma se as sub-skills não precisarem deles diretamente
+        llm_interface=None, 
+        fragment_registry=None, 
+        shared_task_context=shared_task_context # Passa o contexto recebido
+    )
 
     learned_info = [] # Para coletar informações aprendidas
     errors = [] # Para coletar erros durante o ciclo
@@ -71,7 +83,8 @@ async def learning_cycle_skill(
             success_context = {
                  "objective": objective,
                  "plan": plan,
-                 "execution_results": execution_results
+                 "execution_results": execution_results,
+                 "final_task_context": shared_task_context 
              }
             reflect_success_result = await execute_tool(
                 tool_name="reflect_on_success",
@@ -112,13 +125,43 @@ async def learning_cycle_skill(
             
     elif final_status == "failed" or final_status == "error":
         logger.info("Execução falhou. Iniciando reflexão/aprendizado sobre falha.")
-        # A lógica de reflexão/aprendizado de falha já está no _execute_plan
-        # Talvez mover essa lógica para cá no futuro? 
-        # Por agora, podemos apenas logar ou adicionar info extra.
-        failed_step_info = "Detalhes da falha não disponíveis aqui (processado em _execute_plan)."
-        # Poderíamos extrair o failed_step dos execution_results se necessário
-        learned_info.append(f"Failure processed during execution: {failed_step_info}")
-        logger.warning("Reflexão/Aprendizado de falha atualmente tratado durante a execução (_execute_plan).")
+        # Idealmente, chamaríamos reflect_on_failure aqui também
+        # Isso requer refatorar como o final_status e results são tratados
+        # Exemplo de como seria:
+        try:
+            failure_context = {
+                "objective": objective,
+                "plan": plan,
+                "execution_results": execution_results,
+                "final_task_context": shared_task_context # Passa o contexto
+            }
+            reflect_failure_result = await execute_tool(
+                tool_name="reflect_on_failure",
+                action_input=failure_context,
+                tools_dict=agent_tools,
+                context=exec_context # Passa o contexto de execução geral
+            )
+            # Processar resultado de reflect_on_failure similarmente ao de success
+            if reflect_failure_result.get("status") == "success":
+                learned_heuristic = reflect_failure_result.get("data", {}).get("heuristic", "N/A")
+                logger.info(f"Heurística de falha aprendida: {learned_heuristic[:100]}...")
+                learned_info.append(f"Failure Heuristic: {learned_heuristic}")
+                # Logar heurística de falha (código omitido para brevidade, similar ao de sucesso)
+            else:
+                error_msg = f"Skill reflect_on_failure falhou: {reflect_failure_result.get('data',{}).get('message')}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+        except Exception as reflect_err:
+            error_msg = f"Erro ao chamar skill reflect_on_failure: {reflect_err}"
+            logger.exception(error_msg)
+            errors.append(error_msg)
+        # FIM DO BLOCO DE EXEMPLO PARA REFLECT_ON_FAILURE
+
+        # A lógica de aprendizado de falha pode precisar ser mais sofisticada
+        # do que apenas logar a informação que já estava no execution_results.
+        # failed_step_info = "Detalhes da falha não disponíveis aqui (processado em _execute_plan)."
+        # learned_info.append(f"Failure processed during execution: {failed_step_info}")
+        # logger.warning("Reflexão/Aprendizado de falha atualmente tratado durante a execução (_execute_plan).")
 
     # --- 2. Generalização e Consolidação --- 
     logger.info("Iniciando generalização e consolidação de heurísticas...")

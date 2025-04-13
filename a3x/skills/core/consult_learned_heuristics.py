@@ -21,8 +21,9 @@ MIN_KEYWORD_MATCH_SCORE = 1 # Minimum overlap to consider a heuristic relevant
     name="consult_learned_heuristics",
     description="Consulta o log CONSOLIDADO de heurísticas aprendidas (representativas/únicas) para encontrar regras relevantes.",
     parameters={
-        'objective': (str, ...), 
-        'top_k': (int, 3)
+        "objective": {"type": "str", "description": "The objective to find relevant heuristics for."},
+        "top_k": {"type": "int", "description": "The maximum number of heuristics of each type (success/failure) to return.", "default": 3},
+        "ctx": {"type": "Context", "description": "The optional execution context."} # ctx is Optional[Context] in signature
     }
 )
 # <<< RESTORED async def and ctx parameter >>>

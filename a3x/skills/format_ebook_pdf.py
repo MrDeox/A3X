@@ -4,6 +4,9 @@ import argparse
 import io
 import re
 from pathlib import Path
+from typing import Dict, Optional, List
+from a3x.core.skills import skill
+from a3x.core.context import Context
 
 import markdown2
 from xhtml2pdf import pisa
@@ -149,7 +152,26 @@ def markdown_to_pdf(markdown_content: str, title: str, author: str, output_path:
 
 
 # --- Skill Function ---
-def format_pdf_skill(ebook_markdown: str, title: str, author: str) -> dict:
+@skill(
+    name="format_ebook_pdf",
+    description="Formats the generated markdown content into a styled PDF ebook.",
+    parameters={
+        "context": {"type": Context, "description": "Execution context (not typically used here)."},
+        "ebook_markdown": {"type": str, "description": "The complete markdown content of the ebook."},
+        "title": {"type": str, "description": "The title of the ebook."},
+        "author": {"type": str, "description": "The author of the ebook."},
+        "chapters": {"type": List[str], "description": "List of chapter titles extracted from the markdown."},
+        "cover_image_path": {"type": Optional[str], "default": None, "description": "Optional path to a cover image file."}
+    }
+)
+def format_ebook_pdf(
+    context: Context,
+    ebook_markdown: str,
+    title: str,
+    author: str,
+    chapters: List[str],
+    cover_image_path: Optional[str] = None
+) -> dict:
     """Formats the markdown e-book content into a PDF file."""
     logger.info(f"Formatting PDF for: '{title}' by {author}")
 
@@ -206,7 +228,7 @@ if __name__ == "__main__":
         logger.info("Using provided string as Markdown content.")
         markdown_text = args.markdown_input
 
-    result = format_pdf_skill(markdown_text, args.title, args.author)
+    result = format_ebook_pdf(markdown_text, args.title, args.author)
 
     output_json = json.dumps(result, indent=2)
     print(output_json)

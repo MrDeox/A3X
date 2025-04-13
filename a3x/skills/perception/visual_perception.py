@@ -12,7 +12,7 @@ import io
 import mss
 import mss.tools
 from PIL import Image
-from a3x.core.context import Context # <<< ADDED IMPORT >>>
+from a3x.core.context import Context # Changed import
 
 # --- Playwright Check ---
 _playwright_installed = importlib.util.find_spec("playwright")
@@ -63,12 +63,18 @@ LLAMA_CPP_ENDPOINT = f"http://localhost:8080/v1/chat/completions" # Assuming def
 
 @skill(
     name="describe_visual_elements",
-    description="Descreve os elementos visuais importantes em uma imagem.",
+    description="Analyzes an image and provides a textual description of its visual elements.",
     parameters={
-        "image_path": (str, ...)
+        "context": {"type": Context, "description": "Execution context, potentially containing image data or settings."},
+        "image_path": {"type": str, "description": "The file path to the image to analyze." },
+        "detail_level": {"type": Optional[str], "default": "normal", "description": "Level of detail required ('brief', 'normal', 'detailed')."}
     }
 )
-async def describe_visual_elements(image_path: str, ctx: Optional[Context] = None) -> str:
+async def describe_visual_elements(
+    context: Context,
+    image_path: str,
+    detail_level: Optional[str] = "normal"
+) -> str:
     """
     Analyzes an image using a vision model (like LLaVA) to describe its key elements.
 

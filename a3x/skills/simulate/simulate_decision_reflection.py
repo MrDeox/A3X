@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Dict, Any, List, Optional, AsyncGenerator
 import datetime
+from a3x.core.context import Context
 
 # Core imports
 from a3x.core.skills import skill
@@ -283,40 +284,37 @@ def _get_examples_from_index(indices: List[int], distances: List[float]) -> List
 
 @skill(
     name="simulate_decision_reflection",
-    description="Simula a reflexão sobre uma decisão tomada, avaliando prós, contras e alternativas.",
+    description="Simulates Arthur's internal reflection process for a given decision context.",
     parameters={
-        "decision_context": (str, ...),
-        "chosen_action": (str, ...),
-        "alternative_actions": (List[str], ...)
-        # Context (ctx) is implicitly passed
+        "context": {"type": Context, "description": "Execution context for LLM access, memory, and persona info."},
+        "decision_context": {"type": str, "description": "The context or situation requiring a decision or reflection."},
+        "relevant_history": {"type": Optional[List[str]], "default": None, "description": "Optional list of recent relevant interactions or thoughts."}
     }
 )
-# Updated function signature
 async def simulate_decision_reflection(
+    context: Context,
     decision_context: str,
-    chosen_action: str,
-    alternative_actions: List[str],
-    ctx: _ToolExecutionContext # <-- Accept context object
+    relevant_history: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
     Simulates Arthur's reflection on a decision.
     Uses the LLMInterface from the execution context.
     """
-    logger = ctx.logger
-    llm_interface = ctx.llm_interface
+    logger = context.logger
+    llm_interface = context.llm_interface
     
     if not llm_interface:
         logger.error("LLMInterface not found in execution context.")
         return {"status": "error", "message": "Internal error: LLMInterface missing."}
         
     # 1. Load resources asynchronously
-    if not await _load_resources(ctx):
+    if not await _load_resources(context):
         return {"status": "error", "message": "Failed to load necessary resources (model, index, data)."}
 
     # 2. Retrieve Relevant Examples from Memory using FAISS
     try:
         logger.info("Retrieving relevant examples from memory...")
-        query_text = f"Decision: {chosen_action}. Context: {decision_context}"
+        query_text = f"Decision: {decision_context}. Context: {decision_context}"
         query_embedding = await asyncio.to_thread(_embedding_model.encode, [query_text])
         
         if _faiss_index is None:
@@ -340,9 +338,8 @@ async def simulate_decision_reflection(
     system_prompt_text = prompt # Use the prompt loaded from the file
     user_prompt_text = (
          f"**Contexto da Decisão:**\n{decision_context}\n\n" 
-         f"**Ação Escolhida:**\n{chosen_action}\n\n" 
          f"**Ações Alternativas Consideradas:**\n" +
-         "\n".join([f"- {alt}" for alt in alternative_actions]) +
+         "\n".join([f"- {alt}" for alt in relevant_history]) +
          f"\n\n**Exemplos Relevantes da Memória:**\n{relevant_examples_str}\n\n" 
          f"**Reflexão Simulada de Arthur (150-250 palavras):**"
     )
@@ -381,8 +378,7 @@ async def simulate_decision_reflection(
                 "timestamp": datetime.datetime.utcnow().isoformat() + 'Z',
                 "skill": "simulate_decision_reflection",
                 "decision_context": decision_context,
-                "chosen_action": chosen_action,
-                "alternative_actions": alternative_actions,
+                "relevant_history": relevant_history,
                 "memory_examples_used": relevant_examples, # Log the examples used
                 "simulated_reflection": simulated_reflection.strip()
             }

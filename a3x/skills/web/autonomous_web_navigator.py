@@ -14,6 +14,7 @@ from a3x.core.skills import skill
 from a3x.core.config import PROJECT_ROOT # Corrected import: PROJECT_ROOT
 from a3x.skills.perception.describe_image_blip import describe_image_blip
 from a3x.skills.perception.ocr_extract import extract_text_boxes_from_image
+from a3x.core.context import Context
 
 # Playwright import
 try:
@@ -204,19 +205,25 @@ async def try_heuristic_search_fill(page, objective: str, logger) -> Optional[Di
 
 @skill(
     name="autonomous_web_navigator",
-    description="Autonomously navigates web pages using a cognitive loop (Perceive -> Plan -> Act -> Reflect) to achieve a user-defined objective.",
+    description="Navigates the web autonomously to achieve a specific objective starting from a URL.",
     parameters={
-        "url": (str,),
-        "objective": (str,),
-        "max_steps": (int, 10)
+        "context": {"type": Context, "description": "Execution context for LLM access and browser control."},
+        "url": {"type": str, "description": "The starting URL for the web navigation task."},
+        "objective": {"type": str, "description": "The high-level objective to achieve through web navigation."},
+        "max_steps": {"type": int, "default": 10, "description": "Maximum number of navigation/interaction steps allowed (default: 10)."}
     }
 )
-async def autonomous_web_navigator(ctx: Any, url: str, objective: str, max_steps: int = 10) -> Dict[str, Any]:
+async def autonomous_web_navigator(
+    context: Context,
+    url: str,
+    objective: str,
+    max_steps: int = 10
+) -> Dict[str, Any]:
     """Main function for the autonomous web navigation skill with cognitive loop."""
     if not _playwright_imported_successfully:
         return {"status": "error", "message": "Playwright library not found. Please install it: pip install playwright && playwright install chromium"}
 
-    if not ctx or not hasattr(ctx, 'llm_call'):
+    if not context or not hasattr(context, 'llm_call'):
          return {"status": "error", "message": "LLM call context (ctx.llm_call) is not available."}
 
     action_history = [] # Stores detailed logs for each step
@@ -332,7 +339,7 @@ async def autonomous_web_navigator(ctx: Any, url: str, objective: str, max_steps
 
                     # Call LLM
                     llm_response_str = ""
-                    async for chunk in ctx.llm_call(prompt):
+                    async for chunk in context.llm_call(prompt):
                         llm_response_str += chunk
 
                     # Parse LLM Response (JSON expected)

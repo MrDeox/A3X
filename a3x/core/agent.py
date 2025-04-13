@@ -23,12 +23,20 @@ from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
 from a3x.core.planner import generate_plan
 from langchain_core.agents import AgentAction, AgentActionMessageLog, AgentFinish
 from a3x.core.utils.param_normalizer import normalize_action_input
-from a3x.fragments.definitions import ( 
-    AVAILABLE_FRAGMENTS, 
-    FRAGMENT_DESCRIPTIONS, 
-    get_skills_for_fragment, 
-    format_fragment_descriptions_for_prompt
-)
+# <<< REMOVED direct import from definitions >>>
+# from a3x.fragments.definitions import (
+#     AVAILABLE_FRAGMENTS, 
+#     FRAGMENT_DESCRIPTIONS, 
+#     get_skills_for_fragment, 
+#     format_fragment_descriptions_for_prompt
+# )
+# <<< ADDED import for asyncio (needed for reload_fragments skill) >>>
+import asyncio 
+from a3x.fragments.registry import FragmentRegistry
+# <<< ADDED import for SharedTaskContext >>>
+from a3x.core.context import SharedTaskContext
+# <<< ADDED import for uuid >>>
+import uuid
 
 # Initialize logger
 agent_logger = logging.getLogger(__name__)
@@ -54,12 +62,12 @@ Strictly follow this format in ALL your responses:
 
 Thought: [Briefly explain your reasoning, plan for the *single* next action, and how it contributes to solving the task.]
 Action: [The *exact name* of ONE skill from the provided list, e.g., read_file. DO NOT write sentences or descriptions here.]
-Action Input: [Parameters for the skill in valid JSON format, e.g., {{"file_path": "data/users.json"}}]
+Action Input: [Parameters for the skill in valid JSON format, e.g., {"path": "data/users.json"}]
 
 Example:
 Thought: I need to read the JSON file specified in the user objective to access the user data.
 Action: read_file
-Action Input: {{"file_path": "data/users.json"}}
+Action Input: {"path": "data/users.json"}
 
 **CRITICAL RULES:**
 1.  **Action Field:** The `Action:` field MUST contain ONLY the exact name of ONE skill from the list below. No extra words, descriptions, or sentences.
@@ -85,22 +93,32 @@ User Objective for this step: {input}
 
 # --- New Prompt for Orchestrator --- 
 DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT = """
-You are the A3X Orchestrator. Your role is to analyze the user's overall objective and the conversation history, then delegate the *next single step* to the most appropriate specialized Fragment (Worker). 
+You are the A3X Orchestrator. Your role is to analyze the user's overall objective and the conversation history, then delegate the *next single step* to the most appropriate specialized component: either a Manager (for coordination) or a direct Executor Fragment.
 
-You must choose one Fragment from the available list and define a clear, concise sub-task for it to perform.
+You must choose one component from the available list and define a clear, concise sub-task for it.
 
-Available Fragments:
-{fragment_descriptions}
+Available Components (Workers):
+{fragment_descriptions} 
+# Note: Descriptions now include (Category: Management/Execution) and Managed/Skills info.
 
-Respond ONLY with a JSON object containing two keys: 'fragment' (the name of the chosen Fragment) and 'sub_task' (the specific instruction for that Fragment).
+Choose a component based on the task requirements:
+- If the task requires coordination of multiple low-level actions within a specific domain (e.g., file operations, code operations), choose the appropriate **Manager** (Category: Management).
+- If the task is self-contained or represents the final step, choose a direct **Executor** Fragment (Category: Execution, e.g., FinalAnswerProvider, Planner).
 
-Example Response:
+Respond ONLY with a JSON object containing two keys: 'component' (the name of the chosen Manager or Fragment) and 'sub_task' (the specific instruction for that component).
+
+Example (File Operation Task):
 {{
-  "fragment": "FileManager",
-  "sub_task": "Read the content of the file 'data/users.json'"
+  "component": "FileOpsManager",
+  "sub_task": "Read the content of the file 'config.yaml'"
 }}
 
-If the overall objective seems complete based on the history, choose the 'FinalAnswerProvider' Fragment.
+Example (Final Step Task):
+{{
+  "component": "FinalAnswerProvider",
+  "sub_task": "Inform the user that the file has been successfully updated."
+}}
+
 Do not attempt to perform the task yourself. Only delegate.
 """
 
@@ -181,8 +199,15 @@ class ReactAgent:
         self.workspace_root = workspace_root or Path(PROJECT_ROOT).resolve()
         agent_logger.info(f"Agent initialized with workspace root: {self.workspace_root}")
         self.max_iterations = MAX_REACT_ITERATIONS
+        self.fragment_registry = FragmentRegistry()
+        self.fragment_descriptions = self.fragment_registry.get_available_fragments_description()
+        if not self.fragment_descriptions or "Error" in self.fragment_descriptions or "No fragments" in self.fragment_descriptions : # Check for empty/error string
+            self.logger.error(f"Failed to get valid fragment descriptions from registry! Got: {self.fragment_descriptions}")
+            # Use a minimal default if loading fails or is empty
+            self.fragment_descriptions = "- FinalAnswerProvider (Execution): Provides the final answer."
+
         self.orchestrator_system_prompt = DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT.format(
-            fragment_descriptions=format_fragment_descriptions_for_prompt()
+            fragment_descriptions=self.fragment_descriptions
         )
         # Keep the original system prompt for the workers
         self.worker_system_prompt = system_prompt 
@@ -200,8 +225,8 @@ class ReactAgent:
         )
 
     # <<< Method to Call LLM and Parse Response >>>
-    async def _process_llm_response(self, messages: List[Dict[str, str]], log_prefix: str) -> Optional[Dict[str, Any]]:
-        """Calls LLM and parses Thought/Action/Input format.\n           Now expects message list input."""
+    async def _process_llm_response(self, messages: List[Dict[str, str]], log_prefix: str) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+        """Calls LLM and parses Thought/Action/Input format.\n           Returns (thought, action_name, action_input_dict) or (None, None, None)."""
         llm_response_raw = ""
         try:
             # <<< ADDED DIAGNOSTIC LOGGING >>>
@@ -221,23 +246,21 @@ class ReactAgent:
                 
             if not llm_response_raw:
                  agent_logger.warning(f"{log_prefix} LLM call returned empty response.")
-                 # Return an error or specific status? Depends on desired handling.
-                 return {"type": "error", "content": "LLM returned empty response."}
+                 return None, None, None # Return tuple on error
                  
             agent_logger.debug(f"{log_prefix} Raw LLM response length: {len(llm_response_raw)}")
             agent_logger.debug(f"{log_prefix} Raw LLM response (first 500): {llm_response_raw[:500]}")
         except Exception as e:
             agent_logger.error(f"{log_prefix} Error calling LLM: {e}", exc_info=True)
-            return {"type": "error", "content": f"Error calling LLM: {e}"}
+            return None, None, None # Return tuple on error
 
-        # --- CORRECTED PARSING CALL --- 
-        # Parse the response using the correct function name from agent_parser
-        # Pass log_prefix to parse_llm_response for better context in parsing logs
-        return parse_llm_response(llm_response_raw, agent_logger)
+        # Parse the response using the function from agent_parser
+        # This already returns the correct tuple format
+        return parse_llm_response(llm_response_raw, self.agent_logger)
 
     # <<< Method to Execute Action >>>
     async def _execute_action(
-        self, action_name: str, action_input: Dict[str, Any], log_prefix: str
+        self, action_name: str, action_input: Dict[str, Any], log_prefix: str, shared_task_context: SharedTaskContext
     ) -> Dict[str, Any]:
         """Executa a ferramenta especificada com os inputs fornecidos."""
         agent_logger.info(
@@ -287,6 +310,8 @@ class ReactAgent:
                 llm_url=self.llm_url, # Pass the agent's llm_url
                 tools_dict=self.tools, # Pass the agent's tools_dict
                 llm_interface=self.llm_interface, # Pass the agent's llm_interface
+                fragment_registry=self.fragment_registry, # <<< ADDED >>>
+                shared_task_context=shared_task_context # <<< ADDED shared_task_context >>>
             )
             # --- END CONTEXT CREATION ---
 
@@ -319,6 +344,9 @@ class ReactAgent:
         self, observation_data: Dict[str, Any], log_prefix: str
     ) -> str:
         """Processa os dados da observação, formata para o histórico e log."""
+        # <<< ADDED DEBUG LOG (Start) >>>
+        agent_logger.debug(f"{log_prefix} _handle_observation received raw data: {observation_data}")
+        # <<< END ADDED DEBUG LOG >>>
         try:
             # Format observation for history (compact JSON or string fallback)
             observation_content = json.dumps(observation_data, ensure_ascii=False)
@@ -345,19 +373,13 @@ class ReactAgent:
                 f"Observation: {{'status': 'error', 'message': '{error_content}'}}"
             )
             return error_content
+        # <<< ADDED DEBUG LOG (End) >>>
+        agent_logger.debug(f"{log_prefix} _handle_observation adding to history: 'Observation: {observation_content}'")
+        # <<< END ADDED DEBUG LOG >>>
 
     # <<< Method to Perform ReAct Iteration >>>
-    async def _perform_react_iteration(self, objective: str, log_prefix="[Agent]") -> Dict:
-        """
-        Performs a single Thought-Action-Observation cycle for a given step objective.
-
-        Args:
-            step_objective (str): The objective for the current step.
-            log_prefix (str): Prefix for logging messages.
-
-        Yields:
-            Dict[str, Any]: Dictionaries for thought, action, observation, or error.
-        """
+    async def _perform_react_iteration(self, objective: str, log_prefix="[Agent]") -> AsyncGenerator[Dict, None]:
+        """Performs one full Thought-Action-Observation cycle of the ReAct loop."""
         # Trim history before building prompt
         self._history = trim_history(self._history, MAX_HISTORY_TURNS, agent_logger)
 
@@ -367,16 +389,17 @@ class ReactAgent:
 
             if not chosen_fragment or not sub_task:
                 agent_logger.error(f"{log_prefix} Orchestrator failed to delegate. Aborting cycle.")
-                return {"status": "error", "message": "Orchestrator failed to delegate next step."}
+                yield {"type": "error", "status": "error", "content": "Orchestrator failed to delegate next step."}
+                return
 
             # Handle delegation to FinalAnswerProvider separately? Or let it run react?
             if chosen_fragment == "FinalAnswerProvider":
                 # Maybe FinalAnswerProvider just needs the sub_task as the answer?
                 agent_logger.info(f"{log_prefix} Orchestrator chose FinalAnswerProvider. Assuming sub_task is the answer.")
                 # Directly execute final_answer? Requires final_answer skill to handle this.
-                final_answer_result = await self._execute_action(chosen_fragment, {"answer": sub_task}, log_prefix)
+                final_answer_result = await self._execute_action(chosen_fragment, {"answer": sub_task}, log_prefix, None)
                 # How to structure the return to signal completion?
-                return {"status": "success", "final_answer": sub_task, "observation": final_answer_result} # Or similar
+                yield {"type": "final_answer", "status": "success", "final_answer": sub_task, "observation": final_answer_result} # Or similar
             
             # === Worker Fragment Step ===
             allowed_skills = get_skills_for_fragment(chosen_fragment)
@@ -386,14 +409,17 @@ class ReactAgent:
             worker_prompt = self._build_worker_prompt(sub_task, self._history, allowed_skills)
             
             agent_logger.info(f"{log_prefix} Calling LLM for Worker Fragment {chosen_fragment}...")
-            raw_llm_response = await self._process_llm_response(worker_prompt, log_prefix)
-            agent_logger.info(f"{log_prefix} LLM Response received from {chosen_fragment}.")
-            agent_logger.debug(f"{log_prefix} Raw response: {raw_llm_response}")
+            parsed_result = await self._process_llm_response(
+                 [{"role": "system", "content": self.worker_system_prompt}, {"role": "user", "content": worker_prompt}],
+                 log_prefix=log_prefix
+            )
+            if not parsed_result:
+                 error_msg = "LLM processing failed completely."
+                 agent_logger.error(f"{log_prefix} Error processing LLM response: {error_msg}")
+                 yield {"type": "error", "status": "error", "content": error_msg}
+                 return
 
-            parsed_output = raw_llm_response
-            thought = parsed_output.get("thought")
-            action = parsed_output.get("action_name")
-            action_input = parsed_output.get("action_input", {}) # Default to empty dict
+            thought, action, action_input = parsed_result
 
             if thought:
                 agent_logger.info(f"{log_prefix} Thought: {thought}")
@@ -421,7 +447,10 @@ class ReactAgent:
                     agent_logger.info(f"{log_prefix} Action ({chosen_fragment}): {action}({json.dumps(action_input)})")
                     agent_logger.info(f"{log_prefix} Executing Action: {action} with input: {action_input}")
                     try:
-                        observation = await self._execute_action(action, action_input, log_prefix)
+                        observation = await self._execute_action(action, action_input, log_prefix, None)
+                        # <<< ADDED DEBUG LOG >>>
+                        agent_logger.debug(f"{log_prefix} Raw observation received from _execute_action for '{action}': {observation}")
+                        # <<< END ADDED DEBUG LOG >>>
                         agent_logger.info(f"{log_prefix} Observation: {str(observation)[:500]}...") # Log truncated observation
                     except Exception as e:
                         agent_logger.error(f"{log_prefix} Error executing action '{action}': {e}", exc_info=True)
@@ -435,7 +464,7 @@ class ReactAgent:
             # Check for final answer explicitly here?
             if action == "final_answer":
                 agent_logger.info(f"{log_prefix} Final answer provided by {chosen_fragment}. Ending interaction.")
-                return {"status": "success", "final_answer": action_input.get("answer"), "observation": observation}
+                yield {"type": "final_answer", "status": "success", "final_answer": action_input.get("answer"), "observation": observation}
             
             # Loop limit check etc. remains the same
             # ... (rest of loop logic) ...
@@ -445,7 +474,7 @@ class ReactAgent:
             # Ensure state saving happens
             self._save_state()
         
-        return {"status": "error", "message": "Max iterations reached or unexpected error."} # Fallback error
+        yield {"type": "error", "status": "error", "content": "Max iterations reached or unexpected error."} # Fallback error
 
     # --- Orchestration Logic ---
 
@@ -514,17 +543,21 @@ class ReactAgent:
                          return None, None # Give up if fallback also fails
 
 
-                chosen_fragment = delegation_data.get("fragment")
+                chosen_fragment = delegation_data.get("component")
                 sub_task = delegation_data.get("sub_task")
 
-                if chosen_fragment and chosen_fragment in AVAILABLE_FRAGMENTS and sub_task:
+                # <<< CORRECTED VALIDATION: Use get_all_definitions() >>>
+                # if chosen_fragment and chosen_fragment in self.fragment_registry.get_definitions() and sub_task:
+                if chosen_fragment and chosen_fragment in self.fragment_registry.get_all_definitions() and sub_task:
                     agent_logger.info(f"[Orchestrator] Delegating to Fragment: {chosen_fragment}, Sub-task: {sub_task}")
                     return chosen_fragment, sub_task
                 else:
                     agent_logger.error(f"[Orchestrator] Invalid delegation data received: {delegation_data}")
                     # Log specific missing field
-                    if not chosen_fragment: agent_logger.error("[Orchestrator] 'fragment' key missing or invalid in JSON.")
-                    if chosen_fragment and chosen_fragment not in AVAILABLE_FRAGMENTS: agent_logger.error(f"[Orchestrator] Fragment '{chosen_fragment}' not in AVAILABLE_FRAGMENTS.")
+                    if not chosen_fragment: agent_logger.error("[Orchestrator] 'component' key missing or invalid in JSON.")
+                    # <<< CORRECTED ERROR LOGGING: Use get_all_definitions() >>>
+                    # if chosen_fragment and chosen_fragment not in self.fragment_registry.get_definitions(): agent_logger.error(f"[Orchestrator] Fragment '{chosen_fragment}' not found in FragmentRegistry definitions.")
+                    if chosen_fragment and chosen_fragment not in self.fragment_registry.get_all_definitions(): agent_logger.error(f"[Orchestrator] Fragment '{chosen_fragment}' not found in FragmentRegistry definitions (get_all_definitions).")
                     if not sub_task: agent_logger.error("[Orchestrator] 'sub_task' key missing in JSON.")
                     return None, None
 
@@ -680,7 +713,8 @@ class ReactAgent:
         fragment_name: str, 
         sub_task: str, 
         allowed_skills: List[str],
-        parent_history: List[Tuple[str, str]] # History from orchestrator for context
+        parent_history: List[Tuple[str, str]], # History from orchestrator for context
+        shared_task_context: SharedTaskContext # <<< ADDED shared_task_context >>>
     ) -> Dict:
         """
         Executes the ReAct cycle for a specific Fragment worker until the sub-task is completed.
@@ -704,21 +738,18 @@ class ReactAgent:
             agent_logger.info(f"{log_prefix} Calling LLM...")
             # Use _process_llm_response which handles the call and basic parsing
             # We pass the worker system prompt here
-            parsed_output = await self._process_llm_response(
+            parsed_result = await self._process_llm_response(
                  # Build the message list format expected by _process_llm_response
                  [{"role": "system", "content": self.worker_system_prompt}, {"role": "user", "content": worker_prompt}],
                  log_prefix=log_prefix 
             )
             
             # Check for LLM call or parsing errors from _process_llm_response
-            if not parsed_output or parsed_output.get("type") == "error":
-                 error_msg = parsed_output.get("content", "LLM call or parsing failed") if parsed_output else "LLM call or parsing failed"
+            if not parsed_result:
+                 error_msg = "LLM processing failed completely."
                  agent_logger.error(f"{log_prefix} Error processing LLM response: {error_msg}")
-                 # Return error status for this sub-task
                  return {"status": "error", "message": error_msg, "fragment_history": current_task_history}
-            thought = parsed_output.get("thought")
-            action = parsed_output.get("action_name") # Use the keys from _process_llm_response
-            action_input = parsed_output.get("action_input", {}) # Default to empty dict
+            thought, action, action_input = parsed_result
 
             if thought:
                 agent_logger.info(f"{log_prefix} Thought: {thought}")
@@ -746,7 +777,14 @@ class ReactAgent:
                     agent_logger.info(f"{log_prefix} Action ({fragment_name}): {action}({json.dumps(action_input)}) ") # Added fragment name
                     try:
                         # Use the internal _execute_action method
-                        observation = await self._execute_action(action, action_input, log_prefix)
+                        # <<< MODIFIED: Pass shared_task_context >>>
+                        observation = await self._execute_action(
+                            action, 
+                            action_input, 
+                            log_prefix, 
+                            shared_task_context=shared_task_context
+                        )
+                        # <<< END MODIFIED >>>
                         agent_logger.info(f"{log_prefix} Observation: {str(observation)[:500]}...") # Log truncated observation
                         # action_str_for_history remains the action name if successful
                     except Exception as e:
@@ -807,77 +845,157 @@ class ReactAgent:
              "fragment_history": current_task_history
         }
 
-    # --- Main Execution Logic (Orchestrator) --- 
-    # This logic would likely go into a method like `run` or `execute_task` 
-    # (Replacing the previous generator version)
-    async def run_task(self, objective: str) -> Dict:
+    # <<< ADDED: Helper method to invoke learning cycle >>>
+    async def _invoke_learning_cycle(self, objective: str, main_history: List, final_status: str, shared_context: SharedTaskContext):
+        """Invokes the learning cycle skill with the final task state."""
+        log_prefix = "[Learning Cycle Invoker]"
+        try:
+            agent_logger.info(f"{log_prefix} Invoking learning cycle skill for objective: {objective[:100]}... Status: {final_status}")
+            # Note: We might need a more structured plan representation than just history
+            # For now, passing empty plan, history acts as results.
+            # Use the agent's internal _execute_action to ensure context propagation
+            await self._execute_action(
+                action_name="learning_cycle_skill", 
+                action_input={
+                    "objective": objective,
+                    "plan": [], 
+                    "execution_results": main_history, 
+                    "final_status": final_status,
+                    "agent_tools": self.tools,
+                    "agent_workspace": str(self.workspace_root.resolve()),
+                    "agent_llm_url": self.llm_url,
+                    "shared_task_context": shared_context # Pass context to skill input
+                },
+                log_prefix=log_prefix, 
+                shared_task_context=shared_context # Pass context for execution context setup
+            )
+            agent_logger.info(f"{log_prefix} Learning cycle skill executed.")
+        except Exception as learn_err:
+            agent_logger.error(f"{log_prefix} Error executing learning cycle: {learn_err}", exc_info=True)
+
+    # Modify task completion points to call the helper
+    async def run_task(self, objective: str, max_steps: Optional[int] = None) -> Dict:
         """Orchestrates Fragments to achieve the overall objective."""
         log_prefix = "[Orchestrator]"
         agent_logger.info(f"{log_prefix} Starting task: {objective}")
         
-        main_history: List[Tuple[str, str]] = [] # Overall history across fragments
+        # Create SharedTaskContext for this task run
+        task_id = str(uuid.uuid4())
+        shared_context = SharedTaskContext(task_id=task_id, initial_objective=objective)
+        agent_logger.info(f"{log_prefix} Initialized SharedTaskContext with ID: {task_id}")
+
+        main_history: List[Tuple[str, str]] = [] 
         orchestrator_iterations = 0
-        max_orchestrator_iterations = 20 # Limit overall interaction
+        max_orchestrator_iterations = max_steps if max_steps is not None else 20 
+        agent_logger.info(f"{log_prefix} Maximum orchestration steps allowed: {max_orchestrator_iterations}")
+
+        last_failed_sub_task: Optional[str] = None
+        consecutive_failures: int = 0
+        MAX_CONSECUTIVE_FAILURES_BEFORE_DEBUG: int = 2 
+        failure_history_for_debugger: List[Dict] = []
+        
+        final_result = None # Store the final result dict
+        final_status = "unknown" # Track final status for learning cycle
 
         while orchestrator_iterations < max_orchestrator_iterations:
             orchestrator_iterations += 1
             agent_logger.info(f"{log_prefix} Orchestration Cycle {orchestrator_iterations}/{max_orchestrator_iterations}")
 
-            # === Delegate to Fragment ===
             chosen_fragment, sub_task = await self._get_next_step_delegation(objective, main_history)
 
             if not chosen_fragment or not sub_task:
-                error_msg = "Orchestrator failed to delegate next step. Aborting task."
-                agent_logger.error(f"{log_prefix} {error_msg} Aborting task.")
-                return {"status": "error", "message": error_msg}
+                agent_logger.error(f"{log_prefix} Orchestrator failed to delegate. Aborting task.")
+                final_status = "error_orchestrator_delegation"
+                final_result = {"status": "error", "message": "Orchestrator failed to delegate next step."}
+                break # Exit loop
 
-            # === Execute Fragment Task ===
+            if sub_task != last_failed_sub_task:
+                agent_logger.debug(f"{log_prefix} New sub-task '{sub_task}'. Resetting consecutive failure count.")
+                last_failed_sub_task = sub_task
+                consecutive_failures = 0
+                failure_history_for_debugger = []
+
             if chosen_fragment == "FinalAnswerProvider":
-                # Orchestrator decided the main objective is done
                 agent_logger.info(f"{log_prefix} Orchestrator chose FinalAnswerProvider. Task complete.")
-                return {"status": "success", "final_answer": sub_task} 
+                final_status = "completed"
+                final_result = {"status": "success", "final_answer": sub_task}
+                # Append this final step to history before breaking
+                main_history.append(("FinalAnswerProvider", {"status": "success", "final_answer": sub_task}))
+                break # Exit the loop on final answer
             
-            allowed_skills = get_skills_for_fragment(chosen_fragment)
+            fragment_def = self.fragment_registry.get_fragment_definition(chosen_fragment)
+            allowed_skills = []
+            if fragment_def:
+                allowed_skills = fragment_def.managed_skills or fragment_def.skills
+                agent_logger.info(f"{log_prefix} Retrieved allowed skills for {chosen_fragment}: {allowed_skills}")
+            else:
+                agent_logger.error(f"{log_prefix} Could not find definition for fragment '{chosen_fragment}'. Aborting task.")
+                final_status = "error_fragment_definition_not_found"
+                final_result = {"status": "error", "message": f"Fragment definition for {chosen_fragment} not found in registry."}
+                break # Exit loop
+            
             fragment_result = await self._execute_fragment_task(
                 fragment_name=chosen_fragment,
                 sub_task=sub_task,
                 allowed_skills=allowed_skills,
-                parent_history=main_history # Pass main history for context if needed by fragment
+                parent_history=main_history, 
+                shared_task_context=shared_context
             )
             
-            # === Process Fragment Result ===
             fragment_status = fragment_result.get("status")
-            fragment_final_answer = fragment_result.get("final_answer") # Answer for the *sub-task*
-            fragment_observation = fragment_result.get("observation") # Last observation from fragment
+            fragment_final_answer = fragment_result.get("final_answer")
             fragment_message = fragment_result.get("message")
-            internal_history = fragment_result.get("fragment_history", []) 
+            internal_history = fragment_result.get("fragment_history", [])
             
-            # Log the fragment's internal steps to the main history for context
-            # We need a good way to represent this summary
             summary_action = f"Fragment {chosen_fragment} completed sub-task: '{sub_task}'" if fragment_status == "success" else f"Fragment {chosen_fragment} failed sub-task: '{sub_task}'"
             summary_observation = { 
                 "status": fragment_status,
-                "sub_task_result": fragment_final_answer or fragment_message, # Result or error message
-                # Optionally include last actual observation or full history?
-                # "last_observation": fragment_observation, 
+                "sub_task_result": fragment_final_answer or fragment_message,
             }
             main_history.append((summary_action, summary_observation))
-            
-            # Add fragment's internal history to main memory log? (Optional)
-            # for action, obs in internal_history:
-            #    self.memory.add_episode(...) 
 
             if fragment_status == "error":
-                agent_logger.error(f"{log_prefix} Fragment {chosen_fragment} failed: {fragment_message}. Orchestrator will try to replan.")
-                # Continue loop, orchestrator will see the error in history and hopefully delegate differently
-                continue 
-            
-            # If fragment succeeded, the loop continues and orchestrator decides next step
-            agent_logger.info(f"{log_prefix} Fragment {chosen_fragment} completed sub-task successfully.")
+                agent_logger.error(f"{log_prefix} Fragment {chosen_fragment} failed sub-task '{sub_task}'. Message: {fragment_message}")
+                consecutive_failures += 1
+                if internal_history: 
+                    failure_history_for_debugger.extend(internal_history) 
+                agent_logger.warning(f"{log_prefix} Consecutive failures for sub-task '{sub_task}': {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES_BEFORE_DEBUG}")
 
-        # If loop finishes
-        agent_logger.warning(f"{log_prefix} Max orchestrator iterations ({max_orchestrator_iterations}) reached for objective '{objective}'.")
-        return {"status": "error", "message": "Max orchestrator iterations reached."}
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES_BEFORE_DEBUG:
+                    agent_logger.warning(f"{log_prefix} Failure limit reached. Triggering DebuggerFragment...")
+                    # ... (debugger execution logic as before, including passing shared_context) ...
+                    debugger_result = await self._execute_fragment_task(
+                        # ... (debugger args) ...
+                        shared_task_context=shared_context
+                    )
+                    # ... (process debugger result, update history) ...
+                    # Reset failure count after debugger runs
+                    consecutive_failures = 0
+                    failure_history_for_debugger = []
+                    # Continue loop, let orchestrator decide next based on debugger output in history
+                else:
+                    # Failure limit not reached, continue loop
+                    pass 
+            else: # fragment_status == "success"
+                if sub_task == last_failed_sub_task:
+                     agent_logger.debug(f"{log_prefix} Sub-task '{sub_task}' succeeded. Resetting failure count.")
+                     consecutive_failures = 0
+                     failure_history_for_debugger = []
+                agent_logger.info(f"{log_prefix} Fragment {chosen_fragment} completed sub-task successfully.")
+
+        # === Loop End / Task Conclusion ===
+        if final_result is None: # Loop finished without hitting FinalAnswerProvider or breaking early
+            agent_logger.warning(f"{log_prefix} Max orchestrator iterations ({max_orchestrator_iterations}) reached or loop exited without success for '{objective}'.")
+            final_status = "error_max_iterations_or_failed" # More specific status
+            final_result = {"status": "error", "message": "Max orchestrator iterations reached or task failed to complete."} 
+        # If final_result is already set (e.g., success or early error), final_status reflects that.
+
+        # --- Invoke Learning Cycle --- 
+        await self._invoke_learning_cycle(objective, main_history, final_status, shared_context)
+
+        # --- Return Final Result --- 
+        agent_logger.info(f"{log_prefix} Task finished for objective '{objective}'. Final Status: {final_status}. Result: {final_result}")
+        return final_result
 
     # Ensure _execute_action and _handle_observation are compatible
     # ... (_execute_action, _handle_observation, _save_state) ...

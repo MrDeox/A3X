@@ -113,8 +113,8 @@ async def _count_new_heuristics(heuristic_file_path: Path, since_time: Optional[
     name="auto_generalize_heuristics",
     description="Verifica se novas heurísticas foram aprendidas e aciona a generalização se um limite for atingido.",
     parameters={
-        "threshold": (Optional[int], None) # Removed 'ctx' from here
-        # "ctx": (Optional[Context], None) # Context passed by executor
+        "threshold": {"type": "Optional[int]", "description": "O limite de novas heurísticas para acionar a generalização (padrão: 10)."},
+        "ctx": {"type": "Optional[Context]", "description": "O contexto de execução da skill, fornecendo acesso a recursos como logger e workspace."}
     }
 )
 async def auto_generalize_heuristics(threshold: Optional[int] = None, ctx: Optional[Context] = None) -> Dict[str, Any]:

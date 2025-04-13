@@ -8,13 +8,14 @@ import re
 
 # Core framework imports
 # Core imports
-from a3x.core.skills import skill, get_skill_registry
+from a3x.core.skills import skill, get_skill_registry, get_skill_descriptions
 # from a3x.core.prompt_builder import build_skill_generation_prompt # Function missing
 from a3x.core.llm_interface import LLMInterface
-# from a3x.core.context import SkillContext # Assuming SkillContext is defined here
+from a3x.core.context import Context
 from a3x.core.learning_logs import load_recent_reflection_logs
 from a3x.skills.core.call_skill_by_name import call_skill_by_name
 from a3x.core.agent import _ToolExecutionContext
+from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +96,15 @@ def _check_learning_mechanism(skill_info: Dict[str, Any]) -> bool:
 
 @skill(
     name="auto_expand_capabilities",
-    description="Metacognitive Skill: Analisa logs do sistema A³X para identificar falhas de autonomia e propor novas skills.",
-    parameters={"num_logs_to_analyze": (int, 20)} # Parameter to control analysis scope
+    description="Analyzes agent performance and failure patterns to suggest or automatically generate new skills.",
+    parameters={
+        "context": {"type": Context, "description": "Execution context for LLM, memory, and skill registry access."},
+        "analysis_depth": {"type": Optional[str], "default": "basic", "description": "Depth of analysis ('basic', 'detailed')."}
+    }
 )
 async def auto_expand_capabilities(
-    ctx: _ToolExecutionContext,
-    num_logs_to_analyze: int = 20
+    context: Context,
+    analysis_depth: Optional[str] = "basic"
 ) -> Dict[str, Any]:
     """
     Analyzes A³X operational logs using the LLMInterface from context...

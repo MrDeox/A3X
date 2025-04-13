@@ -4,9 +4,6 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from a3x.core.cerebrumx import CerebrumXAgent, cerebrumx_logger
 from a3x.core.agent import ReactAgent  # Needed for mocking super().run
 
-# Import execution logic functions
-from a3x.core.execution_logic import _execute_actual_plan_step
-
 # Import config from conftest
 from tests.conftest import TEST_SERVER_BASE_URL  # Import only constants
 
@@ -276,100 +273,102 @@ async def test_simulate_step_calls_skill(
 
 
 @pytest.mark.asyncio
-# Removed patch decorator
+# Removed patch decorator for execution_logic
 async def test_execute_actual_plan_step_success(agent_instance):
-    """Tests _execute_actual_plan_step when the base run loop succeeds."""
-    step_objective = "Achieve sub-goal"
-    context = {}
-    # agent_instance.add_history_entry = MagicMock() # Now mocked in fixture
-
-    mock_final_result = {"status": "success", "message": "Sub-goal achieved"}
-
-    # Define an ASYNC GENERATOR function for the side_effect
+    """Tests the agent's main execution loop for a successful run."""
+    objective = "Test objective"
+    # Mock the internal run generator behavior for ReactAgent base or fragment execution
     async def mock_run_generator(*args, **kwargs):
-        yield mock_final_result  # Yield the result as expected by async for
+        yield {"type": "thought", "status": "success", "content": "Thinking..."}
+        yield {"type": "action", "status": "success", "action_name": "mock_action", "action_input": {}}
+        yield {"type": "observation", "status": "success", "content": "Action successful"}
+        yield {"type": "final_answer", "status": "success", "final_answer": "Task Completed Successfully"}
 
-    # Manually patch the run method on the specific instance
-    agent_instance.run = mock_run_generator  # Assign the generator directly
+    # Mock the internal execution method called by run (e.g., _execute_fragment)
+    # or potentially the ReactAgent's run method if it's called internally.
+    # For simplicity, let's assume CerebrumXAgent.run calls something mockable.
+    # Let's mock the fragment execution part inside CerebrumXAgent.run
+    # Patching the fragment execution seems more appropriate now
+    # agent_instance._execute_fragment = AsyncMock(return_value=({}, [])) # Needs more specific mock
 
-    # Call the actual function from execution_logic, passing the agent
-    result = await _execute_actual_plan_step(agent_instance, step_objective, context)
+    # We need to mock the delegation and fragment execution now
+    agent_instance._select_fragment = AsyncMock(return_value=MagicMock(get_name=lambda: "MockFragment"))
+    agent_instance._execute_fragment = AsyncMock(return_value=(
+        {"status": "success", "message": "Task Completed Successfully"}, # final_result
+        [{ "type": "thought", "content": "..."}] # execution_trace
+    ))
+    agent_instance._reflect_and_learn = AsyncMock()
 
-    # agent_instance.run.assert_called_once_with(objective=step_objective) # Cannot assert call on a direct function assignment
-    # Instead, check if the result matches the *final* yielded value
-    assert result == mock_final_result
+    # Call the main run method
+    final_result = await agent_instance.run(objective)
+
+    # Assert based on the expected final dictionary from run
+    assert final_result["status"] == "success"
+    assert final_result["message"] == "Task Completed Successfully"
+    assert final_result["fragment_used"] == "MockFragment"
 
 
 @pytest.mark.asyncio
-# Removed patch decorator
+# Removed patch decorator for execution_logic
 async def test_execute_actual_plan_step_react_error(agent_instance):
-    """Tests _execute_actual_plan_step when the base run loop returns an error dict."""
-    step_objective = "Try failing sub-goal"
-    context = {}
-    # agent_instance.add_history_entry = MagicMock() # Mocked in fixture
+    """Tests the agent's main execution loop when an error occurs during the cycle."""
+    objective = "Test objective causing error"
+    # Simulate an error during fragment execution
+    agent_instance._select_fragment = AsyncMock(return_value=MagicMock(get_name=lambda: "ErrorFragment"))
+    agent_instance._execute_fragment = AsyncMock(return_value=(
+        {"status": "error", "message": "Something went wrong"}, # final_result
+        [{ "type": "error", "message": "Something went wrong"}] # execution_trace
+    ))
+    agent_instance._reflect_and_learn = AsyncMock()
 
-    mock_error_result = {"status": "error", "message": "Tool execution failed"}
+    # Call the main run method
+    final_result = await agent_instance.run(objective)
 
-    # Define an ASYNC GENERATOR function for the side_effect
-    async def mock_run_generator(*args, **kwargs):
-        yield mock_error_result  # Yield the error result
-
-    # Manually patch the run method on the specific instance
-    agent_instance.run = mock_run_generator  # Assign the generator directly
-
-    # Call the actual function from execution_logic
-    result = await _execute_actual_plan_step(agent_instance, step_objective, context)
-
-    # agent_instance.run.assert_called_once_with(objective=step_objective) # Cannot assert call
-    assert result == mock_error_result
+    # Assert the final result indicates an error
+    assert final_result["status"] == "error"
+    assert "Something went wrong" in final_result["message"]
+    assert final_result["fragment_used"] == "ErrorFragment"
 
 
 @pytest.mark.asyncio
-# Removed patch decorator
+# Removed patch decorator for execution_logic
 async def test_execute_actual_plan_step_final_answer_string(agent_instance):
-    """Tests _execute_actual_plan_step when the base run loop returns a final answer string."""
-    step_objective = "Get final string answer"
-    context = {}
-    # agent_instance.add_history_entry = MagicMock() # Mocked in fixture
+    """Tests the agent's main execution loop when the result is a simple final answer string."""
+    objective = "Simple question"
+    # Simulate a fragment directly returning a final answer
+    agent_instance._select_fragment = AsyncMock(return_value=MagicMock(get_name=lambda: "DirectAnswerFragment"))
+    agent_instance._execute_fragment = AsyncMock(return_value=(
+        {"status": "success", "final_answer": "The answer is 42"}, # final_result
+        [] # execution_trace
+    ))
+    agent_instance._reflect_and_learn = AsyncMock()
 
-    mock_final_answer = "This is the final answer."
+    # Call the main run method
+    final_result = await agent_instance.run(objective)
 
-    # Define an ASYNC GENERATOR function for the side_effect
-    async def mock_run_generator(*args, **kwargs):
-        yield mock_final_answer  # Yield the final string
-
-    # Manually patch the run method on the specific instance
-    agent_instance.run = mock_run_generator  # Assign the generator directly
-
-    result = await _execute_actual_plan_step(agent_instance, step_objective, context)
-
-    # agent_instance.run.assert_called_once_with(objective=step_objective) # Cannot assert call
-    expected_result = {"status": "success", "message": mock_final_answer}
-    assert result == expected_result
+    # Assert the final result contains the answer message
+    assert final_result["status"] == "success"
+    assert final_result["message"] == "The answer is 42" # Message should contain final_answer
+    assert final_result["fragment_used"] == "DirectAnswerFragment"
 
 
 @pytest.mark.asyncio
-# Removed patch decorator
+# Removed patch decorator for execution_logic
 async def test_execute_actual_plan_step_exception(agent_instance):
-    """Tests _execute_actual_plan_step when the base run loop raises an exception."""
-    step_objective = "Sub-goal causing exception"
-    context = {}
-    # agent_instance.add_history_entry = MagicMock() # Mocked in fixture
+    """Tests the agent's main execution loop when an unhandled exception occurs."""
+    objective = "Test objective causing exception"
+    # Simulate an exception during fragment execution
+    agent_instance._select_fragment = AsyncMock(return_value=MagicMock(get_name=lambda: "ExceptionFragment"))
+    agent_instance._execute_fragment = AsyncMock(side_effect=ValueError("Fragment crashed!"))
+    agent_instance._reflect_and_learn = AsyncMock()
 
-    # Define an ASYNC GENERATOR that raises an exception
-    async def mock_run_generator(*args, **kwargs):
-        raise Exception("Base run failed!")
-        yield  # Need yield to make it an async generator
+    # Call the main run method
+    final_result = await agent_instance.run(objective)
 
-    # Manually patch the run method on the specific instance to raise exception
-    agent_instance.run = mock_run_generator  # Assign the failing generator
-
-    # Call the actual function from execution_logic
-    result = await _execute_actual_plan_step(agent_instance, step_objective, context)
-
-    # agent_instance.run.assert_called_once_with(objective=step_objective) # Cannot assert call
-    assert result["status"] == "error"
-    assert "Exception during step execution: Base run failed!" in result["message"]
+    # Assert the final result indicates an error due to the exception
+    assert final_result["status"] == "error"
+    assert "Unhandled exception during fragment execution: Fragment crashed!" in final_result["message"]
+    assert final_result["fragment_used"] == "ExceptionFragment"
 
 
 @pytest.mark.asyncio

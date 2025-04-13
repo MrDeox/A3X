@@ -24,6 +24,7 @@ import asyncio
 from a3x.core.config import PROJECT_ROOT
 from a3x.core.llm_interface import LLMInterface
 from a3x.core.agent import _ToolExecutionContext
+from a3x.core.context import Context
 # Correct imports for memory functions:
 from a3x.core.db_utils import retrieve_relevant_context, add_episodic_record
 # from a3x.core.db_manager import VectorDBManager # Module does not exist yet
@@ -282,30 +283,32 @@ def load_arthur_examples(dataset_path: str, num_examples: int) -> List[Dict[str,
 
 @skill(
     name="simulate_arthur_response",
-    description="Simula como Arthur responderia a uma entrada, buscando contexto na memória.",
+    description="Simulates Arthur's response to a given user input based on his typical style and knowledge.",
     parameters={
-        "user_input": (str, ...),
-        # Context (ctx) is implicitly passed
-    },
+        "context": {"type": Context, "description": "Execution context for LLM access and persona info."},
+        "user_input": {"type": str, "description": "The user input to which Arthur should respond."},
+        "mood": {"type": Optional[str], "default": "neutral", "description": "Simulated mood of Arthur ('neutral', 'focused', 'skeptical')."}
+    }
 )
 async def simulate_arthur_response(
+    context: Context,
     user_input: str,
-    ctx: _ToolExecutionContext # <-- Accept context object
+    mood: Optional[str] = "neutral"
 ) -> Dict[str, Any]:
     """
     Simulates Arthur's response based on user input and relevant memory.
     Uses the LLMInterface from the execution context.
     """
-    ctx.logger.info(f"Executing simulate_arthur_response for input: '{user_input[:100]}...'")
+    context.logger.info(f"Executing simulate_arthur_response for input: '{user_input[:100]}...'")
     
     # Get LLM interface from context
-    llm_interface = ctx.llm_interface
+    llm_interface = context.llm_interface
     if not llm_interface:
-        ctx.logger.error("LLMInterface not found in execution context.")
+        context.logger.error("LLMInterface not found in execution context.")
         return {"status": "error", "message": "Internal error: LLMInterface missing."}
 
     # 1. Load necessary resources (model, index, mapping, dataset)
-    load_success, error_msg = load_resources(ctx.logger)
+    load_success, error_msg = load_resources(context.logger)
     if not load_success:
         return {"status": "error", "message": f"Failed to load resources: {error_msg}"}
     
@@ -315,10 +318,10 @@ async def simulate_arthur_response(
 
     # 2. Retrieve Relevant Context from Memory (using FAISS index)
     try:
-        ctx.logger.debug("Encoding user input for similarity search...")
+        context.logger.debug("Encoding user input for similarity search...")
         input_embedding = model_cache.encode([user_input])
         
-        ctx.logger.debug(f"Searching FAISS index (k={TOP_K})...")
+        context.logger.debug(f"Searching FAISS index (k={TOP_K})...")
         distances, indices = index_cache.search(input_embedding.astype(np.float32), TOP_K)
         
         memory_context_examples = []
@@ -331,20 +334,20 @@ async def simulate_arthur_response(
                     unified_dataset_index = metadata.get("unified_index")
                     if unified_dataset_index is not None and 0 <= unified_dataset_index < len(unified_dataset_cache):
                          record = unified_dataset_cache[unified_dataset_index]
-                         formatted_text = prepare_record_text_for_prompt(record, ctx.logger)
+                         formatted_text = prepare_record_text_for_prompt(record, context.logger)
                          if formatted_text:
                               memory_context_examples.append(formatted_text)
                          if len(memory_context_examples) >= NUM_MEMORY_EXAMPLES:
                               break # Stop once we have enough examples
                     else:
-                         ctx.logger.warning(f"Mapping for index {idx} points to invalid unified_index: {unified_dataset_index}")
+                         context.logger.warning(f"Mapping for index {idx} points to invalid unified_index: {unified_dataset_index}")
                 else:
-                     ctx.logger.warning(f"Index {idx} retrieved from FAISS not found in mapping file.")
+                     context.logger.warning(f"Index {idx} retrieved from FAISS not found in mapping file.")
         else:
-            ctx.logger.warning("No relevant context found in memory (FAISS search returned no valid indices).")
+            context.logger.warning("No relevant context found in memory (FAISS search returned no valid indices).")
 
     except Exception as e:
-        ctx.logger.exception("Error retrieving context from memory:")
+        context.logger.exception("Error retrieving context from memory:")
         return {"status": "error", "message": f"Failed to retrieve context: {e}"}
 
     # 3. Build the Prompt
@@ -354,7 +357,7 @@ async def simulate_arthur_response(
     num_few_shot = min(NUM_DATASET_EXAMPLES, num_available_examples)
     few_shot_examples = random.sample(unified_dataset_cache, num_few_shot) if num_available_examples > 0 else [] 
 
-    few_shot_prompt_str = "\n\n---\n\n".join([prepare_record_text_for_prompt(ex, ctx.logger) for ex in few_shot_examples if prepare_record_text_for_prompt(ex, ctx.logger)])
+    few_shot_prompt_str = "\n\n---\n\n".join([prepare_record_text_for_prompt(ex, context.logger) for ex in few_shot_examples if prepare_record_text_for_prompt(ex, context.logger)])
     memory_context_str = "\n\n---\n\n".join(memory_context_examples) if memory_context_examples else "Nenhum contexto de memória relevante encontrado."
 
     # System Prompt + Context + Few-Shot + User Input
@@ -377,11 +380,11 @@ async def simulate_arthur_response(
         {"role": "user", "content": user_content}
     ]
     
-    ctx.logger.debug(f"Prompt constructed. System length: {len(system_prompt)}, User content length: {len(user_content)}")
+    context.logger.debug(f"Prompt constructed. System length: {len(system_prompt)}, User content length: {len(user_content)}")
 
     # 4. Call LLM to Simulate Response
     try:
-        ctx.logger.info("Calling LLM to simulate Arthur's response...")
+        context.logger.info("Calling LLM to simulate Arthur's response...")
         simulated_response = ""
         # Updated call site
         async for chunk in llm_interface.call_llm( # <-- USE INSTANCE METHOD
@@ -391,21 +394,21 @@ async def simulate_arthur_response(
             simulated_response += chunk
 
         if not simulated_response or not simulated_response.strip():
-            ctx.logger.warning("LLM simulation returned an empty response.")
+            context.logger.warning("LLM simulation returned an empty response.")
             return {"status": "error", "message": "LLM simulation returned empty."}
         
         # Check for LLM error string
         if simulated_response.startswith("[LLM Error:"):
-             ctx.logger.error(f"LLM call failed during simulation: {simulated_response}")
+             context.logger.error(f"LLM call failed during simulation: {simulated_response}")
              return {"status": "error", "message": simulated_response}
 
-        ctx.logger.info("Successfully simulated Arthur's response.")
-        ctx.logger.debug(f"Simulated Response: {simulated_response}")
+        context.logger.info("Successfully simulated Arthur's response.")
+        context.logger.debug(f"Simulated Response: {simulated_response}")
 
         return {"status": "success", "simulated_response": simulated_response.strip()}
 
     except Exception as e:
-        ctx.logger.exception("Error during LLM call for simulation:")
+        context.logger.exception("Error during LLM call for simulation:")
         return {"status": "error", "message": f"LLM call failed: {e}"}
 
 # === Example Usage (for testing) ===

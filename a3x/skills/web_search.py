@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
     name="web_search",
     # Updated description
     description="Performs a web search using DuckDuckGo to answer a query based on current information.",
-    parameters={"query": (str, ""), "max_results": (int, 5)},
+    parameters={
+        "query": {"type": str, "description": "The search query string."},
+        "max_results": {"type": int, "default": 5, "description": "Maximum number of search results to return (default: 5)."}
+    }
 )
 def web_search(query: str, max_results: int = 5) -> dict:  # Added max_results parameter
     """
