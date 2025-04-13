@@ -7,7 +7,7 @@ from typing import List, Optional
 # Assuming llm_interface and prompt_builder are accessible -> # Package imports
 # from .llm_interface import call_llm
 # from .prompt_builder import build_planning_prompt
-from a3x.core.llm_interface import call_llm
+from a3x.core.llm_interface import LLMInterface
 from a3x.core.prompt_builder import build_planning_prompt
 
 # Assuming config is available for the test block
@@ -71,8 +71,8 @@ async def generate_plan(
     objective: str,
     tool_descriptions: str,
     agent_logger: logging.Logger,
-    llm_url: Optional[str] = None,  # Allow passing LLM URL if needed
-    heuristics_context: Optional[str] = None # <<< ADDED: Novo parâmetro para heurísticas
+    llm_interface: LLMInterface,
+    heuristics_context: Optional[str] = None
 ) -> Optional[List[str]]:
     """
     Generates a plan (list of steps) to achieve the objective using the LLM.
@@ -81,7 +81,7 @@ async def generate_plan(
         objective: The user's high-level objective.
         tool_descriptions: A string describing the available tools.
         agent_logger: The logger instance for logging messages.
-        llm_url: Optional URL for the LLM service.
+        llm_interface: The LLMInterface instance to use for the API call.
         heuristics_context: Optional string containing relevant learned heuristics.
 
     Returns:
@@ -96,29 +96,22 @@ async def generate_plan(
         objective=objective,
         tool_descriptions=tool_descriptions,
         planner_system_prompt=PLANNER_SYSTEM_PROMPT,
-        heuristics_context=heuristics_context # Passar o novo contexto
+        heuristics_context=heuristics_context
     )
 
     # 2. Call the LLM
     try:
-        # <<< REVERTED: Use async for even for non-streaming, as call_llm always yields >>>
-        llm_response_raw = ""  # Initialize raw response
-        async for chunk in call_llm(
-            planning_prompt_messages, llm_url=llm_url, stream=False
+        llm_response_raw = ""
+        async for chunk in llm_interface.call_llm(
+            messages=planning_prompt_messages,
+            stream=False
         ):
-            llm_response_raw += (
-                chunk  # Accumulate (should be one chunk for stream=False)
-            )
+            llm_response_raw += chunk
 
-        # Basic validation (optional, can be done during parsing)
-        # if not isinstance(llm_response_raw, str):
-        #     agent_logger.error(f"[Planner] LLM call yielded unexpected type: {type(llm_response_raw)}")
-        #     return None
         if not llm_response_raw:
             agent_logger.warning(
                 "[Planner] LLM call (non-streaming) yielded an empty response string."
             )
-            # Allow processing empty strings
 
         agent_logger.debug(f"[Planner] Raw LLM response:\n{llm_response_raw}")
     except Exception as e:
@@ -134,19 +127,16 @@ async def generate_plan(
                 f"[Planner] No JSON block found in LLM response: {llm_response_raw[:300]}..."
             )
             try:
-                # Fallback: Check if the entire string might be JSON
                 plan = json.loads(llm_response_raw)
-                plan_str_for_logging = (
-                    llm_response_raw  # Log the whole thing if it parsed
-                )
+                plan_str_for_logging = llm_response_raw
             except json.JSONDecodeError:
                 agent_logger.error(
                     "[Planner] Fallback failed: Could not decode entire response as JSON either."
                 )
-                return None  # Give up if no JSON found and direct parse fails
+                return None
         else:
             plan_str = json_match.group(1)
-            plan_str_for_logging = plan_str  # Log the extracted part
+            plan_str_for_logging = plan_str
             if plan_str is None:
                 agent_logger.error(
                     "[Planner] JSON block found by regex, but the capturing group was empty. Cannot parse."
@@ -154,7 +144,6 @@ async def generate_plan(
                 return None
             plan = json.loads(plan_str)
 
-        # <<< MODIFIED: Split type checking for more specific error logging >>>
         if not isinstance(plan, list):
             agent_logger.error(
                 f"[Planner] LLM response is not a list: Parsed: {plan_str_for_logging}"
@@ -167,29 +156,11 @@ async def generate_plan(
             )
             return None
 
-        # Original combined check (now split above):
-        # if isinstance(plan, list) and all(isinstance(step, str) for step in plan):
-        #     if not plan:
-        #         agent_logger.warning(
-        #             "[Planner] LLM returned an empty plan. Objective might be unachievable or trivial."
-        #         )
-        #         return []
-        #     agent_logger.info(
-        #         f"[Planner] Plan generated successfully with {len(plan)} steps."
-        #     )
-        #     return plan
-        # else:
-        #     agent_logger.error(
-        #         f"[Planner] Parsed JSON is not a list of strings: {plan}"
-        #     )
-        #     return None
-
-        # <<< If checks passed, the plan is valid >>>
-        if not plan:  # Handle empty list case
+        if not plan:
             agent_logger.warning(
                 "[Planner] LLM returned an empty plan list []. Objective might be unachievable or trivial."
             )
-            return []  # Return empty list, not None
+            return []
 
         agent_logger.info(
             f"[Planner] Plan generated successfully with {len(plan)} steps."
@@ -197,99 +168,28 @@ async def generate_plan(
         return plan
 
     except json.JSONDecodeError as json_err:
-        # This catches errors from json.loads(llm_response_raw) OR json.loads(plan_str)
         agent_logger.error(
-            f"[Planner] Failed to decode JSON from LLM response: {json_err}. Response/Extracted: '{plan_str_for_logging}'"
+            f"[Planner] Failed to decode JSON response: {plan_str_for_logging} | Error: {json_err}"
         )
         return None
-    except Exception as e:
-        agent_logger.exception(
-            f"[Planner] Unexpected error parsing planning response: {e}"
-        )
+    except Exception as parse_err:
+        agent_logger.exception(f"[Planner] Error parsing plan: {parse_err}")
         return None
 
 
 def json_find_gpt(input_str: str):
     """
-    Finds the first json object demarcated by ```json ... ```
-    Helper based on AutoGPT's parsing. Also handles if the whole string is JSON.
+    Finds the first ```json ... ``` block in a string using regex.
+    Handles optional language specifier (e.g., ```json). Non-greedy match.
+    Also handles JSON that isn't in a code block if it starts with { or [.
     """
-    # Try finding ```json ``` block
-    im_json = re.search(
-        r"```(?:json)?\s*\n(.*?)\n```", input_str, re.DOTALL | re.IGNORECASE
-    )
+    # Pattern to find ```json ... ``` or ``` ... ``` (non-greedy) or raw {..} or [..]
+    # Allows optional language specifier after ```
+    pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```|(?<!`)(\{.*?\}|\[.*?\])(?!`)    ", re.DOTALL)
+    match = pattern.search(input_str)
 
-    if im_json:
-        return im_json
+    if match:
+        # Return the first non-None group (either from ``` block or raw JSON)
+        return match.group(1) or match.group(2)
     else:
-        # Fallback: Check if the entire string is valid JSON
-        try:
-            json.loads(input_str)
-
-            # If parsing succeeds, wrap it to mimic the regex group structure
-            class MockMatch:
-                _content = input_str
-
-                def group(self, num):
-                    if num == 1:
-                        return self._content
-                    return None
-
-            return MockMatch()
-        except json.JSONDecodeError:
-            return None
-
-
-# Example usage needs async context
-async def main_test():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    test_logger = logging.getLogger("test_planner")
-    test_objective = "Get the capital of France and write it to 'capital.txt'"
-    test_tools = """
-- get_capital(country: str) -> str
-- write_file(filename: str, content: str) -> str
-- final_answer(answer: str) -> str
-"""
-
-    if not LLAMA_SERVER_URL:
-        print(
-            "Error: LLAMA_SERVER_URL not configured (likely missing core/config.py or env var). Cannot run test."
-        )
-        return
-
-    print(f"Testing planner with objective: '{test_objective}'")
-    plan = await generate_plan(
-        test_objective, test_tools, test_logger, llm_url=LLAMA_SERVER_URL
-    )
-    print("--- Generated Plan ---")
-    if plan is not None:
-        print(json.dumps(plan, indent=2))
-    else:
-        print("Failed to generate plan.")
-    print("----------------------")
-
-
-if __name__ == "__main__":
-    try:
-        # Check if running in an already running event loop
-        loop = asyncio.get_running_loop()
-        loop.create_task(main_test())
-        # If in a running loop, let it manage execution.
-        # This is common in environments like Jupyter.
-        print("Test scheduled in existing event loop.")
-    except RuntimeError:
-        # No running event loop, run main_test directly
-        try:
-            asyncio.run(main_test())
-        except ImportError:
-            print(
-                "Could not import config. Ensure core/config.py exists or environment variables are set."
-            )
-        except Exception as e:
-            print(f"An error occurred during async test execution: {e}")
-            import traceback
-
-            traceback.print_exc()
+        return None

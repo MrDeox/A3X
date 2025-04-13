@@ -19,6 +19,7 @@ from . import learning_cycle
 from . import consult_learned_heuristics
 # <<< END ADDED Imports >>>
 from . import llm_error_diagnosis
+from . import study
 import logging
 
 logger = logging.getLogger(__name__)

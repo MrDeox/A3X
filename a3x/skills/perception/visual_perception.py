@@ -26,12 +26,9 @@ else:
 
 # Core framework imports
 from a3x.core.config import (
-    LLM_PROVIDER,
-    LLAMA_SERVER_URL, # Assuming this might be used for LLaVA
-    # Add any specific LLaVA server URL config if needed
-    SD_API_URL_BASE, PROJECT_ROOT # Assuming SD is used for something, check imports
+    PROJECT_ROOT,
+    MULTIMODAL_STORAGE_DIR
 )
-from a3x.core.llm_interface import call_llm
 from a3x.core.skills import skill
 
 logger = logging.getLogger(__name__)

@@ -1,107 +1,123 @@
 import logging
-from typing import List, Dict, Any
 import json
-
+import datetime
+from typing import Dict, Any, List, Optional
 from a3x.core.skills import skill
-from a3x.core.llm_interface import call_llm # Assuming standard call_llm
+# Import the class and default URL, not the function
+from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
+from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
+from a3x.core.context import Context
+import os
 
-logger = logging.getLogger(__name__)
+reflect_logger = logging.getLogger(__name__)
 
-FAILURE_REFLECTION_PROMPT_TEMPLATE = """
-# Análise de Falha de Execução do Agente A³X
+HEURISTIC_LOG_PATH = os.path.join(LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE)
 
-Ocorreu uma falha durante a execução de um plano. Analise os detalhes abaixo e forneça uma explicação estruturada.
+async def _log_learned_heuristic(log_entry: Dict[str, Any]):
+    # (Same logging helper function as in reflect_on_success)
+    try:
+        log_dir = os.path.dirname(HEURISTIC_LOG_PATH)
+        os.makedirs(log_dir, exist_ok=True)
+        with open(HEURISTIC_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        reflect_logger.info(f"Logged heuristic: {log_entry.get('heuristic', '')[:50]}...")
+    except Exception as e:
+        reflect_logger.exception("Failed to log learned heuristic:")
 
-## Contexto da Falha
+REFLECTION_PROMPT_TEMPLATE_FAILURE = """
+# Reflexão Pós-Execução (Falha)
 
-*   **Objetivo Geral:** {objective}
-*   **Plano Sendo Executado:**
-{plan_steps}
-*   **Último Raciocínio (Thought):** {last_thought}
-*   **Última Ação Tentada:** {last_action}
-*   **Observação/Erro Recebido:** {last_observation}
+**Objetivo:** {objective}
 
-## Tarefa
+**Plano Original:**
+{plan_str}
 
-Gere uma análise concisa da falha, seguindo ESTRITAMENTE a estrutura abaixo:
+**Erro(s) Encontrado(s):**
+{errors_str}
 
-**1. O que o Executor tentou fazer:**
-[Descreva em 1-2 frases a intenção por trás da última ação tentada, com base no objetivo, plano e raciocínio.]
+**Resultado Final:** Falha
 
-**2. Por que deu errado:**
-[Explique a causa mais provável da falha com base na observação/erro recebida. Seja direto e técnico se necessário (ex: ferramenta não encontrada, parâmetro inválido, erro de API, etc.).]
+**Tarefa:** Analise a execução falha acima. Identifique a causa raiz do erro ou a sequência de ações que levou à falha. Com base nisso, formule UMA ÚNICA heurística NEGATIVA e ACIONÁVEL (uma regra geral ou dica sobre o que *evitar*) que possa ser usada para prevenir falhas semelhantes em situações futuras. A heurística deve ser concisa (1-2 frases).
 
-**3. Como corrigir ou depurar:**
-[Forneça instruções CLARAS e ACIONÁVEIS para o Executor (ou um desenvolvedor humano) sobre os próximos passos para resolver o problema. Exemplos: "Verificar se a skill X está registrada", "Corrigir o parâmetro Y na chamada da ferramenta Z", "Analisar o log de erro completo da API externa", "Tentar a ação novamente com o parâmetro W modificado para V"].
+**Heurística Gerada (O que evitar):**
 """
 
 @skill(
     name="reflect_on_failure",
-    description="Analisa uma falha ocorrida durante a execução de um plano e gera uma explicação estruturada sobre a causa e possíveis correções.",
+    description="Reflete sobre uma execução falha para extrair heurísticas preventivas.",
     parameters={
-        "objective": (str, ...), # O objetivo original do plano.
-        "plan": (List[str], ...), # Os passos do plano.
-        "last_thought": (str, ...), # O último "Thought" executado antes da falha.
-        "last_action": (str, ...), # O último "Action" executado.
-        "last_observation": (str, ...) # O conteúdo da "Observation" que gerou o erro.
+        "objective": (str, ...),
+        "plan": (List[str], ...),
+        "execution_results": (List[Dict[str, Any]], ...)
     }
 )
-async def reflect_on_failure(ctx: Any, objective: str, plan: List[str], last_thought: str, last_action: str, last_observation: str) -> Dict[str, Any]:
-    """Analisa uma falha de execução e gera um relatório estruturado via LLM."""
+async def reflect_on_failure(
+    ctx: Context,
+    objective: str,
+    plan: List[str],
+    execution_results: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Reflects on a failed execution to extract preventative heuristics."""
+    reflect_logger.info(f"Reflecting on failure for objective: {objective[:100]}...")
 
-    log_prefix = "[ReflectOnFailure Skill]"
-    logger.info(f"{log_prefix} Iniciando reflexão sobre falha na ação '{last_action}' para o objetivo '{objective[:50]}...'")
+    # Prepare input for the LLM
+    plan_str = "\n".join([f"- {step}" for step in plan])
+    # Focus on the errors
+    errors_str = "\n".join([f"- Passo {i+1} ({res.get('action', 'N/A')}): Status={res.get('status')}, Erro={str(res.get('output', 'N/A'))[:100]}..." for i, res in enumerate(execution_results) if res.get('status') != 'success'])
+    if not errors_str:
+        errors_str = "(Nenhum erro detalhado registrado nos resultados)"
 
-    # Format plan steps for the prompt
-    plan_steps_formatted = "\n".join([f"    - Passo {i+1}: {step}" for i, step in enumerate(plan)])
-
-    # Construct the prompt
-    prompt_content = FAILURE_REFLECTION_PROMPT_TEMPLATE.format(
+    prompt = REFLECTION_PROMPT_TEMPLATE_FAILURE.format(
         objective=objective,
-        plan_steps=plan_steps_formatted,
-        last_thought=last_thought,
-        last_action=last_action,
-        last_observation=last_observation
+        plan_str=plan_str,
+        errors_str=errors_str
     )
 
-    # Prepare prompt for LLM call (assuming a simple user message structure)
-    prompt_messages = [
-        {"role": "system", "content": "Você é um assistente de análise de logs especializado em depurar falhas de agentes autônomos."},
-        {"role": "user", "content": prompt_content}
-    ]
+    # Get LLMInterface instance from context or create a fallback
+    if hasattr(ctx, 'llm_interface') and isinstance(ctx.llm_interface, LLMInterface):
+        llm_interface = ctx.llm_interface
+        reflect_logger.debug("Using LLMInterface from context for failure reflection.")
+    else:
+        llm_url = getattr(ctx, 'llm_url', DEFAULT_LLM_URL)
+        reflect_logger.warning(f"LLMInterface not found in context. Creating temporary instance for failure reflection with URL: {llm_url}")
+        llm_interface = LLMInterface(llm_url=llm_url)
 
-    logger.debug(f"{log_prefix} Enviando prompt para LLM para análise de falha...")
+    # Parameters for the call
+    llm_call_params = {
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "max_tokens": 100, # Heuristics should be concise
+        # temperature can be added here if needed
+    }
 
-    llm_response_raw = ""
+    reflect_logger.debug("Calling LLM for failed execution reflection...")
+    heuristic_text = ""
     try:
-        # Call the LLM (use context's llm_url if available, otherwise default)
-        llm_url = getattr(ctx, 'llm_url', None)
-        
-        # Assuming call_llm returns an async generator
-        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False):
-             llm_response_raw += chunk
-        
-        # Removed the complex else block as call_llm is expected to be async generator based on other usage
-        if not llm_response_raw:
-             logger.warning(f"{log_prefix} LLM call returned empty response for failure analysis.")
-             llm_response_raw = "(LLM did not provide an analysis)" # Provide fallback
+        response_content = ""
+        # Use the instance method to make the call
+        async for chunk in llm_interface.call_llm(**llm_call_params):
+            response_content += chunk
+        heuristic_text = response_content.strip().strip('"\'\n ') # Clean up response
 
-        logger.info(f"{log_prefix} Resposta da análise de falha recebida do LLM.")
-        logger.debug(f"{log_prefix} Resposta bruta LLM:\n{llm_response_raw}")
-
-        # Return the structured explanation from the LLM
-        return {
-            "status": "success",
-            "action": "failure_analysis_generated",
-            "data": {
-                "explanation": llm_response_raw.strip()
+        if heuristic_text:
+            reflect_logger.info(f"Generated heuristic from failure: {heuristic_text}")
+            log_entry = {
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z',
+                "objective": objective,
+                "plan": plan,
+                "results": execution_results,
+                "heuristic": heuristic_text,
+                "type": "failure" # Mark as failure heuristic
             }
-        }
+            await _log_learned_heuristic(log_entry)
+            return {"status": "success", "data": {"heuristic": heuristic_text}}
+        else:
+            reflect_logger.warning("LLM did not generate a heuristic for the failed execution.")
+            return {"status": "warning", "data": {"message": "No heuristic generated."}}
 
     except Exception as e:
-        logger.exception(f"{log_prefix} Erro ao chamar LLM para análise de falha:")
-        return {
-            "status": "error",
-            "action": "llm_call_failed",
-            "data": {"message": f"Erro ao gerar análise de falha via LLM: {e}"}
-        } 
+        reflect_logger.exception("Error during LLM call for failure reflection:")
+        return {"status": "error", "data": {"message": f"LLM call failed: {e}"}}
+
+# Example usage (for testing) can be added here if needed
+# Similar to reflect_on_success, creating a MockContext and test data. 

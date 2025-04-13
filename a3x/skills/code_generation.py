@@ -5,7 +5,7 @@ import re
 from typing import Dict, Any
 
 # Use configurações centralizadas
-from a3x.core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
+# from a3x.core.config import LLAMA_SERVER_URL, LLAMA_DEFAULT_HEADERS
 from a3x.core.skills import skill  # Import skill decorator
 
 # Configure logger para esta skill

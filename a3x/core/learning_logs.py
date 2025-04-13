@@ -9,14 +9,14 @@ import os
 import json
 import uuid
 import datetime
-
-LOG_PATH = "a3x/memory/learning_logs/heuristics_traceable.jsonl"
+from a3x.core.config import HEURISTIC_LOG_FILE
 
 def log_heuristic_with_traceability(heuristic: dict, plan_id: str, execution_id: str, validation_status: str = "pending"):
     """
     Registra uma heurística com rastreabilidade total: origem, plano, execução, status de validação.
     """
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    # Ensure the directory exists (using Path object from config)
+    HEURISTIC_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     entry = {
         "heuristic_id": str(uuid.uuid4()),
         "plan_id": plan_id,
@@ -26,7 +26,7 @@ def log_heuristic_with_traceability(heuristic: dict, plan_id: str, execution_id:
         "heuristic": heuristic,
         "validation_status": validation_status
     }
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
+    with open(HEURISTIC_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return entry
 

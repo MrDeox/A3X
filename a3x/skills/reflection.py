@@ -4,7 +4,8 @@ import logging
 import re
 from typing import Dict, Any, List, Optional, Union
 from a3x.core.skills import skill
-from a3x.core.llm_interface import call_llm
+from a3x.core.llm_interface import LLMInterface
+from a3x.core.agent import _ToolExecutionContext
 # from a3x.core.prompt_builder import build_reflection_prompt # Function missing
 # from a3x.core.config import LLM_DEFAULT_MODEL # Removed, var not defined
 
@@ -83,12 +84,14 @@ def _parse_reflection_output(response_text: str) -> Dict[str, Any]:
     if justification_match:
         justification = justification_match.group(1).strip()
 
-    if decision == "unknown" and "execute" in response_text.lower():
-        decision = "execute"  # Fallback guess
-    if decision == "unknown" and "skip" in response_text.lower():
-        decision = "skip"
-    if decision == "unknown" and "modify" in response_text.lower():
-        decision = "modify"
+    # Fallbacks
+    if decision == "unknown":
+        if "execute" in response_text.lower():
+            decision = "execute"
+        elif "skip" in response_text.lower():
+            decision = "skip"
+        elif "modify" in response_text.lower():
+            decision = "modify"
 
     return {"decision": decision, "justification": justification}
 
@@ -99,73 +102,63 @@ def _parse_reflection_output(response_text: str) -> Dict[str, Any]:
     parameters={
         "step": (str, ...),  # The planned step objective
         "simulated_outcome": (str, ...),  # The description of the simulated result
-        "context": (
-            dict,
-            None,
-        ),  # REVERTED for @skill compatibility (keep func signature)
+        # Context is implicitly passed by the agent
     },
 )
 async def reflect_plan_step(
-    step: str, simulated_outcome: str, context: Optional[Union[Dict, str]] = None
+    step: str, 
+    simulated_outcome: str, 
+    ctx: _ToolExecutionContext # <-- Accept context object
 ) -> Dict[str, Any]:
     """
-    Reflects on a plan step and its simulated outcome to decide the next course of action.
-
-    Args:
-        step (str): The plan step under evaluation.
-        simulated_outcome (str): The predicted outcome from the simulation skill.
-        context (Dict[str, Any], optional): The current context available to the agent. Defaults to None.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing the reflection result.
-            - status (str): 'success' or 'error'.
-            - decision (str): 'execute', 'modify', 'skip', or 'unknown'.
-            - justification (str): Explanation for the decision.
-            - confidence (str): Confidence level ('Alta', 'Média', 'Baixa') - Placeholder.
-            - error_message (str | None): Error details if reflection failed.
+    Reflects on a plan step and its simulated outcome...
+    Uses the LLMInterface from the execution context.
     """
     logger.debug(
         f"Reflecting on step: '{step}' with simulated outcome: '{simulated_outcome}'"
     )
+    
+    llm_interface = ctx.llm_interface
+    if not llm_interface:
+        logger.error("LLMInterface not found in execution context for reflection.")
+        return {"status": "error", "decision": "unknown", "justification": "Internal error: LLMInterface missing.", "confidence": "N/A", "error_message": "LLMInterface missing."}
 
-    prompt = REFLECT_STEP_PROMPT_TEMPLATE.format(
+    # Build prompt using context from ctx if needed (e.g., memory)
+    # For now, just pass the direct inputs
+    prompt_content = REFLECT_STEP_PROMPT_TEMPLATE.format(
         step=step,
         simulated_outcome=simulated_outcome,
-        context=context if context else "Nenhum contexto fornecido.",
+        context=ctx.memory.get_memory() if ctx.memory else "No memory context available.", # Example: Get context from memory
     )
+    
+    # Prepare messages for the LLM call
+    messages = [
+        {"role": "system", "content": DEFAULT_REFLECTION_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt_content}
+    ]
 
     try:
-        # <<< REVERTED: Use async for >>>
         llm_response_text = ""
-        # <<< ADDED: Wrap prompt in message list structure >>>
-        messages = [{"role": "user", "content": prompt}]
-        async for chunk in call_llm(messages, stream=False):  # Pass messages list
+        # Updated call site
+        async for chunk in llm_interface.call_llm( # <-- Use instance method
+            messages=messages, 
+            stream=False
+        ):
             llm_response_text += chunk
 
-        if not llm_response_text or not isinstance(llm_response_text, str):
-            logger.error(
-                f"Reflection LLM call returned invalid data type: {type(llm_response_text)}"
-            )
-            # <<< MODIFIED: Return error dict matching test expectations >>>
-            return {
-                "status": "error",
-                "decision": "unknown",
-                "justification": "LLM response was empty or not a string.",
-                "confidence": "N/A",
-                "error_message": "LLM response was empty or not a string.",
-            }
+        if not llm_response_text:
+            logger.error("Reflection LLM call returned empty response.")
+            return {"status": "error", "decision": "unknown", "justification": "LLM response was empty.", "confidence": "N/A", "error_message": "LLM response empty."}
 
         parsed_output = _parse_reflection_output(llm_response_text)
         decision = parsed_output["decision"]
         justification = parsed_output["justification"]
 
-        logger.info(
-            f"Reflection complete for step '{step}'. Decision: {decision}. Justification: {justification}"
-        )
+        logger.info(f"Reflection complete for step '{step}'. Decision: {decision}.")
+        logger.debug(f"Justification: {justification}")
 
-        confidence = "Média"
+        confidence = "Média" # Placeholder confidence
 
-        # <<< MODIFIED: Return success dict matching test expectations >>>
         return {
             "status": "success",
             "decision": decision,
@@ -176,11 +169,10 @@ async def reflect_plan_step(
 
     except Exception as e:
         logger.exception(f"Error during step reflection LLM call for step '{step}':")
-        # <<< MODIFIED: Return error dict matching test expectations >>>
         return {
             "status": "error",
             "decision": "unknown",
-            "justification": "Failed to reflect on step due to LLM error.",
+            "justification": f"Failed to reflect on step due to LLM error: {e}",
             "confidence": "N/A",
             "error_message": f"Failed to reflect on step: {e}",
         }
@@ -190,27 +182,38 @@ async def reflect_plan_step(
     name="reflect_on_execution",
     description="Analyzes the overall execution of a plan based on the objective, the plan itself, and the results of each step.",
     parameters={
-        "objective": (str, ...),  # The original objective
-        "plan": (list, ...),  # The final executed plan (list of strings)
-        "execution_results": (
-            list,
-            ...,
-        ),  # List of result dictionaries for each executed/skipped step
-        "context": (
-            dict,
-            None,
-        ),  # REVERTED for @skill compatibility (keep func signature)
+        "objective": (str, ...),
+        "plan": (list, ...),
+        "execution_results": (list, ...),
+        # Context implicitly passed
     },
 )
-def reflect_on_execution(
+async def reflect_on_execution(
     objective: str,
     plan: List[str],
     execution_results: List[Dict[str, Any]],
-    context: Optional[Union[dict, str]] = None,
+    ctx: _ToolExecutionContext # <-- Accept context object
 ) -> Dict[str, Any]:
-    return {}  # ADDED placeholder return
-    # pass # REMOVED pass
-    # ... existing code ...
+    """Analyzes the overall execution. (Placeholder implementation)"""
+    logger.info(f"Reflecting on overall execution for objective: {objective}")
+    # TODO: Implement full reflection logic using LLM if needed
+    # Access llm_interface via ctx.llm_interface
+    # Access memory via ctx.memory
+    
+    # Example placeholder logic:
+    success_count = sum(1 for r in execution_results if r.get('status') == 'success')
+    failure_count = len(execution_results) - success_count
+    summary = f"Execution Summary: Objective='{objective}', Steps={len(plan)}, Success={success_count}, Failures={failure_count}."
+    
+    logger.debug(f"Execution Results: {execution_results}")
+    
+    # Potentially call LLM to generate insights or heuristics based on summary/results
+    
+    return {
+        "status": "success",
+        "summary": summary,
+        "learned_heuristics": [] # Placeholder for learned insights
+    }
 
 
 # Ensure the skill is registered (assuming automatic loading from skills directory)

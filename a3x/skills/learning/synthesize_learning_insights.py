@@ -5,19 +5,14 @@ análises de logs de reflexão.
 
 import logging
 import time
-import asyncio # Needed for potential concurrent individual analyses
-from typing import List, Dict, Any, AsyncGenerator
+import asyncio
+from typing import List, Dict, Any, AsyncGenerator, Union
 
-from a3x.core.llm_interface import call_llm
+from a3x.core.llm_interface import LLMInterface
 from a3x.core.skills import skill
-# Config import removed as LLM_DEFAULT_MODEL was the only import and is not defined
+from a3x.core.agent import _ToolExecutionContext
 
 logger = logging.getLogger(__name__)
-
-# Context stub for type hinting (can be replaced by actual SkillContext if available globally)
-class SkillContext:
-    logger: logging.Logger
-    llm_call: Any # Function or async generator supporting streaming
 
 @skill(
     name="synthesize_learning_insights",
@@ -26,14 +21,14 @@ class SkillContext:
         "analyses": (List[str], ...), # Ellipsis indicates required parameter
     }
 )
-async def synthesize_learning_insights(ctx: SkillContext, analyses: List[str]) -> Dict[str, Any]:
+async def synthesize_learning_insights(ctx: _ToolExecutionContext, analyses: List[str]) -> Dict[str, Any]:
     """
     Realiza uma análise em duas etapas:
     1. Gera um resumo estruturado para cada análise de log individualmente.
     2. Sintetiza esses resumos individuais em um relatório consolidado final.
 
     Args:
-        ctx: O contexto da skill, contendo logger e llm_call.
+        ctx: O contexto da skill, contendo logger e llm_interface.
         analyses: Uma lista de strings, onde cada string é uma análise
                   previamente gerada por learn_from_reflection_logs.
 
@@ -47,41 +42,31 @@ async def synthesize_learning_insights(ctx: SkillContext, analyses: List[str]) -
     num_analyses = len(analyses)
     ctx.logger.info(f"Starting 2-step synthesis for {num_analyses} analyses...")
 
+    llm_interface = ctx.llm_interface
+    if not llm_interface:
+        ctx.logger.error("LLMInterface not found in execution context.")
+        return {"error": "Internal error: LLMInterface missing."}
+
     if not analyses:
         ctx.logger.warning("No analyses provided for synthesis.")
         return {"error": "Nenhuma análise fornecida para síntese."}
 
     individual_summaries: List[str] = []
-    # tasks = [] # Removed task list for sequential execution
 
     # --- Etapa 1: Análise Individual (SEQUENTIAL) ---
     ctx.logger.info("Step 1: Generating individual summaries (sequentially)...")
-    # for i, analysis_text in enumerate(analyses):
-    #     tasks.append(_analyze_individual_log(ctx, analysis_text, i + 1))
-    # individual_results = await asyncio.gather(*tasks)
-
-    # Execute sequentially instead of concurrently
     for i, analysis_text in enumerate(analyses):
         ctx.logger.debug(f"Processing analysis #{i+1} sequentially...")
-        result = await _analyze_individual_log(ctx, analysis_text, i + 1)
+        result = await _analyze_individual_log(ctx, llm_interface, analysis_text, i + 1)
         if isinstance(result, str): # Success
             individual_summaries.append(result)
         else: # Error occurred
-             ctx.logger.error(f"Failed to generate summary for analysis #{i+1} sequentially. Skipping synthesis.")
-             return {"error": f"Falha ao gerar resumo para análise individual #{i+1}.", "failed_result": result}
-
-    # # Check for errors and collect successful summaries (Now handled inside the loop)
-    # for result in individual_results:
-    #     if isinstance(result, str):
-    #         individual_summaries.append(result)
-    #     else:
-    #          ctx.logger.error(f"Failed to generate summary for one of the analyses. Skipping synthesis.")
-    #          return {"error": "Falha ao gerar resumo para uma ou mais análises individuais.", "partial_results": individual_results}
-
+             ctx.logger.error(f"Failed to generate summary for analysis #{i+1}. Error: {result.get('error', 'Unknown')}")
+             continue # Continue to next analysis if one fails?
 
     if not individual_summaries:
-         ctx.logger.error("No individual summaries were successfully generated (sequentially). Cannot proceed to synthesis.")
-         return {"error": "Nenhum resumo individual gerado com sucesso (execução sequencial)."}
+         ctx.logger.error("No individual summaries were successfully generated. Cannot proceed to synthesis.")
+         return {"error": "Nenhum resumo individual gerado com sucesso."}
 
     ctx.logger.info(f"Step 1 finished. Generated {len(individual_summaries)} individual summaries.")
 
@@ -119,22 +104,22 @@ O resultado final deve ser um texto único, claro e bem estruturado, contendo EX
     final_synthesis = ""
     try:
         ctx.logger.debug(f"Final synthesis prompt constructed (length: {len(synthesis_prompt)} chars). Calling LLM...")
-        llm_stream = ctx.llm_call(synthesis_prompt)
-
-        if isinstance(llm_stream, AsyncGenerator):
-            async for chunk in llm_stream:
-                final_synthesis += chunk
-        else:
-            ctx.logger.warning("LLM call for final synthesis did not return an async generator.")
-            final_synthesis = str(llm_stream)
+        async for chunk in llm_interface.call_llm(
+            messages=[{"role": "user", "content": synthesis_prompt}], 
+            stream=True
+        ):
+            final_synthesis += chunk
 
         if not final_synthesis.strip():
             ctx.logger.warning("LLM final synthesis resulted in an empty response.")
-            final_synthesis = "Síntese final falhou ou retornou vazia." # Indicate failure
+            final_synthesis = "[Síntese falhou ou retornou vazia]" # Indicate failure
+        elif final_synthesis.startswith("[LLM Error:"):
+             ctx.logger.error(f"LLM call failed during final synthesis: {final_synthesis}")
+             # Keep error message from LLM
 
     except Exception as e:
         ctx.logger.exception("Error during LLM call for final synthesis:")
-        final_synthesis = f"Erro ao gerar síntese final: {e}" # Indicate failure
+        final_synthesis = f"[Erro ao gerar síntese final: {e}]" # Indicate failure
 
     end_time = time.time()
     duration = end_time - start_time
@@ -145,8 +130,12 @@ O resultado final deve ser um texto único, claro e bem estruturado, contendo EX
         "synthesized_insights": final_synthesis.strip()
     }
 
-
-async def _analyze_individual_log(ctx: SkillContext, analysis_text: str, index: int) -> str | Dict[str, str]:
+async def _analyze_individual_log(
+    ctx: _ToolExecutionContext, 
+    llm_interface: LLMInterface,
+    analysis_text: str, 
+    index: int
+) -> Union[str, Dict[str, str]]:
     """
     Helper function to analyze a single log analysis text using LLM.
     Returns the summarized string on success, or an error dict on failure.
@@ -172,18 +161,18 @@ Seja direto, use frases curtas e evite jargões desnecessários. Foque na essên
     summary = ""
     try:
         ctx.logger.debug(f"Analyzing individual log #{index} (length: {len(analysis_text)} chars). Calling LLM...")
-        llm_stream = ctx.llm_call(prompt)
-
-        if isinstance(llm_stream, AsyncGenerator):
-            async for chunk in llm_stream:
-                summary += chunk
-        else:
-             ctx.logger.warning(f"LLM call for individual analysis #{index} did not return an async generator.")
-             summary = str(llm_stream)
+        async for chunk in llm_interface.call_llm(
+            messages=[{"role": "user", "content": prompt}], 
+            stream=True
+        ):
+            summary += chunk
 
         if not summary.strip():
             ctx.logger.warning(f"LLM individual analysis #{index} resulted in an empty response.")
             return {"error": f"Análise individual #{index} retornou vazia."}
+        elif summary.startswith("[LLM Error:"):
+             ctx.logger.error(f"LLM call failed during individual analysis #{index}: {summary}")
+             return {"error": summary}
 
         ctx.logger.debug(f"Successfully generated summary for analysis #{index}.")
         return summary.strip()
@@ -191,7 +180,6 @@ Seja direto, use frases curtas e evite jargões desnecessários. Foque na essên
     except Exception as e:
         ctx.logger.exception(f"Error during LLM call for individual analysis #{index}:")
         return {"error": f"Erro ao analisar log individual #{index}: {e}"}
-
 
 # Remover ou comentar o código de teste antigo/mock, pois a estrutura mudou.
 # async def _mock_llm_call...

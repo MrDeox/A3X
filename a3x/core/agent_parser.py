@@ -184,6 +184,63 @@ def parse_llm_response(
         return None, None, None
 
 
+# --- NEW FUNCTION ---
+def parse_orchestrator_response(
+    response: str, agent_logger: logging.Logger
+) -> Optional[Dict[str, Any]]:
+    """
+    Parses the LLM's raw response string, expecting a direct JSON object
+    containing 'fragment' and 'sub_task'.
+    Handles responses potentially wrapped in markdown code blocks (```json ... ```).
+
+    Returns: Parsed dictionary {fragment: str, sub_task: str} or None if parsing fails.
+    """
+    agent_logger.debug(
+        f"[Agent Parse DEBUG] Raw Orchestrator LLM Response (expecting JSON):\\n{response}"
+    )
+    cleaned_response = response.strip()
+
+    # Strip markdown code blocks if present
+    if cleaned_response.startswith("```json"):
+        cleaned_response = cleaned_response[len("```json"):]
+        if cleaned_response.endswith("```"):
+            cleaned_response = cleaned_response[:-len("```")]
+        cleaned_response = cleaned_response.strip()
+        agent_logger.debug("[Agent Parse DEBUG] Stripped ```json markdown block.")
+    elif cleaned_response.startswith("```"):
+        cleaned_response = cleaned_response[len("```"):]
+        if cleaned_response.endswith("```"):
+            cleaned_response = cleaned_response[:-len("```")]
+        cleaned_response = cleaned_response.strip()
+        agent_logger.debug("[Agent Parse DEBUG] Stripped ``` markdown block.")
+
+    # Replace potential curly quotes just in case
+    cleaned_response = cleaned_response.replace("“", '"').replace("”", '"')
+
+    try:
+        parsed_json = json.loads(cleaned_response)
+        if isinstance(parsed_json, dict) and "fragment" in parsed_json and "sub_task" in parsed_json:
+            agent_logger.info(
+                f"[Agent Parse INFO] Orchestrator response parsed successfully: {parsed_json}"
+            )
+            return parsed_json
+        else:
+            agent_logger.error(
+                f"[Agent Parse ERROR] Parsed JSON is not a dictionary or lacks required keys ('fragment', 'sub_task'). Parsed: {parsed_json}"
+            )
+            return None
+    except json.JSONDecodeError as e:
+        agent_logger.error(
+            f"[Agent Parse ERROR] Failed to decode JSON from orchestrator response: {e}\\nCleaned String was: '{cleaned_response}'"
+        )
+        return None
+    except Exception as e:
+        agent_logger.exception(
+            f"[Agent Parse ERROR] Unexpected error during orchestrator JSON parsing:"
+        )
+        return None
+
+
 # --- Keep old JSON parser for potential future use or reference? ---
 # (Original parse_llm_response function expecting direct JSON)
 # def parse_llm_response_json(response: str, agent_logger: logging.Logger) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:

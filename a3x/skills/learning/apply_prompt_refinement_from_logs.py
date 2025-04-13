@@ -7,24 +7,22 @@ import logging
 import re
 import os
 import datetime
-from typing import Dict, Any, Optional, AsyncGenerator, List
+from typing import Dict, Any, Optional, List
 import ast
 from pathlib import Path
 import shutil
 
 # Core imports
 from a3x.core.skills import skill
-from a3x.skills.core.call_skill_by_name import call_skill_by_name
-from a3x.core.llm_interface import call_llm
+# Import context type for hinting
+from a3x.core.agent import _ToolExecutionContext 
+# Remove unused LLM import
+# from a3x.core.llm_interface import call_llm
 from a3x.core.config import PROJECT_ROOT
-# from a3x.core.config import (
-#     # LLM_DEFAULT_MODEL, # Removed, var not defined
-# )
+# Remove unused imports
+# from a3x.skills.core.call_skill_by_name import call_skill_by_name
 # from a3x.core.memory_manager import MemoryManager # Module does not exist
 # from a3x.core.utils.file_utils import get_most_recent_file # Function does not exist
-
-# Assume SkillContext e outras skills (como learn_from_reflection_logs) são acessíveis
-# através do contexto ou import direto se necessário.
 
 # Path to the target skill file
 # TODO: Make this configurable or discoverable?
@@ -34,16 +32,9 @@ PROMPT_END_MARKER = "# --- END SIMULATION PROMPT ---"
 
 logger = logging.getLogger(__name__)
 
-# Context stub (replace with actual SkillContext if available globally)
-class SkillContext:
-    logger: logging.Logger
-    # llm_call: Any # Assuming this is available
-
-
-# Helper: Define the prompt file directory relative to this script
-PROMPT_FILE_DIR = Path(__file__).parent.parent / "prompts" # Assuming prompts dir is sibling to skills/
+# Path definitions
+PROMPT_FILE_DIR = Path(__file__).parent.parent / "prompts"
 PROMPT_FILE_PATH = PROMPT_FILE_DIR / "decision_prompt.txt"
-# Backup directory relative to PROJECT_ROOT
 PROMPT_BACKUP_DIR = Path(PROJECT_ROOT) / ".a3x" / "prompt_backups"
 
 # --- Skill Definition ---
@@ -53,9 +44,15 @@ PROMPT_BACKUP_DIR = Path(PROJECT_ROOT) / ".a3x" / "prompt_backups"
     parameters={
         "suggested_prompt": (str, ...), # O texto completo do novo prompt sugerido.
         "original_log_filename": (str, ...), # Nome do arquivo de log que originou a sugestão (para rastreabilidade).
+        # Context (ctx) is implicitly passed
     }
 )
-async def apply_prompt_refinement_from_logs(ctx: SkillContext, suggested_prompt: str, original_log_filename: str) -> Dict[str, Any]:
+# Updated function signature with correct context type
+async def apply_prompt_refinement_from_logs(
+    ctx: _ToolExecutionContext, # <-- Correct type hint
+    suggested_prompt: str, 
+    original_log_filename: str
+) -> Dict[str, Any]:
     """
     Applies the suggested refined prompt to the main decision_prompt.txt file,
     creating a backup of the old version first.
@@ -95,10 +92,14 @@ async def apply_prompt_refinement_from_logs(ctx: SkillContext, suggested_prompt:
         return {"status": "success", "message": f"Prompt {PROMPT_FILE_PATH.name} updated successfully."}
     except IOError as e:
         ctx.logger.error(f"Failed to write refined prompt to {PROMPT_FILE_PATH}: {e}")
-        return {"status": "error", "message": f"Failed to write new prompt: {e}. Backup created at {backup_path.name}."}
+        # Attempt to restore backup on write failure
+        # restored = _restore_latest_backup(PROMPT_FILE_PATH, PROMPT_BACKUP_DIR, ctx.logger)
+        return {"status": "error", "message": f"Failed to write new prompt: {e}. Backup created at {backup_path.name}."} # Removed mention of restore attempt
     except Exception as e:
         ctx.logger.exception(f"Unexpected error writing refined prompt to {PROMPT_FILE_PATH}:")
-        return {"status": "error", "message": f"Unexpected error writing prompt: {e}. Backup created at {backup_path.name}."}
+        # Attempt to restore backup on unexpected failure
+        # restored = _restore_latest_backup(PROMPT_FILE_PATH, PROMPT_BACKUP_DIR, ctx.logger)
+        return {"status": "error", "message": f"Unexpected error writing prompt: {e}. Backup created at {backup_path.name}."} # Removed mention of restore attempt
 
 # --- Helper Functions ---
 

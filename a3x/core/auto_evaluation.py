@@ -1,9 +1,7 @@
 import datetime
 import json
 from typing import List, Dict, Any
-
-AUTOEVAL_LOG = "memory/learning_logs/auto_evaluation.jsonl"
-SELF_EVAL_LOG = "memory/self_evaluation_log.jsonl"
+from a3x.core.config import AUTO_EVAL_LOG, SELF_EVAL_LOG
 
 def auto_evaluate_task(objective: str, plan: List[str], execution_results: List[Dict[str, Any]], heuristics_used: List[str], start_time: float, end_time: float):
     """
@@ -43,7 +41,7 @@ def auto_evaluate_task(objective: str, plan: List[str], execution_results: List[
         }
     }
     # Salva em ambos os logs
-    with open(AUTOEVAL_LOG, "a", encoding="utf-8") as f:
+    with open(AUTO_EVAL_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     with open(SELF_EVAL_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")

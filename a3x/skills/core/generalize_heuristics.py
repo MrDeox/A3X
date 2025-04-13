@@ -7,25 +7,19 @@ from pathlib import Path
 import datetime
 import itertools
 
-# Ensure skill decorator is imported correctly based on current structure
-try:
-    from a3x.core.skills import skill
-    from a3x.core.context import Context
-    from a3x.core.llm_interface import call_llm
-except ImportError:
-    # Fallback if structure is different or running standalone
-    def skill(**kwargs):
-        def decorator(func):
-            return func
-        return decorator
-    async def call_llm(*args, **kwargs):
-        # Dummy LLM call for standalone testing
-        yield "Regra geral de teste (sem LLM real)\n"
-    Context = Any
+# Core imports
+from a3x.core.skills import skill
+from a3x.core.llm_interface import LLMInterface # <-- IMPORT CLASS
+from a3x.core.agent import _ToolExecutionContext # <-- Import context type
+
+# Fallback definitions for standalone testing (Keep or remove as needed)
+async def fallback_call_llm(*args, **kwargs):
+    yield "Regra geral de teste (sem LLM real)"
+SkillContext = Any # Define as Any if _ToolExecutionContext is not available
 
 logger = logging.getLogger(__name__)
 
-# Constants - Using the unified log for reading, new file for writing generalized rules
+# Constants
 LEARNING_LOG_DIR = "memory/learning_logs"
 CONSOLIDATED_HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics_consolidated.jsonl")
 GENERALIZED_HEURISTICS_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "generalized_heuristics.jsonl")
@@ -184,7 +178,10 @@ def _cluster_heuristics_dbscan(embeddings: np.ndarray, eps: float, min_samples: 
     
     return labels, n_clusters
 
-async def _generate_rule_from_cluster(cluster_heuristics: List[Dict[str, Any]], llm_url: Optional[str]) -> Optional[str]:
+async def _generate_rule_from_cluster(
+    cluster_heuristics: List[Dict[str, Any]], 
+    llm_interface: LLMInterface
+) -> Optional[str]:
     """Uses LLM to generate a general rule from a cluster of specific heuristics."""
     if len(cluster_heuristics) < DBSCAN_MIN_SAMPLES:
         return None # Should not happen if called correctly
@@ -199,7 +196,12 @@ async def _generate_rule_from_cluster(cluster_heuristics: List[Dict[str, Any]], 
     llm_response_str = ""
     try:
         # Using stream=False as we expect a single concise rule
-        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False, temperature=0.5, max_tokens=150):
+        async for chunk in llm_interface.call_llm(
+            messages=prompt_messages,
+            stream=False,
+            temperature=0.5,
+            max_tokens=150
+        ):
              llm_response_str += chunk
         generalized_rule = llm_response_str.strip().strip('"')
         if generalized_rule and len(generalized_rule) > 10:
@@ -241,25 +243,33 @@ async def _log_generalized_heuristic(rule_text: str, source_cluster_texts: List[
     }
 )
 # <<< UPDATED: Function signature and logic >>>
-async def generalize_heuristics(dbscan_eps: Optional[float] = None, min_cluster_size: Optional[int] = None, ctx: Optional[Context] = None) -> Dict[str, Any]:
+async def generalize_heuristics(
+    ctx: _ToolExecutionContext,
+    dbscan_eps: Optional[float] = None, 
+    min_cluster_size: Optional[int] = None
+) -> Dict[str, Any]:
     """Analyzes consolidated heuristics, clusters them semantically, and generates general rules."""
     log_prefix = "[GeneralizeHeuristics Skill]"
+    logger = ctx.logger
+    llm_interface = ctx.llm_interface
+
     eps = dbscan_eps or DBSCAN_EPS
     min_samples = min_cluster_size or DBSCAN_MIN_SAMPLES
     logger.info(f"{log_prefix} Iniciando generalização semântica (eps={eps}, min_samples={min_samples}).")
 
-    # Check dependencies
-    if not all([EMBEDDING_FUNCTION_AVAILABLE, SKLEARN_AVAILABLE]):
-        msg = "Dependências ausentes (embeddings, sklearn). Não é possível generalizar."
+    if not llm_interface:
+        logger.error(f"{log_prefix} LLMInterface not found in execution context.")
+        return {"status": "error", "message": "Internal error: LLMInterface missing."}
+    if not EMBEDDING_FUNCTION_AVAILABLE or not SKLEARN_AVAILABLE or not np:
+        msg = "Missing dependencies (embedding/sklearn/numpy) for semantic generalization."
         logger.error(f"{log_prefix} {msg}")
-        return {"status": "error", "data": {"message": msg}}
-
+        return {"status": "error", "message": msg}
+        
     generated_rules_count = 0
     processed_clusters = 0
     try:
         workspace_root = Path(getattr(ctx, 'workspace_root', '.'))
         input_log_path = workspace_root / CONSOLIDATED_HEURISTIC_LOG_FILE
-        llm_url = getattr(ctx, 'llm_url', None) if ctx else None
 
         # 1. Read CONSOLIDATED heuristics
         valid_heuristics = _read_consolidated_heuristics(input_log_path)
@@ -301,7 +311,7 @@ async def generalize_heuristics(dbscan_eps: Optional[float] = None, min_cluster_
                 cluster_texts = [h["heuristic"] for h in cluster_heuristics]
                 
                 # 5. Synthesize rule
-                generalized_rule = await _generate_rule_from_cluster(cluster_heuristics, llm_url)
+                generalized_rule = await _generate_rule_from_cluster(cluster_heuristics, llm_interface)
                 
                 if generalized_rule:
                     # 6. Log the new generalized rule

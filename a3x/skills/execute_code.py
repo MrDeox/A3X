@@ -1,8 +1,7 @@
 # --- INÍCIO DO CÓDIGO PARA COPIAR ---
 import subprocess
 import logging
-from a3x.core.config import PYTHON_EXEC_TIMEOUT  # Default timeout
-from a3x.core.code_safety import is_safe_ast
+from typing import Dict, Any, Optional
 from a3x.core.skills import skill  # <<< Update import
 from a3x.core.db_utils import add_episodic_record # <<< Corrected import name
 
@@ -17,11 +16,11 @@ logger = logging.getLogger(__name__)
     parameters={
         "code": (str, ...),
         "language": (str, "python"),
-        "timeout": (float, PYTHON_EXEC_TIMEOUT),
+        "timeout": (float, ...),
     },
 )
 def execute_code(
-    code: str, language: str = "python", timeout: float = PYTHON_EXEC_TIMEOUT
+    code: str, language: str = "python", timeout: float = ...
 ) -> dict:
     """
     Executa um bloco de código Python em um sandbox Firejail.
@@ -30,7 +29,7 @@ def execute_code(
     Args:
         code (str): The Python code to execute.
         language (str, optional): The programming language (must be 'python'). Defaults to "python".
-        timeout (float, optional): Maximum execution time in seconds. Defaults to PYTHON_EXEC_TIMEOUT.
+        timeout (float, optional): Maximum execution time in seconds. Defaults to ... (implicit default).
 
     Returns:
         dict: Standardized dictionary with the result of the execution.
@@ -46,7 +45,7 @@ def execute_code(
     code_to_execute = code  # Use the direct argument
 
     # Validate timeout value (must be positive)
-    timeout_sec = PYTHON_EXEC_TIMEOUT  # Default value
+    timeout_sec = ...  # Default value
     try:
         if timeout is not None:
             parsed_timeout = float(timeout)
@@ -54,14 +53,14 @@ def execute_code(
                 timeout_sec = parsed_timeout
             else:
                 logger.warning(
-                    f"Provided timeout ({timeout}) is not positive. Using default: {PYTHON_EXEC_TIMEOUT}s"
+                    f"Provided timeout ({timeout}) is not positive. Using default: {...}s"
                 )
-        # If timeout is None, the default PYTHON_EXEC_TIMEOUT is already set
+        # If timeout is None, the default ... is already set
     except (ValueError, TypeError):
         logger.warning(
-            f"Invalid timeout type provided: {type(timeout)}. Using default: {PYTHON_EXEC_TIMEOUT}s"
+            f"Invalid timeout type provided: {type(timeout)}. Using default: {...}s"
         )
-        # Default PYTHON_EXEC_TIMEOUT is already set
+        # Default ... is already set
 
     # Validate supported language
     if language != "python":

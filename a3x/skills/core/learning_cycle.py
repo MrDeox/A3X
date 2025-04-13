@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, List, Optional
 
 from pathlib import Path
-from a3x.core.config import LEARNING_LOG_DIR, HEURISTIC_LOG_FILE
+from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
 import json
 import datetime
 from a3x.core.skills import skill
@@ -17,11 +17,11 @@ def register_missing_skill_heuristic(skill_name: str, context: dict = None):
     Registra uma heurística de necessidade quando o agente tenta usar uma skill inexistente.
     Salva no arquivo de heurísticas como uma linha JSONL.
     """
-    from a3x.core.config import LEARNING_LOG_DIR, HEURISTIC_LOG_FILE
+    from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
     import os
 
-    heuristics_path = os.path.join(LEARNING_LOG_DIR, HEURISTIC_LOG_FILE)
-    os.makedirs(LEARNING_LOG_DIR, exist_ok=True)
+    heuristics_path = os.path.join(LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE)
+    os.makedirs(LEARNING_LOGS_DIR, exist_ok=True)
     entry = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='microseconds'),
         "type": "missing_skill_attempt",
@@ -94,7 +94,7 @@ async def learning_cycle_skill(
                          "heuristic": learned_heuristic,
                          "type": "success"
                      }
-                     log_file = Path(LEARNING_LOG_DIR) / HEURISTIC_LOG_FILE
+                     log_file = Path(LEARNING_LOGS_DIR) / HEURISTIC_LOG_FILE
                      log_file.parent.mkdir(parents=True, exist_ok=True)
                      with open(log_file, 'a', encoding='utf-8') as f:
                          f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
@@ -161,3 +161,39 @@ async def learning_cycle_skill(
          return {"status": "warning", "action": "learning_cycle_completed_with_errors", "data": {"message": final_message, "learned_info": learned_info, "errors": errors}}
     else:
          return {"status": "success", "action": "learning_cycle_completed", "data": {"message": final_message, "learned_info": learned_info}} 
+
+def learning_cycle(objective, plan, execution_results, final_status, agent_tools, agent_workspace, agent_llm_url=None):
+    """
+    Orquestra a fase pós-execução completa: reflexão, aprendizado baseado no resultado (sucesso/falha), generalização e consolidação de heurísticas.
+    """
+    logger.info("[Learning Cycle] Iniciando ciclo de aprendizado pós-execução...")
+    
+    # Reflexão baseada no resultado
+    if final_status == "success":
+        reflection_result = reflect_on_success(objective, plan, execution_results)
+        logger.info("[Learning Cycle] Reflexão sobre sucesso concluída.")
+    else:
+        reflection_result = reflect_on_failure(objective, plan, execution_results[-1]["thought"] if execution_results else "", execution_results[-1]["action"] if execution_results else "", execution_results[-1]["observation"] if execution_results else "")
+        logger.info("[Learning Cycle] Reflexão sobre falha concluída.")
+    
+    # Aprendizado a partir da reflexão
+    learn_result = learn_from_failure_log(reflection_result) if final_status != "success" else ""
+    if learn_result:
+        logger.info("[Learning Cycle] Heurística aprendida a partir da reflexão.")
+    
+    # Análise de logs de reflexão para ajustes de prompt e parâmetros do LLM
+    log_analysis = learn_from_reflection_logs(n_logs=10)
+    if log_analysis:
+        logger.info("[Learning Cycle] Análise de logs de reflexão concluída.")
+        prompt_refinement = refine_decision_prompt()
+        if prompt_refinement:
+            logger.info("[Learning Cycle] Refinamento de prompt proposto.")
+            apply_prompt_refinement_from_logs(prompt_refinement, "learning_cycle_analysis")
+            logger.info("[Learning Cycle] Refinamento de prompt aplicado.")
+    
+    # Generalização e consolidação de heurísticas
+    auto_generalize_heuristics(threshold=5)
+    consolidate_heuristics(similarity_threshold=0.7)
+    logger.info("[Learning Cycle] Ciclo de aprendizado concluído.")
+    
+    return "Ciclo de aprendizado concluído. Heurísticas atualizadas." 

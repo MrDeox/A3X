@@ -6,9 +6,8 @@ from typing import Dict, Any, List
 # Core imports
 from a3x.core.skills import skill
 from a3x.core.learning_logs import load_recent_reflection_logs
-from a3x.core.llm_interface import call_llm
-from a3x.skills.learning.synthesize_learning_insights import synthesize_learning_insights
-from a3x.skills.learning.apply_prompt_refinement_from_logs import apply_prompt_refinement_from_logs
+from a3x.core.llm_interface import LLMInterface
+from a3x.core.agent import _ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -17,19 +16,25 @@ logger = logging.getLogger(__name__)
     description="Refina o prompt da skill de simulação de decisões com base nos feedbacks registrados nos últimos logs.",
     parameters={} # No parameters needed besides context
 )
-async def refine_decision_prompt(ctx) -> Dict[str, Any]:
+async def refine_decision_prompt(ctx: _ToolExecutionContext) -> Dict[str, Any]:
     """
     Analyzes recent decision reflection logs and asks an LLM to refine the
     original prompt for the 'simulate_decision_reflection' skill based on feedback.
 
     Args:
-        ctx: The skill execution context (logger, llm_call).
+        ctx: The skill execution context (provides logger, llm_interface).
 
     Returns:
         A dictionary containing the refined prompt or an error message.
     """
     ctx.logger.info("Executing refine_decision_prompt skill...")
-    n_logs_to_load = 10 # Load last 10 logs as requested
+    n_logs_to_load = 10
+
+    # Get LLM interface from context
+    llm_interface = ctx.llm_interface
+    if not llm_interface:
+        ctx.logger.error("LLMInterface not found in execution context.")
+        return {"error": "Internal error: LLMInterface missing."}
 
     # 1. Load recent logs
     try:
@@ -104,15 +109,18 @@ Novo Prompt Refinado:"""
     try:
         ctx.logger.info("Calling LLM to refine the decision prompt (streaming)...")
         refined_prompt_response = ""
-        async for chunk in call_llm(messages=[{"role": "user", "content": prompt}], stream=True):
+        async for chunk in llm_interface.call_llm(
+            messages=[{"role": "user", "content": prompt}], 
+            stream=True
+        ):
             refined_prompt_response += chunk
 
         if not refined_prompt_response or not refined_prompt_response.strip():
             ctx.logger.warning("LLM returned empty response for prompt refinement.")
             return {"error": "LLM refinement resulted in an empty response."}
 
-        # Check for potential error markers from the llm_call wrapper
-        if refined_prompt_response.startswith("[LLM Call Error:"):
+        # Check for potential error markers (LLMInterface might handle this differently now)
+        if refined_prompt_response.startswith("[LLM Error:"):
             ctx.logger.error(f"LLM call failed during prompt refinement: {refined_prompt_response}")
             return {"error": refined_prompt_response}
 

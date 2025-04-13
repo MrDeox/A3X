@@ -11,29 +11,10 @@ import asyncio
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s DB] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Caminho para o DB (pode estar em config.py ou definido aqui)
-# Garanta que aponta para o memory.db na raiz do projeto
-try:
-    # Tenta encontrar a raiz do projeto subindo diretórios
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = current_dir
-    # Sobe até encontrar um diretório que NÃO seja 'core' ou que contenha um marcador (ex: .git, pyproject.toml)
-    while os.path.basename(project_root) == "core":
-        project_root = os.path.dirname(project_root)
-        if not project_root or project_root == "/":  # Evita loop infinito
-            project_root = os.path.dirname(current_dir)  # Volta um nível se der errado
-            logger.warning(
-                "Não foi possível determinar a raiz do projeto de forma confiável subindo diretórios."
-            )
-            break
+# Importa o caminho do DB do config
+from a3x.core.config import DATABASE_PATH
 
-    DATABASE_PATH = os.path.join(project_root, "memory.db")
-    logger.info(f"Database path set to: {DATABASE_PATH}")
-except Exception as e:
-    logger.error(f"Error determining project root or database path: {e}")
-    # Fallback path - pode não ser ideal
-    DATABASE_PATH = os.path.join(os.getcwd(), "memory.db")
-    logger.warning(f"Falling back to database path: {DATABASE_PATH}")
+logger.info(f"Using database path from config: {DATABASE_PATH}")
 
 # <<< ADICIONAR CAMINHO DA EXTENSÃO >>>
 # AJUSTE ESTE CAMINHO se você colocou as extensões em outro lugar!

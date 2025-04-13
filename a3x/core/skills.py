@@ -250,17 +250,12 @@ def load_skills(skill_package_name: str = "a3x.skills"):
         logger.info(
             f"Finished loading/reloading skills from '{skill_package_name}'. Newly registered: {newly_registered}. Total registry: {count_after}"
         )
-
-    except ModuleNotFoundError as e:
-        logger.error(
-            f"Could not find skills package '{skill_package_name}'. Check PYTHONPATH ({sys.path}) and directory structure. Error: {e}",
-            exc_info=True,
-        )
     except Exception as e:
-        logger.error(
-            f"Failed to import or process skills package '{skill_package_name}': {e}",
-            exc_info=True,
-        )
+        logger.exception(f"Error occurred during skill loading process for '{skill_package_name}':")
+        logger.error(f"Skill loading process interrupted by error. Returning current state of SKILL_REGISTRY (may be incomplete).")
+        return SKILL_REGISTRY # Ensure registry is returned even if errors occurred loading submodules
+
+    return SKILL_REGISTRY
 
 
 # --- Funções para acessar informações das Skills ---

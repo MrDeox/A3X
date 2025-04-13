@@ -5,7 +5,10 @@ import json
 import re
 
 from a3x.core.skills import skill
-from a3x.core.llm_interface import call_llm
+# Import the class and default URL, not the function
+from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
+# Import Context for type hinting
+from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +55,14 @@ def _parse_llm_diagnosis_response(response_text: str) -> Dict[str, Any]:
         "error_message": (str, ...),
         "traceback": (str, None), # Optional traceback string
         "execution_context": (dict, None), # Optional context (objective, failed_step, last_action, etc.)
-        "llm_url": (str, None), # Optional LLM URL override
+        # Removed llm_url parameter, it should be retrieved from context
     },
 )
 async def llm_error_diagnosis_skill(
+    ctx: Context, # Added context parameter
     error_message: str,
     traceback: Optional[str] = None,
     execution_context: Optional[Dict[str, Any]] = None,
-    llm_url: Optional[str] = None, # Added llm_url parameter
 ) -> Dict[str, Any]:
     """
     Uses an LLM to diagnose an error and suggest recovery actions.
@@ -76,8 +79,13 @@ async def llm_error_diagnosis_skill(
     if traceback:
         prompt_lines.append(f"\nTraceback:\n```\n{traceback}\n```")
     if execution_context:
-        context_str = json.dumps(execution_context, indent=2, ensure_ascii=False)
-        prompt_lines.append(f"\nExecution Context:\n```json\n{context_str}\n```")
+        # Ensure context is serializable before logging/prompting
+        try:
+            context_str = json.dumps(execution_context, indent=2, ensure_ascii=False, default=str) # Use default=str for non-serializable
+            prompt_lines.append(f"\nExecution Context:\n```json\n{context_str}\n```")
+        except Exception as json_err:
+            logger.warning(f"Could not serialize execution_context for prompt: {json_err}")
+            prompt_lines.append("\nExecution Context: (Could not serialize for display)")
 
     prompt_lines.extend([
         "\n--- Analysis Request ---",
@@ -92,14 +100,29 @@ async def llm_error_diagnosis_skill(
     ])
 
     prompt_text = "\n".join(prompt_lines)
-    prompt_messages = [{"role": "user", "content": prompt_text}] # Use simple user role for now
+    # Use simple user role for now
+    llm_call_params = {
+        "messages": [{"role": "user", "content": prompt_text}],
+        "stream": False,
+        # Add other specific params like max_tokens if needed
+    }
 
-    # --- Call LLM ---
+    # --- Get LLM Interface --- 
+    if hasattr(ctx, 'llm_interface') and isinstance(ctx.llm_interface, LLMInterface):
+        llm_interface = ctx.llm_interface
+        logger.debug("Using LLMInterface from context for error diagnosis.")
+    else:
+        # Fallback: Use default URL (consider if ctx has llm_url attribute)
+        llm_url = getattr(ctx, 'llm_url', DEFAULT_LLM_URL)
+        logger.warning(f"LLMInterface not found in context. Creating temporary instance for error diagnosis with URL: {llm_url}")
+        llm_interface = LLMInterface(llm_url=llm_url)
+
+    # --- Call LLM --- 
     llm_response_raw = ""
     try:
         logger.info("Calling LLM for error diagnosis...")
-        # Use the non-streaming call_llm
-        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False):
+        # Use the LLMInterface instance
+        async for chunk in llm_interface.call_llm(**llm_call_params):
              llm_response_raw += chunk
 
         if not llm_response_raw:

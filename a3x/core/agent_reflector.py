@@ -206,5 +206,15 @@ async def reflect_on_observation(
         )
         return "stop_plan", new_plan
 
+    # Verificar se a observação indica uma falha no LLM (resposta vazia ou erro)
+    observation_text = observation_dict.get('content', '')
+    if not observation_text or '[LLM Error:' in observation_text:
+        agent_logger.info("[Reflector] Falha detectada no LLM. Chamando skill adjust_llm_parameters para ajustar configurações.")
+        from a3x.skills.adjust_llm_parameters import adjust_llm_parameters
+        adjustment_result = adjust_llm_parameters(context={'mem': memory})
+        agent_logger.info(f"[Reflector] Resultado do ajuste do LLM: {adjustment_result.get('message', 'Ajuste falhou')}")
+        # Retornar decisão para retry após ajuste
+        return 'retry_step', None
+
 
 # Note: We need to import Literal for the Decision type hint

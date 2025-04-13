@@ -9,32 +9,35 @@ from pathlib import Path
 # Core imports
 from a3x.core.skills import skill
 from a3x.core.learning_logs import load_recent_reflection_logs
-from a3x.core.llm_interface import call_llm
-from a3x.skills.core.call_skill_by_name import call_skill_by_name
-from a3x.core.context import Context
-from a3x.core.config import REFLECTION_LOG_DIR, LEARNING_LOG_DIR, HEURISTIC_LOG_FILE
+from a3x.core.llm_interface import LLMInterface
+from a3x.core.agent import _ToolExecutionContext
+from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE, LLM_LOGS_DIR
 
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
-REFLECTION_LOG_PATH = Path(REFLECTION_LOG_DIR) / "reflection_log.jsonl"
-HEURISTIC_LOG_PATH = Path(LEARNING_LOG_DIR) / HEURISTIC_LOG_FILE
+REFLECTION_LOG_PATH = Path(LLM_LOGS_DIR) / "decision_reflections.jsonl"
+HEURISTIC_LOG_PATH = Path(LEARNING_LOGS_DIR) / HEURISTIC_LOG_FILE
 
 @skill(
     name="learn_from_reflection_logs",
     description="Analisa logs da skill de reflexão para extrair aprendizados. Pode analisar os N mais recentes ou um log específico por offset.",
     parameters={
         "n_logs": (int, 10),  # Analisa os N últimos logs (se offset não for usado).
-        "log_offset": (Optional[int], 0) # Analisa 1 log específico pelo offset (0=último, 1=penúltimo...). Prioritário sobre n_logs.
+        "log_offset": (Optional[int], None) # Default to None to prioritize n_logs
     }
 )
-async def learn_from_reflection_logs(ctx, n_logs: int = 10, log_offset: Optional[int] = 0) -> Dict[str, Any]:
+async def learn_from_reflection_logs(
+    ctx: _ToolExecutionContext, 
+    n_logs: int = 10, 
+    log_offset: Optional[int] = None # Default None
+) -> Dict[str, Any]:
     """
     Analyzes reflection logs to extract learning points for system evolution.
     Prioritizes log_offset over n_logs if both are provided.
 
     Args:
-        ctx: The skill execution context (logger, llm_call).
+        ctx: The skill execution context (provides logger, llm_interface).
         n_logs: The number of recent reflection logs to analyze (ignored if log_offset is set).
         log_offset: The offset for the specific log to analyze (0 for the latest, 1 for the second latest, etc.).
                    If set, analyzes exactly one log.
@@ -42,7 +45,13 @@ async def learn_from_reflection_logs(ctx, n_logs: int = 10, log_offset: Optional
     Returns:
         A dictionary containing the synthesized insights from the log(s) or an error.
     """
-    ctx.logger.info(f"Starting learning from last {n_logs} reflection logs.")
+    ctx.logger.info(f"Executing learn_from_reflection_logs skill. Offset: {log_offset}, N_logs: {n_logs}")
+
+    # Get LLM interface
+    llm_interface = ctx.llm_interface
+    if not llm_interface:
+        ctx.logger.error("LLMInterface not found in execution context.")
+        return {"error": "Internal error: LLMInterface missing."}
 
     logs_to_process: List[Dict[str, Any]] = []
     log_load_description = ""
@@ -94,9 +103,7 @@ async def learn_from_reflection_logs(ctx, n_logs: int = 10, log_offset: Optional
         user_input = log_entry.get("user_input", "[Entrada não registrada]")
         sim_reflection = log_entry.get("simulated_reflection", "[Reflexão não registrada]")
         # Handle potential None or empty string feedback
-        llm_feedback = log_entry.get("llm_feedback")
-        if not llm_feedback:
-            llm_feedback = "[Feedback não registrado ou vazio]"
+        llm_feedback = log_entry.get("llm_feedback", "[Feedback não registrado ou vazio]")
 
         # Use index relative to the *loaded* logs (will be #1 if offset is used)
         log_str = f"""--- LOG #{i + 1} ---
@@ -151,9 +158,9 @@ Não adicione nenhuma introdução ou comentário antes ou depois da lista estru
 
     # 3. Call LLM for analysis
     try:
-        ctx.logger.info("Calling LLM for reflection log analysis (streaming)...")
+        ctx.logger.info(f"Calling LLM for reflection log analysis ({log_load_description})...")
         analysis_response = ""
-        async for chunk in call_llm(messages=[{"role": "user", "content": analysis_prompt}], stream=True):
+        async for chunk in llm_interface.call_llm(messages=[{"role": "user", "content": analysis_prompt}], stream=True):
             analysis_response += chunk
 
         if not analysis_response or not analysis_response.strip():

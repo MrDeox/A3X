@@ -3,20 +3,20 @@ import json
 import os
 from typing import Dict, Any, Optional
 
-# Ensure skill decorator and utils are imported correctly
-try:
-    from a3x.core.skills import skill
-    from a3x.core.llm_interface import call_llm # Use interface for consistency
-    from a3x.core.context import Context
-except ImportError:
-    # Fallback for standalone testing
-    def skill(**kwargs):
-        def decorator(func):
-            return func
-        return decorator
-    async def call_llm(*args, **kwargs):
-        yield "Heurística de teste (sem LLM real)"
-    Context = Any
+# Core imports
+from a3x.core.skills import skill
+from a3x.core.llm_interface import LLMInterface # <-- IMPORT CLASS
+from a3x.core.agent import _ToolExecutionContext # <-- Import context type
+
+# Remove unused Context import if not needed elsewhere
+# from a3x.core.context import Context 
+
+# Fallback definitions for standalone testing (Keep or remove as needed)
+# These should NOT be used when running within the main agent
+async def fallback_call_llm(*args, **kwargs):
+    yield "Heurística de teste (sem LLM real)"
+    
+SkillContext = Any # Define as Any if _ToolExecutionContext is not available
 
 logger = logging.getLogger(__name__)
 
@@ -50,38 +50,54 @@ Gere APENAS a heurística extraída, sem nenhum texto adicional antes ou depois.
     description="Gera uma heurística concisa a partir de uma análise de falha detalhada.",
     parameters={
         "failure_analysis": (str, ...)
+        # Context (ctx) is implicitly passed
     }
 )
-async def learn_from_failure_log(failure_analysis: str, ctx: Optional[Context] = None) -> Dict[str, Any]:
+# Updated function signature
+async def learn_from_failure_log(
+    failure_analysis: str, 
+    ctx: _ToolExecutionContext # <-- Correct context type
+) -> Dict[str, Any]:
     """Gera uma heurística a partir de uma análise de falha usando LLM."""
     log_prefix = "[LearnFromFailure Skill]"
+    logger = ctx.logger # Use logger from context
+    llm_interface = ctx.llm_interface # Get interface from context
+
     logger.info(f"{log_prefix} Gerando heurística a partir da análise de falha...")
 
+    if not llm_interface:
+        logger.error(f"{log_prefix} LLMInterface not found in execution context.")
+        return {"status": "error", "data": {"message": "Internal error: LLMInterface missing."}}
+
     if not failure_analysis:
-        logger.warning(f"{log_prefix} Análise de falha vazia fornecida. Nenhuma heurística pode ser gerada.")
+        logger.warning(f"{log_prefix} Análise de falha vazia fornecida.")
         return {"status": "error", "data": {"message": "Análise de falha vazia."}}
 
-    # <<< SIMPLIFIED: Only generate heuristic via LLM >>>
     prompt = HEURISTIC_EXTRACTION_PROMPT_TEMPLATE.format(failure_analysis=failure_analysis)
     prompt_messages = [
-         # Simple user prompt might be enough if template is clear
          {"role": "user", "content": prompt}
     ]
 
-    llm_url = getattr(ctx, 'llm_url', None) if ctx else None
     heuristic_text = ""
     try:
         logger.debug(f"{log_prefix} Chamando LLM para extrair heurística...")
-        # Expecting a short, direct response, not streaming
-        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False):
+        # Updated call site
+        async for chunk in llm_interface.call_llm( # <-- USE INSTANCE METHOD
+            messages=prompt_messages, 
+            stream=False # Expect short response
+        ):
              heuristic_text += chunk
         
-        heuristic_text = heuristic_text.strip().strip('"') # Corrected quotes
+        heuristic_text = heuristic_text.strip().strip('"')
         logger.debug(f"{log_prefix} LLM raw response: {heuristic_text}")
+
+        # Check for LLM error string
+        if heuristic_text.startswith("[LLM Error:"):
+             logger.error(f"{log_prefix} LLM call failed: {heuristic_text}")
+             return {"status": "error", "data": {"message": heuristic_text}}
 
         if heuristic_text and len(heuristic_text) > 5: # Basic validation
             logger.info(f"{log_prefix} Heurística gerada: {heuristic_text}")
-            # <<< UPDATED: Return only the heuristic >>>
             return {
                 "status": "success",
                 "data": {"heuristic": heuristic_text}

@@ -1,6 +1,6 @@
 import logging
 from typing import List, Dict, Any, Optional
-from a3x.core.llm_interface import call_llm
+from a3x.core.llm_interface import LLMInterface
 from a3x.core.learning_logs import log_heuristic_with_traceability
 from a3x.core.simulation import simulate_plan_execution
 
@@ -12,8 +12,10 @@ class MonetizationLoop:
     Garante autonomia absoluta, flexibilidade ilimitada e inteligência máxima via LLM, simulação e heurísticas.
     """
 
-    def __init__(self, llm_url: Optional[str] = None):
-        self.llm_url = llm_url or ""
+    def __init__(self, llm_interface: LLMInterface):
+        if not llm_interface:
+             raise ValueError("LLMInterface instance is required for MonetizationLoop")
+        self.llm_interface = llm_interface
         self.history: List[Dict[str, Any]] = []
         self.heuristics: List[Dict[str, Any]] = []
 
@@ -21,7 +23,7 @@ class MonetizationLoop:
         """
         Usa o LLM para buscar e propor oportunidades de geração de valor (tarefas, automações, bots, microserviços, etc).
         """
-        prompt = [
+        prompt_messages = [
             {
                 "role": "system",
                 "content": (
@@ -36,7 +38,7 @@ class MonetizationLoop:
         ]
         response = ""
         try:
-            async for chunk in call_llm(prompt, llm_url=self.llm_url, stream=False):
+            async for chunk in self.llm_interface.call_llm(messages=prompt_messages, stream=False):
                 response += chunk
             logger.info(f"[MonetizationLoop] Oportunidades sugeridas:\n{response}")
             # Extrai oportunidades (um por linha, formato livre)
@@ -47,14 +49,14 @@ class MonetizationLoop:
                     opportunities.append({"description": line})
             return opportunities
         except Exception as e:
-            logger.error(f"[MonetizationLoop] Erro ao buscar oportunidades: {e}")
+            logger.error(f"[MonetizationLoop] Erro ao buscar oportunidades: {e}", exc_info=True)
             return []
 
     async def evaluate_opportunity(self, opportunity: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Usa o LLM e simulação para avaliar potencial de retorno, risco e viabilidade de uma oportunidade.
         """
-        prompt = [
+        prompt_messages = [
             {
                 "role": "system",
                 "content": (
@@ -69,14 +71,19 @@ class MonetizationLoop:
         ]
         response = ""
         try:
-            async for chunk in call_llm(prompt, llm_url=self.llm_url, stream=False):
+            async for chunk in self.llm_interface.call_llm(messages=prompt_messages, stream=False):
                 response += chunk
             logger.info(f"[MonetizationLoop] Avaliação da oportunidade:\n{response}")
             # Extrai notas e sugestões do texto (pode ser aprimorado)
             import re
-            retorno = int(re.search(r"retorno.*?(\d+)", response, re.IGNORECASE).group(1)) if re.search(r"retorno.*?(\d+)", response, re.IGNORECASE) else 0
-            risco = int(re.search(r"risco.*?(\d+)", response, re.IGNORECASE).group(1)) if re.search(r"risco.*?(\d+)", response, re.IGNORECASE) else 0
-            viabilidade = int(re.search(r"viabilidade.*?(\d+)", response, re.IGNORECASE).group(1)) if re.search(r"viabilidade.*?(\d+)", response, re.IGNORECASE) else 0
+            retorno_match = re.search(r"retorno.*?(\d+)", response, re.IGNORECASE)
+            risco_match = re.search(r"risco.*?(\d+)", response, re.IGNORECASE)
+            viabilidade_match = re.search(r"viabilidade.*?(\d+)", response, re.IGNORECASE)
+            
+            retorno = int(retorno_match.group(1)) if retorno_match else 0
+            risco = int(risco_match.group(1)) if risco_match else 0
+            viabilidade = int(viabilidade_match.group(1)) if viabilidade_match else 0
+            
             sugestoes = re.findall(r"Sugest[aã]o.*?:\s*(.*)", response, re.IGNORECASE)
             return {
                 "retorno": retorno,
@@ -86,7 +93,7 @@ class MonetizationLoop:
                 "raw": response,
             }
         except Exception as e:
-            logger.error(f"[MonetizationLoop] Erro ao avaliar oportunidade: {e}")
+            logger.error(f"[MonetizationLoop] Erro ao avaliar oportunidade: {e}", exc_info=True)
             return {"retorno": 0, "risco": 0, "viabilidade": 0, "sugestoes": [], "raw": ""}
 
     async def execute_opportunity(self, opportunity: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -94,7 +101,7 @@ class MonetizationLoop:
         Gera um plano de execução para a oportunidade, simula e executa os passos, registra resultados e heurísticas.
         """
         # Gera plano via LLM
-        prompt = [
+        prompt_messages = [
             {
                 "role": "system",
                 "content": (
@@ -110,33 +117,44 @@ class MonetizationLoop:
         plan = []
         try:
             response = ""
-            async for chunk in call_llm(prompt, llm_url=self.llm_url, stream=False):
+            async for chunk in self.llm_interface.call_llm(messages=prompt_messages, stream=False):
                 response += chunk
             logger.info(f"[MonetizationLoop] Plano gerado:\n{response}")
             for line in response.splitlines():
                 line = line.strip()
                 if line and not line.lower().startswith("thought"):
                     plan.append(line)
+            if not plan:
+                 logger.warning("[MonetizationLoop] LLM did not generate a plan.")
+                 # Decide how to handle no plan: error or empty plan?
+                 # return {"status": "error", "message": "Failed to generate execution plan"}
         except Exception as e:
-            logger.error(f"[MonetizationLoop] Erro ao gerar plano: {e}")
+            logger.error(f"[MonetizationLoop] Erro ao gerar plano: {e}", exc_info=True)
             return {"status": "error", "message": f"Erro ao gerar plano: {e}"}
 
         # Simula execução do plano
-        sim_results = await simulate_plan_execution(plan, context, heuristics=None, llm_url=self.llm_url)
+        sim_results = await simulate_plan_execution(
+             plan,
+             llm_interface=self.llm_interface,
+             context=context,
+             heuristics=None
+        )
         logger.info(f"[MonetizationLoop] Resultados da simulação: {sim_results}")
 
         # (Opcional) Executa de fato os passos aprovados (pode ser integrado ao ciclo principal)
         # Aqui, apenas registra heurísticas e resultados
         try:
-            plan_id = f"plan-monetization-{opportunity.get('description', '')[:20]}"
-            execution_id = f"exec-monetization-{opportunity.get('description', '')[:20]}"
-            heuristic = {
+            # Sanitize description for IDs
+            desc_snippet = "".join(c if c.isalnum() else '_' for c in opportunity.get('description', '')[:20])
+            plan_id = f"plan-monetization-{desc_snippet}"
+            execution_id = f"exec-monetization-{desc_snippet}"
+            heuristic_data = {
                 "type": "monetization_attempt",
                 "opportunity": opportunity,
                 "plan": plan,
                 "simulation_results": sim_results,
             }
-            log_heuristic_with_traceability(heuristic, plan_id, execution_id, validation_status="pending_manual")
+            log_heuristic_with_traceability(heuristic_data, plan_id, execution_id, validation_status="pending_manual")
         except Exception as log_err:
             logger.warning(f"[MonetizationLoop] Falha ao registrar heurística de monetização: {log_err}")
 
@@ -155,8 +173,8 @@ class MonetizationLoop:
         for opp in opportunities[:max_opportunities]:
             eval_result = await self.evaluate_opportunity(opp, context)
             logger.info(f"[MonetizationLoop] Avaliação: {eval_result}")
-            if eval_result["retorno"] >= 7 and eval_result["viabilidade"] >= 7 and eval_result["risco"] <= 4:
+            if eval_result["retorno"] >= 5 and eval_result["viabilidade"] >= 5 and eval_result["risco"] <= 6:
                 exec_result = await self.execute_opportunity(opp, context)
-                logger.info(f"[MonetizationLoop] Execução: {exec_result}")
+                logger.info(f"[MonetizationLoop] Execução simulada: {exec_result.get('status')}")
             else:
-                logger.info(f"[MonetizationLoop] Oportunidade descartada por avaliação insuficiente: {opp}")
+                logger.info(f"[MonetizationLoop] Oportunidade descartada por avaliação insuficiente: {opp['description']}")

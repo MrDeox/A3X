@@ -1,7 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 
-from a3x.core.llm_interface import call_llm
+from a3x.core.llm_interface import LLMInterface
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +19,9 @@ def detect_plan_stuck(execution_results: List[Dict[str, Any]], max_repeats: int 
 async def dynamic_replan(
     current_plan: List[str],
     execution_results: List[Dict[str, Any]],
+    llm_interface: LLMInterface,
     heuristics: Optional[List[Dict[str, Any]]] = None,
     context: Optional[Dict[str, Any]] = None,
-    llm_url: Optional[str] = None,
 ) -> List[str]:
     """
     Gera um novo subplano ou ajusta os passos restantes com base em falhas, heurísticas e contexto.
@@ -32,7 +32,7 @@ async def dynamic_replan(
         return current_plan
 
     # Monta prompt para o LLM sugerir novo subplano
-    prompt = [
+    prompt_messages = [
         {
             "role": "system",
             "content": (
@@ -55,18 +55,25 @@ async def dynamic_replan(
     try:
         logger.info("[DynamicReplanner] Chamando LLM para gerar novo subplano...")
         response = ""
-        async for chunk in call_llm(prompt, llm_url=llm_url, stream=False):
+        async for chunk in llm_interface.call_llm(
+            messages=prompt_messages,
+            stream=False
+        ):
             response += chunk
         logger.info(f"[DynamicReplanner] Resposta do LLM para novo plano:\n{response}")
+        
         # Extrai passos do LLM (um por linha)
         for line in response.splitlines():
             line = line.strip()
             if line and not line.lower().startswith("thought"):
                 new_plan.append(line)
+        
         if not new_plan:
             logger.warning("[DynamicReplanner] LLM não retornou novos passos. Mantendo plano original.")
             return current_plan
+        
+        logger.info(f"[DynamicReplanner] Novo subplano gerado com {len(new_plan)} passos.")
         return new_plan
     except Exception as e:
-        logger.error(f"[DynamicReplanner] Erro ao gerar novo plano: {e}")
+        logger.error(f"[DynamicReplanner] Erro ao gerar novo plano: {e}", exc_info=True)
         return current_plan

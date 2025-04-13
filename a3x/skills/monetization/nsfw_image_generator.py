@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from a3x.core.skills import skill
-from a3x.core.config import SD_API_URL_BASE, PROJECT_ROOT
+from a3x.core.config import PROJECT_ROOT
 from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)

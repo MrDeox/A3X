@@ -8,20 +8,23 @@ from rich.console import Console
 
 # Assuming project_root setup is handled elsewhere or core modules are in PYTHONPATH
 try:
-    # from core.cerebrumx import CerebrumXAgent  # <<< ADD
     from a3x.core.cerebrumx import CerebrumXAgent  # <<< ADD
-
-    # from core.llm_interface import call_llm  # Added call_llm import
-    from a3x.core.llm_interface import call_llm  # Added call_llm import
-except ImportError:
-    call_llm = None  # Placeholder if import fails
+    # REMOVED direct import of call_llm
+    # ADDED necessary class imports
+    from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
+except ImportError as e:
+    # Handle potential import errors for core components if needed
+    CerebrumXAgent = None
+    LLMInterface = None
+    DEFAULT_LLM_URL = "http://127.0.0.1:8080/completion" # Provide a fallback default
+    print(f"[Warning] Failed to import core modules: {e}")
 
 # Logger setup (consider passing logger instance or using a shared config)
 logger = logging.getLogger(__name__)  # Or get logger configured in interface.py
 
 
 async def handle_agent_interaction(
-    agent: CerebrumXAgent, command: str, conversation_history: list
+    agent: 'CerebrumXAgent', command: str, conversation_history: list
 ):  # <<< UPDATE TYPE HINT
     """Gerencia a interação com o agente CerebrumX, exibindo passos do ciclo cognitivo com print()."""  # <<< UPDATE DOCSTRING
     logger.info(f"Processing command with CerebrumX: '{command}'")  # <<< UPDATE LOG
@@ -95,19 +98,23 @@ async def handle_agent_interaction(
 # Added stream_direct_llm function
 async def stream_direct_llm(prompt: str, llm_url_override: Optional[str] = None):
     """Chama o LLM diretamente em modo streaming e exibe com print()."""
-    if not call_llm:  # Check if import failed
-        print("[Error] LLM interface not available.")  # No rich formatting
+    # Check if LLMInterface class import failed
+    if not LLMInterface:
+        print("[Error] LLM interface class not available due to import error.")
         return
 
+    target_url = llm_url_override or DEFAULT_LLM_URL
     logger.info(
-        f"Streaming direct prompt: '{prompt[:50]}...' to URL: {llm_url_override or 'default'}"
+        f"Streaming direct prompt: '{prompt[:50]}...' to URL: {target_url}"
     )
     # Replace Panel with simple print
     print("--- Streaming LLM Response ---")
     messages = [{"role": "user", "content": prompt}]
     try:
-        # Assume call_llm handles initialization/connection implicitly now
-        async for chunk in call_llm(messages, llm_url=llm_url_override, stream=True):
+        # Create an instance of LLMInterface
+        llm_interface = LLMInterface(llm_url=target_url)
+        # Call the method on the instance
+        async for chunk in llm_interface.call_llm(messages=messages, stream=True):
             # Replace console.print with standard print
             print(chunk, end="")
         print()  # Final newline
@@ -117,8 +124,9 @@ async def stream_direct_llm(prompt: str, llm_url_override: Optional[str] = None)
         print(f"\n[Error Streaming] {stream_err}")
 
 
-async def _handle_task_argument(agent: CerebrumXAgent, task_arg: str):
+async def _handle_task_argument(agent: 'CerebrumXAgent', task_arg: str):
     """Lida com a execução de uma tarefa única passada via --task."""
+    console = Console()
     console.print(Panel(f"Executando Tarefa: [bold cyan]{task_arg}[/]", title="A³X Task Mode", expand=False))
     start_time = time.time()
 

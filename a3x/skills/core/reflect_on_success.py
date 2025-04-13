@@ -3,15 +3,15 @@ import json
 import datetime
 from typing import Dict, Any, List, Optional
 from a3x.core.skills import skill
-from a3x.core.llm_interface import call_llm
-from a3x.core.config import LEARNING_LOG_DIR, HEURISTIC_LOG_FILE
+from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
+from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
 from a3x.core.context import Context
 import os
 from pathlib import Path
 
 reflect_logger = logging.getLogger(__name__)
 
-HEURISTIC_LOG_PATH = os.path.join(LEARNING_LOG_DIR, HEURISTIC_LOG_FILE)
+HEURISTIC_LOG_PATH = os.path.join(LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE)
 
 async def _log_learned_heuristic(log_entry: Dict[str, Any]):
     """Appends a learned heuristic to the log file."""
@@ -71,26 +71,32 @@ async def reflect_on_success(
         results_str=results_str
     )
 
-    llm_call_args = {
+    # Get LLMInterface instance from context or create a fallback
+    if hasattr(ctx, 'llm_interface') and isinstance(ctx.llm_interface, LLMInterface):
+        llm_interface = ctx.llm_interface
+        reflect_logger.debug("Using LLMInterface from context.")
+    else:
+        llm_url = getattr(ctx, 'llm_url', DEFAULT_LLM_URL)
+        reflect_logger.warning(f"LLMInterface not found in context. Creating temporary instance with URL: {llm_url}")
+        llm_interface = LLMInterface(llm_url=llm_url)
+
+    # Parameters for the call (specific generation params)
+    llm_call_params = {
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "temperature": 0.5,
-        "max_tokens": 100
+        "max_tokens": 100,
+        # temperature could be added here if required by the LLM API and supported by the interface
     }
-    if hasattr(ctx, 'llm_url') and ctx.llm_url:
-         llm_call_args['llm_url'] = ctx.llm_url
-
-    # Remove unsupported 'temperature' argument before call
-    if 'temperature' in llm_call_args:
-        del llm_call_args['temperature']
 
     reflect_logger.debug("Calling LLM for successful execution reflection...")
     heuristic_text = ""
     try:
         response_content = ""
-        async for chunk in call_llm(messages=llm_call_args["messages"], llm_url=llm_call_args["llm_url"], stream=llm_call_args["stream"]):
+        # Use the llm_interface instance method to make the call
+        async for chunk in llm_interface.call_llm(**llm_call_params):
             response_content += chunk
-        heuristic_text = response_content.strip().strip('"\'\n') # Clean up response
+        # Clean up response: remove leading/trailing whitespace, quotes, and newlines
+        heuristic_text = response_content.strip().strip('"\'\n ')
 
         if heuristic_text:
             reflect_logger.info(f"Generated heuristic from success: {heuristic_text}")
@@ -98,7 +104,7 @@ async def reflect_on_success(
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z',
                 "objective": objective,
                 "plan": plan,
-                "results": execution_results,
+                "results": execution_results, # Consider summarizing or truncating results if large
                 "heuristic": heuristic_text,
                 "type": "success"
             }
@@ -120,8 +126,9 @@ async def main_test():
     # Mock Context
     class MockContext:
         def __init__(self):
-            self.llm_url = None # Set if needed for test
-            self.logger = reflect_logger # Use the module logger
+            # Simulate having an llm_interface attribute
+            self.llm_interface = LLMInterface(llm_url=os.getenv("LLM_API_URL", DEFAULT_LLM_URL))
+            self.logger = reflect_logger
             self.workspace_root = Path(".")
 
     mock_ctx = MockContext()
@@ -129,9 +136,10 @@ async def main_test():
     # Mock data
     test_objective = "Write a simple greeting function in Python."
     test_plan = [
-        "write_file(path='greeting.py', content='''def hello():\\n  print(\"Hello\")''')",
-        "execute_code(code='import greeting\\ngreeting.hello()')"
+        "write_file(path='greeting.py', content='''def hello():\n  print(\"Hello\")''')",
+        "execute_code(code='import greeting\ngreeting.hello()')"
     ]
+    
     test_results = [
         {"status": "success", "output": "File written.", "action": "write_file"},
         {"status": "success", "output": "Hello", "action": "execute_code"}

@@ -10,12 +10,8 @@ from a3x.core.context import Context
 
 logger = logging.getLogger(__name__)
 
-# Constants
-LEARNING_LOG_DIR = "memory/learning_logs"
-# <<< UPDATED: Point to the consolidated log file >>>
-HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics_consolidated.jsonl")
-# Original log might still be needed for other purposes, or can be archived.
-ORIGINAL_HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics.jsonl") 
+# Import constants from config
+from a3x.core.config import HEURISTIC_LOG_FILE, HEURISTIC_LOG_CONSOLIDATED_FILE
 
 MAX_HEURISTICS_TO_CONSIDER = 100 # Limit how many recent consolidated logs to check
 MIN_KEYWORD_MATCH_SCORE = 1 # Minimum overlap to consider a heuristic relevant
@@ -40,16 +36,15 @@ async def consult_learned_heuristics(objective: str, top_k: int = 3, ctx: Option
     failure_heuristics = []
 
     try:
-        # <<< RESTORED Original logic using getattr >>>
-        workspace_root = Path(getattr(ctx, 'workspace_root', '.'))
-        log_file_path = workspace_root / HEURISTIC_LOG_FILE
+        # Use the imported constants
+        log_file_path = HEURISTIC_LOG_CONSOLIDATED_FILE
 
         if not log_file_path.exists():
             logger.warning(f"{log_prefix} Log de heurísticas CONSOLIDADAS não encontrado em {log_file_path}. Verificando log original como fallback...")
             # Fallback to original log if consolidated doesn't exist yet
-            log_file_path = workspace_root / ORIGINAL_HEURISTIC_LOG_FILE 
+            log_file_path = HEURISTIC_LOG_FILE
             if not log_file_path.exists():
-                 logger.warning(f"{log_prefix} Log original também não encontrado. Nenhuma heurística será retornada.")
+                 logger.warning(f"{log_prefix} Log original também não encontrado em {log_file_path}. Nenhuma heurística será retornada.")
                  return {"status": "success", "data": {"success": [], "failure": [], "message": "Nenhum log de aprendizado encontrado."}}
             else:
                  logger.info(f"{log_prefix} Usando log original {ORIGINAL_HEURISTIC_LOG_FILE} como fallback.")
@@ -166,4 +161,4 @@ if __name__ == '__main__':
         print("\n--- Consultation Result ---")
         print(json.dumps(result, indent=2, ensure_ascii=False))
 
-    asyncio.run(run_test()) 
+    asyncio.run(run_test())

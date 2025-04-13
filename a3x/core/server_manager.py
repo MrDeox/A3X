@@ -7,6 +7,10 @@ import sys
 import platform
 from typing import Optional, Tuple
 from pathlib import Path
+import subprocess
+import time
+import psutil
+import requests
 
 import a3x.servers.sd_api_server 
 
@@ -14,8 +18,12 @@ from a3x.core.config import (
     LLAMA_SERVER_BINARY, LLAMA_CPP_DIR, LLAMA_SERVER_ARGS, LLAMA_HEALTH_ENDPOINT,
     LLAMA_SERVER_STARTUP_TIMEOUT, LLAMA_SERVER_MODEL_PATH,
     SD_SERVER_MODULE, SD_API_CHECK_ENDPOINT, SD_SERVER_STARTUP_TIMEOUT,
-    SERVER_CHECK_INTERVAL, SERVER_LOG_FILE, SD_WEBUI_DEFAULT_PATH_CONFIG
+    SERVER_CHECK_INTERVAL, SERVER_LOG_FILE, SD_WEBUI_DEFAULT_PATH_CONFIG,
+    PROJECT_ROOT
 )
+
+# Comment out the import to prevent error since LLMInterface class doesn't exist
+# from .llm_interface import LLMInterface
 
 # Use a specific logger for the server manager
 logger = logging.getLogger("A3XServerManager")
@@ -162,7 +170,7 @@ async def _log_stream(stream: Optional[asyncio.StreamReader], prefix: str, targe
             break # Exit loop on error
     target_logger.debug(f"Stopping log stream reader for {prefix}")
 
-async def start_llama_server() -> Optional[asyncio.subprocess.Process]:
+async def start_llama_server(model_path: str, port: int, host: str, gpu_layers: int, context_size: int, mmproj_path: Optional[str]) -> Optional[asyncio.subprocess.Process]:
     """Starts the llama.cpp server."""
     logger.info("Checking prerequisites for LLaMA server...")
     if not os.path.exists(LLAMA_SERVER_BINARY):
@@ -171,19 +179,99 @@ async def start_llama_server() -> Optional[asyncio.subprocess.Process]:
         return None
     else:
         logger.debug(f"LLaMA server binary check OK: Found at {LLAMA_SERVER_BINARY}.")
-        
-    if not os.path.exists(LLAMA_SERVER_MODEL_PATH):
-        logger.error(f"LLaMA model file check FAILED: Not found at {LLAMA_SERVER_MODEL_PATH}.")
-        logger.error("Please check the LLAMA_SERVER_MODEL_PATH in your configuration or download the model.")
+
+    # <<< Resolve model_path to absolute path >>>
+    # Assume model_path provided might be relative to project root
+    absolute_model_path = os.path.abspath(os.path.join(PROJECT_ROOT, model_path))
+    logger.debug(f"Resolved model path to absolute: {absolute_model_path}")
+    
+    if not os.path.exists(absolute_model_path):
+        logger.error(f"LLaMA model file check FAILED: Absolute path not found at {absolute_model_path}.")
+        logger.error(f"(Original path provided: {model_path})")
         return None
     else:
-        logger.debug(f"LLaMA model file check OK: Found at {LLAMA_SERVER_MODEL_PATH}.")
-        
+        logger.debug(f"LLaMA model file check OK: Absolute path found at {absolute_model_path}.")
+
+    # <<< REVISED: Simplified and Robust Argument Construction >>>
+    # Arguments provided to the function take highest priority
+    final_args = {
+        "-m": absolute_model_path, # <<< Use absolute path >>>
+        "-c": str(context_size),
+        "--host": host,
+        "--port": str(port),
+        "-ngl": str(gpu_layers),
+    }
+
+    # Add multimodal projector if provided and exists
+    # <<< Resolve mmproj_path to absolute path if provided >>>
+    absolute_mmproj_path = None
+    if mmproj_path:
+        absolute_mmproj_path = os.path.abspath(os.path.join(PROJECT_ROOT, mmproj_path))
+        if os.path.exists(absolute_mmproj_path):
+            final_args["--mmproj"] = absolute_mmproj_path
+            logger.info(f"Adding multimodal projector (absolute path): {absolute_mmproj_path}")
+        else:
+             logger.warning(f"Multimodal projector file not found at absolute path {absolute_mmproj_path} (original: {mmproj_path}), ignoring.")
+
+    # Parse default arguments from LLAMA_SERVER_ARGS
+    # This simple parser assumes key-value pairs or flags.
+    default_args = {}
+    args_iter = iter(LLAMA_SERVER_ARGS)
+    for arg in args_iter:
+        if arg.startswith("--") or arg.startswith("-"):
+            # Check if it looks like a flag or a key needing a value
+            try:
+                # Peek next element without consuming it
+                next_val = next(args_iter)
+                if next_val.startswith("--") or next_val.startswith("-"):
+                    # Next item is another flag, so current is a flag
+                    default_args[arg] = True
+                    # Need to put the peeked value back - resetting iterator is easier here
+                    args_iter = iter([next_val] + list(args_iter))
+                else:
+                    # Next item is likely the value for the current key
+                    default_args[arg] = next_val
+            except StopIteration:
+                # Reached end, must be a flag
+                default_args[arg] = True
+        # else: # Ignore values that don't follow a key (shouldn't happen)
+            # logger.warning(f"Ignoring standalone value in LLAMA_SERVER_ARGS: {arg}")
+            
+    logger.debug(f"Parsed default server args: {default_args}")
+
+    # Add default arguments ONLY if not already specified by function params
+    for key, value in default_args.items():
+        if key not in final_args: # Prioritize function args
+            # <<< Ensure default model/mmproj paths are also made absolute if they are paths >>>
+            if key == "-m" or key == "--mmproj":
+                abs_default_path = os.path.abspath(os.path.join(PROJECT_ROOT, value))
+                if os.path.exists(abs_default_path):
+                     final_args[key] = abs_default_path
+                     logger.debug(f"Adding default arg (resolved path): {key}={abs_default_path}")
+                else:
+                    logger.warning(f"Ignoring default arg {key}: Path {value} (resolved to {abs_default_path}) not found.")
+            else:
+                final_args[key] = value
+                logger.debug(f"Adding default arg: {key}={value}")
+        else:
+            logger.debug(f"Ignoring default arg {key} because it was provided by function call or already set.")
+
+    # Build the final command list
+    cmd = [LLAMA_SERVER_BINARY]
+    for key, value in final_args.items():
+        cmd.append(key)
+        if value is not True: # Append value only if it's not a boolean flag
+            cmd.append(str(value)) # Ensure value is string
+
+    # <<< REVERTED: Use /health for readiness check >>>
+    health_endpoint = f"http://{host}:{port}/health"
+    logger.info(f"Will check LLaMA readiness using health endpoint: {health_endpoint}")
+
     return await _start_process(
         name="LLaMA",
-        cmd_list=[LLAMA_SERVER_BINARY] + LLAMA_SERVER_ARGS,
+        cmd_list=cmd,
         cwd=LLAMA_CPP_DIR, # Run from llama.cpp directory
-        ready_url=LLAMA_HEALTH_ENDPOINT,
+        ready_url=health_endpoint, # <<< CHANGED BACK to /health >>>
         ready_timeout=LLAMA_SERVER_STARTUP_TIMEOUT
     )
 
@@ -361,3 +449,85 @@ if __name__ == "__main__":
     finally:
         loop.close()
         print("Event loop closed.") 
+
+class ServerManager:
+    def __init__(self, host='127.0.0.1', port=8080, ngl=20):
+        self.host = host
+        self.port = port
+        self.ngl = ngl
+        self.server_process = None
+        self.llm_url = f"http://{self.host}:{self.port}"
+        logger.info(f"Initialized ServerManager with LLM URL: {self.llm_url} and ngl: {self.ngl}")
+
+    def start_server(self):
+        """Start the llama-server if it's not already running."""
+        if self.is_server_running():
+            logger.info("llama-server is already running.")
+            return
+
+        logger.info("Starting llama-server...")
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+        llama_server_path = os.path.join(project_root, "llama.cpp", "build", "bin", "llama-server")
+        model_path = os.path.join(project_root, "models", "gemma-3-4b-it-Q6_K.gguf")
+
+        if not os.path.exists(llama_server_path):
+            logger.error(f"llama-server not found at {llama_server_path}")
+            raise FileNotFoundError(f"llama-server binary not found at {llama_server_path}")
+
+        if not os.path.exists(model_path):
+            logger.error(f"Model file not found at {model_path}")
+            raise FileNotFoundError(f"Model file not found at {model_path}")
+
+        cmd = [
+            llama_server_path,
+            "-m", model_path,
+            "-ngl", str(self.ngl)
+        ]
+
+        logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
+        self.server_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(3)  # Give the server a moment to start
+
+        if self.server_process.poll() is not None:
+            error_output = self.server_process.stderr.read() if self.server_process.stderr else "No error output"
+            logger.error(f"Failed to start llama-server: {error_output}")
+            raise RuntimeError(f"Failed to start llama-server: {error_output}")
+
+        max_retries = 10
+        for attempt in range(max_retries):
+            if self.is_server_running():
+                logger.info("llama-server started successfully.")
+                return
+            time.sleep(1)
+
+        logger.error("llama-server failed to start after multiple attempts.")
+        raise RuntimeError("llama-server failed to start after multiple attempts.")
+
+    def stop_server(self):
+        """Stop the llama-server if it's running."""
+        if self.server_process and self.is_server_running():
+            logger.info("Stopping llama-server...")
+            parent = psutil.Process(self.server_process.pid)
+            for child in parent.children(recursive=True):
+                child.terminate()
+            parent.terminate()
+            self.server_process.wait(timeout=5)
+            logger.info("llama-server stopped.")
+        else:
+            logger.info("llama-server is not running.")
+        self.server_process = None
+
+    def is_server_running(self):
+        """Check if the llama-server is running by querying its health endpoint."""
+        try:
+            response = requests.get(f"{self.llm_url}/health", timeout=2)
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            if self.server_process and self.server_process.poll() is None:
+                return True
+            return False
+
+    def get_llm_interface(self):
+        """Return an instance of a minimal LLM interface."""
+        # Since LLMInterface class doesn't exist, return a minimal object or None
+        return None  # Or define a minimal class or function call here if needed 

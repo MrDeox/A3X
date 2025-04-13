@@ -42,9 +42,9 @@ try:
         # LOG_LEVEL, # F401
         # MEMORY_DB_PATH, # F401
         # LLM_PROVIDER, # F401
-        LLAMA_MODEL_PATH as DEFAULT_MODEL_PATH,
-        LLAMA_SERVER_URL as DEFAULT_SERVER_URL,
-        CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE,
+        LLAMA_SERVER_MODEL_PATH as DEFAULT_MODEL_PATH,
+        # LLAMA_SERVER_URL as DEFAULT_SERVER_URL, # <<< REMOVIDO IMPORT INCORRETO
+        # CONTEXT_SIZE as DEFAULT_CONTEXT_SIZE, # <<< REMOVIDO IMPORT INCORRETO
         PROJECT_ROOT,
         # DEFAULT_MMPROJ_PATH, # Removed unused import
         # ENABLE_LLAMA_SERVER_AUTOSTART, # Removed unused import
@@ -67,7 +67,9 @@ try:
     # from core.logging_config import setup_logging
     from a3x.core.logging_config import setup_logging
     from a3x.core.tool_executor import execute_tool
-    from a3x.core.llm_interface import call_llm
+    # REMOVED direct import of call_llm
+    # ADDED necessary class imports
+    from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
     # <<< ADDED: Import server manager functions >>>
     from a3x.core.server_manager import start_llama_server, start_sd_server, stop_all_servers, managed_processes
     from a3x.core.agent import DEFAULT_REACT_SYSTEM_PROMPT # <<< Import the new prompt
@@ -85,6 +87,8 @@ except ImportError as e:
     # Attempt to log the warning AFTER logger is defined
     logger.warning(f"Could not import training module: {e}. --train command will be unavailable.")
     sys.exit(1)
+    LLMInterface = None # Add this here too
+    pass
 
 # <<< ADDED Import from new display module >>>
 try:
@@ -157,13 +161,20 @@ _llava_api_server_process: Optional[subprocess.Popen] = None
 
 # Modified wrapper to be an async generator and pass stream=True
 async def _direct_llm_call_wrapper(prompt: str) -> AsyncGenerator[str, None]:
-    """Wrapper for call_llm to format prompt and enable streaming.
+    """Wrapper for LLMInterface.call_llm to format prompt and enable streaming.
        Yields response chunks.
     """
+    if not LLMInterface:
+        logger.error("LLMInterface class not available due to import error.")
+        yield "[Error: LLM Interface not loaded]"
+        return
+        
     messages = [{"role": "user", "content": prompt}]
     logger.debug("Direct LLM Wrapper: Calling call_llm with stream=True")
     try:
-        async for chunk in call_llm(messages, stream=True):
+        # Create a default instance
+        llm_interface = LLMInterface() # Uses DEFAULT_LLM_URL internally
+        async for chunk in llm_interface.call_llm(messages=messages, stream=True):
             yield chunk
     except Exception as e:
         logger.error(f"Error in _direct_llm_call_wrapper (streaming): {e}", exc_info=True)
@@ -220,17 +231,30 @@ def _parse_arguments():
     # <<< ADDED: Temporary direct skill execution arguments >>>
     group.add_argument(
         "--run-skill",
-        help="(TESTING) Nome da skill a ser executada diretamente."
+        help="Run a specific skill directly (provide skill name and arguments like: 'write_file filename=\"test.txt\" content=\"Hello\" --run-skill-args-json')",
     )
     parser.add_argument(
-        "--skill-args",
-        default="{}",
-        help="(TESTING) Argumentos para a skill em formato JSON string (usado com --run-skill). Ex: '{\"param\":\"value\"}'"
+        "--run-skill-args",
+        nargs="*",
+        help="Arguments for --run-skill as key=value pairs.",
+        default=[],
+    )
+    parser.add_argument(
+        "--run-skill-args-json",
+        action="store_true",
+        help="If set, treats the arguments for --run-skill as a single JSON string.",
     )
     # <<< ADDED: Argument for skill args file >>>
     parser.add_argument(
         "--skill-args-file",
         help="(TESTING) Path para um arquivo JSON contendo argumentos para a skill (usado com --run-skill, tem precedência sobre --skill-args).",
+    )
+    # <<< ADDED: Context Size Argument >>>
+    parser.add_argument(
+        "--context-size",
+        type=int,
+        default=4096, # Default context size (e.g., for Gemma 2B/7B)
+        help="Context size (in tokens) for the LLM server."
     )
     # <<< END ADDED >>>
 
@@ -251,10 +275,41 @@ def _parse_arguments():
         help="Porta para iniciar o servidor LLM interno (padrão: 8080)",
     )
     parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host para iniciar o servidor LLM interno (padrão: 127.0.0.1)",
+    )
+    parser.add_argument(
         "--no-server",
         action="store_true",
         help="Não iniciar um servidor LLM interno, usar a URL configurada (LLAMA_SERVER_URL)",
     )
+    # <<< ADDED: Multimodal Projector Argument >>>
+    parser.add_argument(
+        "--mmproj",
+        type=str,
+        default=None,
+        help="Path para o arquivo do projector multimodal (MMPROJ), se aplicável."
+    )
+    # <<< END ADDED >>>
+
+    # <<< ADDED: Logging Arguments >>>
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help="Nível de logging para a console e arquivo (padrão: INFO)"
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None, # Default to None, logging setup can handle default file name
+        help="Arquivo para salvar os logs (padrão: logs/a3x_cli.log)"
+    )
+    # <<< END ADDED >>>
+
     return parser.parse_args()
 
 
@@ -584,14 +639,34 @@ async def _handle_run_skill_argument(args, llm_url: str):
     # 3. Prepare Context and LLM Wrapper
     # Define a non-streaming LLM call wrapper
     async def non_streaming_llm_call_wrapper(prompt: str, temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> str:
-        logger.debug(f"Executing non-streaming LLM call for skill '{skill_name}'")
+        """Wrapper for non-streaming LLM calls, intended for skills context.
+           Returns the full response string or an error message.
+        """
+        if not LLMInterface:
+            logger.error("LLMInterface class not available due to import error.")
+            return "[Error: LLM Interface not loaded]"
+            
         messages = [{"role": "user", "content": prompt}]
-        collected_response = ""
+        logger.debug(f"Non-Streaming LLM Wrapper: Calling call_llm (prompt: {prompt[:50]}...)")
+        response_content = ""
+        call_params = {"messages": messages, "stream": False}
+        if temperature is not None:
+            call_params['temperature'] = temperature
+        if max_tokens is not None:
+            call_params['max_tokens'] = max_tokens
+
         try:
-            async for chunk in call_llm(messages, stream=False): # Assuming call_llm is available
-                collected_response += chunk
-            logger.debug(f"Non-streaming LLM call for skill '{skill_name}' completed. Length: {len(collected_response)}")
-            return collected_response
+            # Create a default instance
+            llm_interface = LLMInterface() # Uses DEFAULT_LLM_URL internally
+            # Collect chunks from the async generator
+            async for chunk in llm_interface.call_llm(**call_params):
+                response_content += chunk
+            
+            if not response_content:
+                 logger.warning("Non-streaming LLM call returned empty content.")
+                 return "(LLM returned empty response)"
+            return response_content.strip()
+            
         except Exception as e:
             logger.error(f"Error in non_streaming_llm_call_wrapper: {e}", exc_info=True)
             return f"[LLM Call Error: {e}]"
@@ -718,188 +793,86 @@ async def _handle_run_skill_argument(args, llm_url: str):
         # Stop server if we started it (same as before)
         # Note: The logic for starting/stopping servers might need revisiting
         # if run_skill is meant to be truly standalone without server interaction.
+        # Passar llm_url para _check_llm_server_health
+        if not _check_llm_server_health(llm_url, timeout=5.0): # Check if server is responsive
+             console.print("[bold yellow]Warning:[/bold yellow] LLM server is not responding.")
+             # Optionally exit or proceed without LLM
+
         if _llama_server_process and _llama_server_process.poll() is None:
             logger.info(f"Stopping internal llama-server (PID: {_llama_server_process.pid})...")
-            #_stop_llama_server() # Assuming this is synchronous and safe here
+            #_stop_llama_server() # <<< REMOVED CALL TO DELETED FUNCTION
             pass # Let main_async handle server shutdown
 
 # <<< END REPLACED Function >>>
 
 
-# <<< ADDED: Function to start llama.cpp server >>>
-def _start_llama_server(
-    model_path: str,
-    gpu_layers: int,
-    port: int,
-    context_size: int = DEFAULT_CONTEXT_SIZE,  # Use from config
-    mmproj_path: Optional[str] = None # <<< ADDED: Multimodal projector path
-) -> Tuple[Optional[subprocess.Popen], Optional[str]]:
-    """Starts the llama.cpp server as a background process, optionally with multimodal support."""
-    global _llama_server_process
-
-    # Correct the path to the NEWLY COMPILED llama-server executable
-    server_executable = os.path.join(project_root, "llama.cpp", "build", "bin", "llama-server") # Updated path
-
-    if not os.path.exists(server_executable):
-        logger.error(f"llama-server executable not found at: {server_executable}")
-        console.print(
-            f"[bold red][Error][/] llama-server not found at expected location: {server_executable}. Please build llama.cpp."
-        )
-        return None, None
-
-    # ADDED: Log the exact model path being checked
-    logger.info(f"Checking existence of model file at absolute path: {os.path.abspath(model_path)}")
-
-    if not os.path.exists(model_path):
-        logger.error(f"Model file not found at: {model_path}")
-        console.print(f"[bold red][Error][/] Model file not found: {model_path}")
-        return None, None
-
-    command = [
-        server_executable,
-        "--model",
-        model_path,
-        "--ctx-size",
-        str(context_size),
-        "--n-gpu-layers",
-        str(gpu_layers),
-        "--port",
-        str(port),
-        # Add other necessary/default arguments for llama-server
-        "--host",
-        "127.0.0.1",  # Bind to localhost
-        # "--embedding", # Add if embedding endpoint is needed
-        # "--verbose", # Add for more server logs if needed
-    ]
-
-    # <<< ADDED: Conditionally add multimodal projector argument >>>
-    if mmproj_path:
-        if os.path.exists(mmproj_path):
-            logger.info(f"Adding multimodal projector: {mmproj_path}")
-            command.extend(["--mmproj", mmproj_path])
-        else:
-            logger.error(f"Multimodal projector file not found at: {mmproj_path}")
-            console.print(f"[bold red][Error][/] MMPROJ file not found: {mmproj_path}")
-            # Continue without mmproj? Or fail? Let's fail for now if specified but missing.
-            return None, None
-    # <<< END ADDED >>>
-
-    logger.info(
-        f"Starting internal llama-server on port {port} with model '{os.path.basename(model_path)}' ({gpu_layers} GPU layers...)"
-    )
-    logger.debug(f"Server command: {' '.join(command)}")
-
-    try:
-        # Get current environment and add LD_LIBRARY_PATH for the new build location
-        env = os.environ.copy()
-        lib_path = os.path.join(project_root, "llama.cpp", "build", "bin") # Updated path to bin dir
-        # Handle existing LD_LIBRARY_PATH
-        env['LD_LIBRARY_PATH'] = f"{lib_path}:{env.get('LD_LIBRARY_PATH', '')}".rstrip(':')
-        logger.info(f"Setting LD_LIBRARY_PATH for subprocess: {env['LD_LIBRARY_PATH']}")
-
-        # Open log files for server output
-        stdout_log_path = os.path.join(project_root, "llama_server_stdout.log")
-        stderr_log_path = os.path.join(project_root, "llama_server_stderr.log")
-        stdout_log = open(stdout_log_path, 'wb')
-        stderr_log = open(stderr_log_path, 'wb')
-        logger.info(f"Redirecting llama-server stdout to: {stdout_log_path}")
-        logger.info(f"Redirecting llama-server stderr to: {stderr_log_path}")
-
-        # Use Popen for background process, redirecting to log files
-        _llama_server_process = subprocess.Popen(
-            command,
-            env=env, # Pass the modified environment
-            stdout=stdout_log,  # Redirect stdout to file
-            stderr=stderr_log,  # Redirect stderr to file
-        )
-
-        # Short pause to allow server to start and potentially fail - INCREASED DELAY
-        time.sleep(15) # Increased from 3 to 15 seconds
-
-        # Check if the process terminated unexpectedly
-        if _llama_server_process.poll() is not None:
-            stderr_output = (
-                _llama_server_process.stderr.read().decode()
-                if _llama_server_process.stderr
-                else "No stderr output."
-            )
-            logger.error(
-                f"Internal llama-server failed to start. Exit code: {_llama_server_process.returncode}"
-            )
-            logger.error(f"Server stderr:\n{stderr_output}")
-            console.print(
-                "[bold red][Fatal Error][/] Internal llama-server failed to start. Check logs/stderr."
-            )
-            _llama_server_process = None
-            return None, None
-
-        # Register cleanup function
-        atexit.register(_stop_llama_server)
-
-        server_url = f"http://127.0.0.1:{port}/v1/chat/completions"
-        logger.info(
-            f"Internal llama-server started successfully. PID: {_llama_server_process.pid}. URL: {server_url}"
-        )
-        return _llama_server_process, server_url
-
-    except Exception as e:
-        logger.exception("Failed to start internal llama-server:")
-        console.print(
-            f"[bold red][Fatal Error][/] Could not start internal llama-server: {e}"
-        )
-        return None, None
-
-
-# <<< ADDED: Function to stop llama.cpp server >>>
-def _stop_llama_server():
-    """Stops the background llama.cpp server process if it's running."""
-    global _llama_server_process
-    if _llama_server_process and _llama_server_process.poll() is None:
-        logger.info(
-            f"Stopping internal llama-server (PID: {_llama_server_process.pid})..."
-        )
-        try:
-            # Try terminating gracefully first
-            _llama_server_process.terminate()
-            try:
-                # Wait a bit for termination
-                _llama_server_process.wait(timeout=5)
-                logger.info("Internal llama-server terminated gracefully.")
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    "Internal llama-server did not terminate gracefully, killing..."
-                )
-                _llama_server_process.kill()
-                logger.info("Internal llama-server killed.")
-        except Exception as e:
-            logger.error(f"Error stopping internal llama-server: {e}", exc_info=True)
-        finally:
-            _llama_server_process = None
-
-
 # <<< ADDED: Function to check LLM server health >>>
-def _check_llm_server_health(url: str = DEFAULT_SERVER_URL, timeout: float = 2.0) -> bool:
-    """Checks if the default LLM (llama.cpp) server is responding at the health endpoint."""
-    # Construct health check URL (assuming /health endpoint)
-    health_url = url.replace("/v1/chat/completions", "/health")
-    logger.debug(f"Checking LLM server health at: {health_url}")
+def _check_llm_server_health(url: str, timeout: float = 2.0) -> bool: # <<< KEPT THIS FUNCTION
+    """Verifica se o servidor LLM está respondendo em uma URL específica."""
+    start_time = time.time()
+    logger.info(f"Verificando saúde do servidor LLM em {url} (timeout: {timeout}s)...")
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(f"{url}/health", timeout=1.0)
+            if response.status_code == 200:
+                # Tentar decodificar JSON para mais detalhes
+                try:
+                    health_data = response.json()
+                    status = health_data.get("status", "unknown")
+                    logger.info(f"Servidor LLM respondeu: Status '{status}'")
+                    # Considerar "ok" ou qualquer status que não seja erro como saudável
+                    # (Adapte se o endpoint /health tiver uma semântica diferente)
+                    if status != "error":
+                        return True
+                except json.JSONDecodeError:
+                    logger.warning("Resposta de saúde do LLM não é JSON válido, mas status 200. Considerando saudável.")
+                    return True
+        except requests.exceptions.ConnectionError:
+            logger.debug(f"Falha ao conectar ao servidor LLM em {url}. Tentando novamente...")
+        except requests.exceptions.Timeout:
+            logger.debug(f"Timeout ao conectar ao servidor LLM em {url}. Tentando novamente...")
+        except Exception as e:
+            logger.error(f"Erro inesperado ao verificar saúde do LLM: {e}")
+            # Parar de tentar em caso de erro inesperado
+            break
+        time.sleep(0.5) # Espera antes de tentar novamente
+
+    logger.error(f"Servidor LLM não respondeu em {url} dentro do timeout de {timeout}s.")
+    return False
+
+
+# <<< ADDED: Function to check SD server health >>>
+def _check_sd_server_health(timeout: float = 5.0) -> bool:
+    """Verifica se o servidor da API Stable Diffusion está respondendo."""
+    # Precisa importar a constante do endpoint
     try:
-        response = requests.get(health_url, timeout=timeout)
-        if response.status_code == 200:
-            logger.info(f"LLM server is healthy (responded from {health_url}).")
-            return True
-        else:
-            logger.warning(f"LLM server health check failed at {health_url}. Status code: {response.status_code}")
-            return False
-    except requests.exceptions.ConnectionError:
-        logger.info(f"LLM server connection refused at {health_url}. Server likely not running.")
+        from a3x.core.config import SD_API_CHECK_ENDPOINT
+    except ImportError:
+        logger.error("Falha ao importar SD_API_CHECK_ENDPOINT de a3x.core.config.")
         return False
-    except requests.exceptions.Timeout:
-        logger.warning(f"LLM server health check timed out at {health_url} (timeout={timeout}s).")
-        return False
-    except Exception as e:
-        logger.error(f"Error checking LLM server health at {health_url}: {e}", exc_info=True)
-        return False
+
+    url = SD_API_CHECK_ENDPOINT
+    start_time = time.time()
+    logger.info(f"Verificando saúde do servidor SD em {url} (timeout: {timeout}s)...")
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(url, timeout=1.0)
+            # A API do SD WebUI pode retornar 200 mesmo sem estar totalmente pronta
+            # mas um 200 é um bom sinal inicial.
+            if response.status_code == 200:
+                logger.info(f"Servidor SD respondeu OK (Status: {response.status_code}) em {url}. Considerando pronto.")
+                return True
+        except requests.exceptions.ConnectionError:
+            logger.debug(f"Falha ao conectar ao servidor SD em {url}. Tentando novamente...")
+        except requests.exceptions.Timeout:
+            logger.debug(f"Timeout ao conectar ao servidor SD em {url}. Tentando novamente...")
+        except Exception as e:
+            logger.error(f"Erro inesperado ao verificar saúde do SD: {e}")
+            break # Parar em erro inesperado
+        time.sleep(0.5) # Espera antes de tentar novamente
+
+    logger.error(f"Servidor SD não respondeu em {url} dentro do timeout de {timeout}s.")
+    return False
 
 
 # --- LLaVA Server Management (Stack Version) ---
@@ -1175,144 +1148,130 @@ def run_cli():
 
     # --- Função Principal Assíncrona ---
     async def main_async():
-        """Função principal que executa a lógica assíncrona."""
-        global _llama_server_process # Permitir modificação
+        """Core asynchronous execution logic."""
         args = _parse_arguments()
 
-        # Setup logging ASAP
-        setup_logging()
-        logger.info("Starting A³X CLI...")
-        logger.info(f"Arguments: {args}")
+        # Setup logging based on args
+        setup_logging(args.log_level, args.log_file)
+        logger.info("A³X CLI starting...")
+        logger.debug(f"Arguments received: {args}")
 
-        # Mudar para o diretório raiz do projeto
+        # Change to project root directory
         change_to_project_root()
-        logger.info(f"Running in directory: {os.getcwd()}")
+        logger.info(f"Changed working directory to: {os.getcwd()}")
 
-        # Inicializar DB
-        initialize_database() # Ensure DB is ready
-
-        # Determinar URL do LLM
-        llm_url = args.model or DEFAULT_SERVER_URL # Usa --model se fornecido, senão config
-
-        servers_started_by_cli = False
-        loaded_tools = {} # <<< Initialize loaded_tools >>>
-        agent = None # <<< Initialize agent >>>
-
+        # Inicializa o banco de dados (cria tabelas se não existirem)
         try:
-            # Iniciar servidor LLaMA se necessário
-            if not args.no_server:
-                logger.info("Attempting to start and manage LLM and SD servers...")
-                # Start LLaMA
-                llama_success = await start_llama_server() # Usa a função do server_manager
-                if llama_success:
-                    logger.info("LLaMA server managed successfully.")
-                    servers_started_by_cli = True
-                else:
-                    logger.warning("LLM server failed to start correctly or was already running.")
+            initialize_database()
+        except Exception as db_err:
+            logger.exception("Falha crítica ao inicializar o banco de dados:")
+            console.print(f"[bold red][Error][/] Database initialization failed: {db_err}")
+            sys.exit(1)
 
-                # Start SD (Add error handling if needed)
-                # sd_success = await start_sd_server()
-                # if sd_success:
-                #    logger.info("SD server managed successfully.")
-                # else:
-                #    logger.warning("SD server failed to start correctly or was already running.")
+        # <<< CONSTRUIR LLM URL AQUI >>>
+        llm_url = f"http://{args.host}:{args.port}"
+        logger.info(f"LLM Server URL constructed: {llm_url}")
+
+        # Iniciar servidores (LLM e SD) se necessário
+        # <<< REMOVE GLOBAL _llama_server_process >>>
+        # global _llama_server_process, _llava_server_process
+
+        # <<< CORRECTED INDENTATION >>>
+        if not args.no_server:
+            model_path_arg = args.model or DEFAULT_MODEL_PATH
+            logger.info(f"Tentando iniciar Llama server com modelo: {model_path_arg}")
+
+            # <<< REMOVED: Health check before starting. Manager checks internally now. >>>
+            try:
+                # Start LLaMA server using the new manager
+                await start_llama_server(
+                    model_path=model_path_arg,
+                    port=args.port,
+                    host=args.host,
+                    gpu_layers=args.gpu_layers,
+                    context_size=args.context_size,
+                    mmproj_path=args.mmproj,
+                )
+            except Exception as start_err:
+                logger.exception("Erro ao tentar iniciar o servidor Llama automaticamente:")
+                console.print(f"[bold red][Error][/] Could not auto-start Llama server: {start_err}")
+
+            # <<< DISABLED SD Server Startup >>>
+            # # Start SD server if needed (assuming same --no-server flag controls it)
+            # if not _check_sd_server_health(): # Assuming a similar check function exists
+            #     try:
+            #         await start_sd_server()
+            #         await asyncio.sleep(5) # Give it time
+            #         if not _check_sd_server_health(timeout=15.0):
+            #              console.print(
+            #                 f"[bold yellow][Warning][/] Falha ao verificar saúde do servidor Stable Diffusion após tentativa de início automático."
+            #              )
+            #     except Exception as sd_start_err:
+            #         logger.exception("Erro ao tentar iniciar o servidor Stable Diffusion automaticamente:")
+            #         console.print(f"[bold yellow][Warning][/] Could not auto-start Stable Diffusion server: {sd_start_err}")
+            #     else:
+            #     logger.info("Servidor Stable Diffusion já está rodando ou respondeu ao teste de saúde.")
+            # <<< END DISABLED SD Server Startup >>>
+
+        # Carregar skills após configurar tudo
+        loaded_tools = {}
+        try:
+            logger.info("Carregando skills...")
+            loaded_tools = load_skills("a3x.skills")
+            logger.info(f"Skills carregadas: {list(loaded_tools.keys())}")
+            # Validate skills after loading
+            # expected_skills = discover_expected_skills(os.path.join(PROJECT_ROOT, "a3x", "skills"))
+            # validate_registered_skills(expected_skills, loaded_tools)
+        except CriticalSkillRegistrationError as skill_err:
+            logger.error(f"Erro crítico no registro de skills: {skill_err}")
+            console.print(f"[bold red][Fatal Error][/] {skill_err}")
+            if skill_err.missing_skills:
+                console.print("Skills faltando ou com erro:")
+                for skill_name in skill_err.missing_skills:
+                    console.print(f"- {skill_name}")
+            console.print("Verifique os arquivos de skills e seus decoradores `@skill`.")
+            sys.exit(1)
+        except Exception as load_err:
+            logger.exception("Erro inesperado durante o carregamento das skills:")
+            console.print(f"[bold red][Fatal Error][/] Failed to load skills: {load_err}")
+            sys.exit(1)
+
+        # Inicializar o agente
+        system_prompt = _load_system_prompt() # Carrega do arquivo padrão
+        # <<< PASSA LLM URL CONSTRUÍDA >>>
+        agent = _initialize_agent(system_prompt, llm_url_override=llm_url, loaded_tools=loaded_tools)
+        if agent is None:
+            console.print("[bold red][Fatal Error][/] Failed to initialize the agent.")
+            sys.exit(1)
+
+        # Selecionar e rodar o modo apropriado
+        # <<< CORRECTED INDENTATION >>>
+        if args.task:
+            await _handle_task_argument(agent, args.task)
+        elif args.command:
+            await _handle_command_argument(agent, args.command)
+        elif args.input_file:
+            await _handle_file_argument(agent, args.input_file)
+        elif args.stream_direct:
+            await stream_direct_llm(args.stream_direct, agent) # Pass agent
+        elif args.train:
+            # <<< CORRECTED INDENTATION >>>
+            if run_qlora_finetuning:
+                console.print("[bold green]Iniciando ciclo de fine-tuning QLoRA...[/]")
+                try:
+                    await run_qlora_finetuning()
+                    console.print("[bold green]Ciclo de fine-tuning concluído.[/]")
+                except Exception as train_err:
+                    logger.exception("Erro durante o fine-tuning:")
+                    console.print(f"[bold red][Error][/] Fine-tuning failed: {train_err}")
             else:
-                logger.info("Skipping internal server start (--no-server specified).")
-                # Verify connection to existing server?
-                # if not _check_llm_server_health(llm_url):
-                #    logger.warning(f"Warning: Could not connect to LLM server at {llm_url}. Agent may fail.")
-
-            logger.info("Servers ready (or not managed). Proceeding with CLI operation.")
-
-            # <<< MOVED SKILL LOADING BEFORE AGENT INIT >>>
-            # Carregar skills DEPOIS que os servidores (se gerenciados) estão prontos
-            logger.info("Loading skills...")
-            try:
-                load_skills() # Use the core function
-                loaded_tools = SKILL_REGISTRY # <<< Assign loaded registry to variable >>>
-                if not loaded_tools:
-                    logger.warning("No skills were loaded. The agent will have no tools.")
-                    # Optionally raise error if core skills are missing
-                else:
-                    logger.info(f"Loaded {len(loaded_tools)} skills.")
-            except Exception as skill_load_err:
-                logger.critical(f"Fatal error loading skills: {skill_load_err}", exc_info=True)
-                return # Cannot proceed
-
-            # Inicializar Agente (passando tools)
-            logger.info("Initializing Agent...")
-            try:
-                agent = _initialize_agent(system_prompt=DEFAULT_REACT_SYSTEM_PROMPT, llm_url_override=llm_url, loaded_tools=loaded_tools) # <<< Pass loaded_tools >>>
-                if not agent:
-                    raise RuntimeError("Agent initialization returned None.") # More specific error
-                logger.info("Agent ready.")
-            except Exception as agent_init_err:
-                logger.critical(f"Fatal error initializing agent: {agent_init_err}", exc_info=True)
-                return # Exit if agent init fails
-
-            # Validar skills registradas vs arquivos encontrados
-            logger.info("Validating skills registration...")
-            try:
-                # Convert list to set for comparison
-                expected_skill_names = set([
-                    "generate_code", "write_file", "read_file", "list_directory",
-                    "append_to_file", "delete_path", "hierarchical_planner",
-                    "simulate_step", "final_answer", "web_search",
-                    "consult_learned_heuristics", # <<< Add the skill we are testing >>>
-                    # Add other essential skills here for validation
-                ])
-                # Validate available skills against expected
-                registered_skills = set(agent.tools.keys()) # <<< Validate agent's tools dict >>>
-                expected_skills_set = set(expected_skill_names) # <<< CONVERT TO SET >>>
-
-                missing_skills = expected_skills_set - registered_skills
-                extra_skills = registered_skills - expected_skills_set
-
-                if missing_skills:
-                    logger.warning(
-                        f"Missing expected skills in agent's registry: {sorted(list(missing_skills))}"
-                    )
-                if extra_skills:
-                    logger.warning(
-                        f"Extra skills found in agent's registry: {sorted(list(extra_skills))}"
-                    )
-            except Exception as skill_val_err:
-                logger.exception(f"Error during skill validation placeholder:")
-
-            # Executar lógica baseada nos argumentos
-            if args.task:
-                await _handle_task_argument(agent, args.task)
-            elif args.command:
-                await _handle_command_argument(agent, args.command)
-            elif args.input_file:
-                await _handle_file_argument(agent, args.input_file)
-            elif args.interactive:
-                await _handle_interactive_argument(agent)
-            elif args.stream_direct:
-                 await stream_direct_llm(args.stream_direct, _direct_llm_call_wrapper)
-            elif args.train:
-                if run_qlora_finetuning:
-                    logger.info("Starting QLoRA fine-tuning process...")
-                    # Assumindo que a função pode rodar sincronamente ou você a adapta
-                    run_qlora_finetuning()
-                    logger.info("Fine-tuning process completed.")
-                else:
-                    logger.error("--train specified, but training module failed to import.")
-            # <<< ADDED: Handle direct skill execution >>>
-            elif args.run_skill:
-                await _handle_run_skill_argument(args, llm_url) # Pass llm_url for consistency
-            else:
-                # Comportamento padrão: modo interativo se nenhum outro modo for especificado
-                logger.info("No specific mode selected, entering interactive mode.")
-                await _handle_interactive_argument(agent)
-
-        except Exception as e:
-            logger.critical(f"An unexpected error occurred in main_async: {e}", exc_info=True)
-        finally:
-            # <<< ADDED: Explicitly stop servers managed by this CLI run >>>
-            logger.info("Main CLI function finished or errored, ensuring server cleanup...")
-            await stop_all_servers()
-            logger.info("Server cleanup process completed via stop_all_servers().")
+                console.print("[bold red][Error][/] Módulo de treinamento não disponível. Não é possível executar --train.")
+        elif args.run_skill:
+            # <<< CORRECTED INDENTATION >>>
+            await _handle_run_skill_argument(args, llm_url) # Pass llm_url
+        else: # Modo interativo por padrão
+            # <<< CORRECTED INDENTATION >>>
+            await _handle_interactive_argument(agent)
 
     # --- Ponto de Entrada Principal ---
     try:

@@ -7,16 +7,20 @@ import logging
 import time
 from typing import Dict, Any, List, Optional, AsyncGenerator
 import datetime
-from a3x.core.context import Context
+
+# Core imports
+from a3x.core.skills import skill
+# Correct import
+from a3x.core.llm_interface import LLMInterface # <-- IMPORT CLASS
+# Import context type for hinting
+from a3x.core.agent import _ToolExecutionContext 
 
 try:
     import faiss
 except ImportError:
     faiss = None
 
-from a3x.core.skills import skill
-from a3x.core.config import LLAMA_MODEL_PATH
-from a3x.core.llm_interface import call_llm
+logger = logging.getLogger(__name__)
 
 # Configuration constants (adjust paths as needed)
 try:
@@ -39,7 +43,7 @@ _index_mapping = None
 _dataset_cache = None
 _load_lock = asyncio.Lock()
 
-# --- START SIMULATION PROMPT (Refined by LLM Analysis) --- #
+# --- START SIMULATION PROMPT --- #
 prompt = """Você é um simulador de reflexão para Arthur, um personagem fictício. Sua tarefa é gerar a reflexão de Arthur sobre uma decisão que ele tomou.
 
 **Instruções:**
@@ -207,122 +211,75 @@ def prepare_record_text_for_prompt(record, logger):
 
 # --- Helper Functions (Resource Loading - Async Version) ---
 # <<<<<<<<<<<<<<<< FIM DO BLOCO RESTAURADO >>>>>>>>>>>>>>>>>>
-async def _load_resources(ctx):
-    """Loads necessary resources (model, index, data) asynchronously and caches them."""
+async def _load_resources(ctx: _ToolExecutionContext): # Use correct context type
+    """Loads necessary resources asynchronously and caches them."""
     global _embedding_model, _faiss_index, _index_mapping, _dataset_cache
     async with _load_lock:
         if _embedding_model and _faiss_index and _index_mapping and _dataset_cache:
             ctx.logger.debug("Resources already loaded.")
             return True
-
+        # ... (rest of async loading logic) ...
+        # Ensure faiss check happens
+        if faiss is None:
+             ctx.logger.error("FAISS library not installed.")
+             return False
         ctx.logger.info("--- Loading Simulate Decision Reflection Skill Resources --- ")
         start_time = time.time()
-
         try:
-            # 1. Load Embedding Model
+            # Load Model
             if not _embedding_model:
-                ctx.logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
-                model_load_start = time.time()
-                # Run synchronous model loading in a separate thread
-                _embedding_model = await asyncio.to_thread(SentenceTransformer, EMBEDDING_MODEL_NAME, device='cpu')
-                ctx.logger.info(f"Embedding model loaded in {time.time() - model_load_start:.2f}s.")
-
-            # 2. Load Dataset Cache (if needed for mapping)
+                 ctx.logger.info(f"Loading model: {EMBEDDING_MODEL_NAME}...")
+                 _embedding_model = await asyncio.to_thread(SentenceTransformer, EMBEDDING_MODEL_NAME, device='cpu')
+            # Load Dataset
             if not _dataset_cache:
-                ctx.logger.info(f"Loading unified dataset from: {UNIFIED_DATASET_PATH}")
-                if not os.path.exists(UNIFIED_DATASET_PATH):
-                    ctx.logger.error(f"Unified dataset file not found: {UNIFIED_DATASET_PATH}")
-                    return False
-                _dataset_cache = {}
-                with open(UNIFIED_DATASET_PATH, 'r', encoding='utf-8') as f:
-                    for i, line in enumerate(f):
-                        try:
-                            record = json.loads(line)
-                            _dataset_cache[i] = record # Store record by line index
-                        except json.JSONDecodeError:
-                            ctx.logger.warning(f"Skipping invalid JSON line {i+1} in {UNIFIED_DATASET_PATH}")
-                ctx.logger.info(f"Loaded {len(_dataset_cache)} records from unified dataset.")
-
-            # 3. Load FAISS Index
+                 ctx.logger.info(f"Loading dataset: {UNIFIED_DATASET_PATH}")
+                 if not os.path.exists(UNIFIED_DATASET_PATH): return False
+                 _dataset_cache = {}
+                 with open(UNIFIED_DATASET_PATH, 'r', encoding='utf-8') as f:
+                     for i, line in enumerate(f): _dataset_cache[i] = json.loads(line)
+            # Load Index
             if not _faiss_index:
-                ctx.logger.info(f"Loading FAISS index from: {FAISS_INDEX_PATH}")
-                if not os.path.exists(FAISS_INDEX_PATH):
-                    ctx.logger.error(f"FAISS index file not found: {FAISS_INDEX_PATH}")
-                    return False
-                _faiss_index = await asyncio.to_thread(faiss.read_index, FAISS_INDEX_PATH)
-                ctx.logger.info(f"FAISS index loaded. Contains {_faiss_index.ntotal} vectors.")
-                if _dataset_cache and _faiss_index.ntotal != len(_dataset_cache):
-                     ctx.logger.warning(f"Mismatch: Index has {_faiss_index.ntotal} vectors, dataset cache has {len(_dataset_cache)} records.")
-
-            # 4. Load Index Mapping
+                 ctx.logger.info(f"Loading index: {FAISS_INDEX_PATH}")
+                 if not os.path.exists(FAISS_INDEX_PATH): return False
+                 _faiss_index = await asyncio.to_thread(faiss.read_index, FAISS_INDEX_PATH)
+            # Load Mapping
             if not _index_mapping:
-                ctx.logger.info(f"Loading index mapping from: {MAPPING_PATH}")
-                if not os.path.exists(MAPPING_PATH):
-                    ctx.logger.error(f"Index mapping file not found: {MAPPING_PATH}")
-                    # Allow proceeding without mapping, but log error
-                    _index_mapping = {}
-                else:
-                    with open(MAPPING_PATH, 'r', encoding='utf-8') as f:
-                        _index_mapping = json.load(f)
-                    ctx.logger.info(f"Loaded mapping for {len(_index_mapping)} index entries.")
-                    # Convert string keys back to int if necessary (JSON saves keys as strings)
-                    _index_mapping = {int(k): v for k, v in _index_mapping.items()}
-
-            ctx.logger.info(f"--- Simulate Decision Reflection Skill Resources Loaded Successfully (Total: {time.time() - start_time:.2f}s) --- ")
+                 ctx.logger.info(f"Loading mapping: {MAPPING_PATH}")
+                 if not os.path.exists(MAPPING_PATH): return False
+                 with open(MAPPING_PATH, 'r', encoding='utf-8') as f: _index_mapping = json.load(f)
+            ctx.logger.info(f"Resources loaded in {time.time() - start_time:.2f}s.")
             return True
-
         except Exception as e:
-            ctx.logger.exception("Error loading resources for simulate_decision_reflection:")
-            # Reset potentially partially loaded resources on error
-            _embedding_model = _faiss_index = _index_mapping = _dataset_cache = None
+            ctx.logger.exception("Failed to load resources for simulation:")
             return False
 
 def _get_examples_from_index(indices: List[int], distances: List[float]) -> List[str]:
-    """Retrieves and formats examples from the dataset cache based on FAISS indices."""
+    """Retrieves formatted example strings from cache based on FAISS indices."""
+    global _index_mapping, _dataset_cache
     examples = []
-    if not _dataset_cache or not _index_mapping:
-        logger.error("Dataset cache or index mapping not loaded. Cannot retrieve examples.")
-        return examples
-
+    if not _index_mapping or not _dataset_cache:
+        logger.error("Mapping or dataset cache not loaded for retrieving examples.")
+        return []
+    
+    logger.debug(f"Attempting to retrieve examples for indices: {indices}")
     for i, idx in enumerate(indices):
-        if idx == -1: continue # Skip invalid index from FAISS search
-
-        # <<< MODIFICAÇÃO: Assumir que as chaves no mapping SÃO os índices FAISS (inteiros) >>>
-        # mapped_info = _index_mapping.get(str(idx)) # Original (se chaves fossem strings)
-        mapped_info = _index_mapping.get(idx) # Correto se chaves são inteiros
-
-        if not mapped_info:
-            logger.warning(f"No mapping found for index {idx}. Skipping example.")
-            continue
-
-        # Use o índice FAISS diretamente como chave para o cache do dataset (se for 0-based)
-        cache_key = idx
-        record = _dataset_cache.get(cache_key)
-
-        if record:
-            source = mapped_info.get("source", "unknown_source")
-            record_type = record.get("type", "unknown_type") # <<< Adicionado para fallback mais genérico >>>
-
-            # Format based on type (whatsapp or manifesto)
-            if record_type == "whatsapp" and record.get("meta", {}).get("context") and record.get("meta", {}).get("arthur_response"):
-                inp = record["meta"]["context"]
-                resp = record["meta"]["arthur_response"]
-                examples.append(f"Exemplo de Decisão/Resposta (WhatsApp: {source}):\nINPUT:\n\"\"\"\n{inp}\n\"\"\"\nRESPOSTA_ARTHUR:\n\"\"\"\n{resp}\n\"\"\"")
-            elif record_type == "manifesto":
-                 # Simple text chunk from manifesto
-                 text = record.get("text", "")
-                 chunk_idx = record.get("meta", {}).get("chunk_index", "N/A") # Get chunk index safely
-                 examples.append(f"Exemplo de Manifesto/Nota ({source} - Chunk {chunk_idx}):\n\"\"\"\n{text}\n\"\"\"")
+        if idx == -1: continue # Skip invalid index
+        map_key = str(idx)
+        if map_key in _index_mapping:
+            metadata = _index_mapping[map_key]
+            unified_idx = metadata.get("unified_index")
+            if unified_idx is not None and unified_idx in _dataset_cache:
+                record = _dataset_cache[unified_idx]
+                formatted = prepare_record_text_for_prompt(record, logger)
+                if formatted:
+                    examples.append(formatted)
+                    logger.debug(f"Added example (idx {idx}, dist {distances[i]:.4f}): {formatted[:100]}...")
             else:
-                 # Fallback for other types or incomplete records
-                 text = record.get("text", record.get("input", "Conteúdo indisponível"))
-                 examples.append(f"Exemplo ({record_type} - {source}):\n\"\"\"\n{text}\n\"\"\"")
+                logger.warning(f"Mapping for index {idx} points to invalid unified_index: {unified_idx}")
         else:
-            logger.warning(f"Record not found in dataset cache for index {idx} (mapped key {cache_key}). Skipping example.")
-
+             logger.warning(f"Index {idx} not found in mapping.")
+    logger.info(f"Retrieved {len(examples)} formatted examples from indices.")
     return examples
-
-# --- Skill Definition --- #
 
 @skill(
     name="simulate_decision_reflection",
@@ -331,154 +288,115 @@ def _get_examples_from_index(indices: List[int], distances: List[float]) -> List
         "decision_context": (str, ...),
         "chosen_action": (str, ...),
         "alternative_actions": (List[str], ...)
+        # Context (ctx) is implicitly passed
     }
 )
+# Updated function signature
 async def simulate_decision_reflection(
     decision_context: str,
     chosen_action: str,
     alternative_actions: List[str],
-    ctx: Optional[Context] = None
+    ctx: _ToolExecutionContext # <-- Accept context object
 ) -> Dict[str, Any]:
     """
-    Simulates reflecting on a decision using an LLM.
-    Args:
-        decision_context: The context of the decision.
-        chosen_action: The action that was chosen.
-        alternative_actions: A list of alternative actions.
-        ctx: The skill execution context (provides logger, llm_call).
-
-    Returns:
-        A dictionary containing either 'simulated_reflection' or 'error'.
+    Simulates Arthur's reflection on a decision.
+    Uses the LLMInterface from the execution context.
     """
     logger = ctx.logger
-    logger.info(f"Executing simulate_decision_reflection for input: '{decision_context[:100]}...'")
-
-    # 1. Load resources (uses cache)
-    # <<< MODIFICADO: Chamar a versão async >>>
+    llm_interface = ctx.llm_interface
+    
+    if not llm_interface:
+        logger.error("LLMInterface not found in execution context.")
+        return {"status": "error", "message": "Internal error: LLMInterface missing."}
+        
+    # 1. Load resources asynchronously
     if not await _load_resources(ctx):
-        logger.error("Aborting reflection simulation due to resource load failure.")
-        return {"error": "Failed to load necessary resources for simulation."}
+        return {"status": "error", "message": "Failed to load necessary resources (model, index, data)."}
 
-    # Check essential resources after attempting load
-    if _embedding_model is None: return {"error": "Embedding model not loaded."}
-    if _faiss_index is None or not _index_mapping or not _dataset_cache:
-        warning_msg = "(Não foi possível simular a reflexão: dados históricos insuficientes ou não carregados. Verifique os arquivos de índice, mapeamento e dataset unificado.)"
-        logger.warning(f"Data for simulation missing or incomplete: {warning_msg}")
-        return {"simulated_reflection": warning_msg}
-
-    # 2. Generate embedding for user_input
+    # 2. Retrieve Relevant Examples from Memory using FAISS
     try:
-        logger.debug(f"Generating embedding for: '{decision_context}'")
-        # <<< MODIFICADO: Usar a versão async do encode >>>
-        input_embedding = await asyncio.to_thread(
-            _embedding_model.encode, [decision_context], convert_to_numpy=True
-        )
-        input_embedding = input_embedding.astype(np.float32)
-        if input_embedding.ndim == 1: input_embedding = np.expand_dims(input_embedding, axis=0)
+        logger.info("Retrieving relevant examples from memory...")
+        query_text = f"Decision: {chosen_action}. Context: {decision_context}"
+        query_embedding = await asyncio.to_thread(_embedding_model.encode, [query_text])
+        
+        if _faiss_index is None:
+             raise RuntimeError("FAISS index cache is None after load attempt.")
+             
+        distances, indices = await asyncio.to_thread(_faiss_index.search, query_embedding.astype(np.float32), TOP_K)
+        
+        # Ensure distances is 2D before accessing [0]
+        if distances.ndim == 1: distances = np.expand_dims(distances, axis=0)
+        if indices.ndim == 1: indices = np.expand_dims(indices, axis=0)
+            
+        relevant_examples = _get_examples_from_index(indices[0].tolist(), distances[0].tolist()) 
+        logger.info(f"Retrieved {len(relevant_examples)} relevant examples from memory.")
+        relevant_examples_str = "\n---\n".join(relevant_examples) if relevant_examples else "Nenhum exemplo relevante encontrado na memória."
     except Exception as e:
-        logger.error(f"Failed to generate input embedding: {e}", exc_info=True)
-        return {"error": "Failed to generate input embedding."}
+        logger.exception("Error retrieving examples from memory:")
+        return {"status": "error", "message": f"Failed to retrieve memory examples: {e}"}
 
-    # 3. Search FAISS index
-    retrieved_faiss_indices = []
-    distances = [] # Initialize distances
-    if _faiss_index.ntotal > 0:
-        try:
-            k = min(TOP_K, _faiss_index.ntotal)
-            logger.debug(f"Searching FAISS index ({_faiss_index.ntotal} vectors) for {k} nearest neighbors...")
-            # <<< MODIFICADO: Usar a versão async da busca >>>
-            distances, retrieved_faiss_indices = await asyncio.to_thread(
-                _faiss_index.search, input_embedding, k
-            )
-            retrieved_faiss_indices = retrieved_faiss_indices[0]
-            distances = distances[0] # Store distances
-            valid_indices_mask = retrieved_faiss_indices != -1
-            retrieved_faiss_indices = retrieved_faiss_indices[valid_indices_mask]
-            distances = distances[valid_indices_mask]
-            logger.debug(f"Retrieved {len(retrieved_faiss_indices)} valid indices: {retrieved_faiss_indices}")
-        except Exception as e:
-            logger.error(f"Failed to search FAISS index: {e}", exc_info=True)
-            retrieved_faiss_indices = []
-            distances = []
-    else:
-        logger.warning("FAISS index is empty. Cannot search.")
+    # 3. Build the LLM Prompt
+    # Use the loaded prompt text
+    system_prompt_text = prompt # Use the prompt loaded from the file
+    user_prompt_text = (
+         f"**Contexto da Decisão:**\n{decision_context}\n\n" 
+         f"**Ação Escolhida:**\n{chosen_action}\n\n" 
+         f"**Ações Alternativas Consideradas:**\n" +
+         "\n".join([f"- {alt}" for alt in alternative_actions]) +
+         f"\n\n**Exemplos Relevantes da Memória:**\n{relevant_examples_str}\n\n" 
+         f"**Reflexão Simulada de Arthur (150-250 palavras):**"
+    )
 
-    # 4. Retrieve and Format Examples
-    examples_for_prompt = []
-    if retrieved_faiss_indices is not None and len(retrieved_faiss_indices) > 0:
-        logger.info(f"Retrieving and formatting {len(retrieved_faiss_indices)} examples...")
-        try:
-            # <<< MODIFICADO: Passar distances para a função auxiliar >>>
-            examples_for_prompt = _get_examples_from_index(retrieved_faiss_indices.tolist(), distances.tolist())
-        except Exception as e:
-            logger.error(f"Error retrieving/formatting examples: {e}", exc_info=True)
-            examples_for_prompt = []
+    messages = [
+        {"role": "system", "content": system_prompt_text},
+        {"role": "user", "content": user_prompt_text}
+    ]
 
-    # Prepare examples string
-    if not examples_for_prompt:
-        logger.info("No relevant examples found for the prompt.")
-        examples_str = "Nenhum exemplo similar encontrado no histórico."
-    else:
-        examples_str = "\n\n---\n\n".join(examples_for_prompt)
-
-    # 5. Construct the prompt using the f-string defined at the top
-    final_prompt = prompt.format(decision_context=decision_context, examples_str=examples_str) # Format the prompt string here
-
-    ctx.logger.debug("Prompt construído. Chamando LLM para simulação...")
-    # ctx.logger.debug(f"Prompt para LLM (simulação):\\n{final_prompt[:500]}...") # Log inicial do prompt
-
-    # 6. Call LLM and Accumulate Response
+    # 4. Call LLM to Simulate Reflection
+    simulated_reflection = ""
     try:
-        logger.info("Calling LLM to simulate decision reflection (streaming)...")
-        simulated_reflection_content = ""
-        llm_start_time = time.time()
-        # Removed debug prints
+        logger.info("Calling LLM to simulate decision reflection...")
+        # Updated call site
+        async for chunk in llm_interface.call_llm( # <-- USE INSTANCE METHOD
+            messages=messages, 
+            stream=True # Stream the reflection
+        ):
+            simulated_reflection += chunk
+
+        if not simulated_reflection or not simulated_reflection.strip():
+            logger.warning("LLM simulation returned an empty reflection.")
+            return {"status": "error", "message": "LLM returned empty reflection."}
+        
+        # Check for LLM error string
+        if simulated_reflection.startswith("[LLM Error:"):
+             logger.error(f"LLM call failed during reflection simulation: {simulated_reflection}")
+             return {"status": "error", "message": simulated_reflection}
+
+        logger.info("Successfully simulated decision reflection.")
+        logger.debug(f"Simulated Reflection: {simulated_reflection}")
+
+        # 5. Log the interaction (Optional but recommended)
         try:
-            # <<< Use call_llm directly >>>
-            # We assume the LLM will follow the prompt and provide the full reflection.
-            # Stream=True is used, but we accumulate the result.
-            async for chunk in call_llm(messages=[{"role": "user", "content": final_prompt}], stream=True, timeout=180): # Increased timeout
-                simulated_reflection_content += chunk
-
-            # Check if the response is empty after streaming
-            if not simulated_reflection_content or not simulated_reflection_content.strip():
-                ctx.logger.error("LLM returned an empty simulation response.")
-                raise ValueError("LLM returned empty response")
-            # Check for explicit error markers that might come from call_llm or its handling
-            if simulated_reflection_content.startswith("[LLM Call Error:"):
-                ctx.logger.error(f"LLM call failed: {simulated_reflection_content}")
-                raise ValueError(simulated_reflection_content) # Propagate error
-
-            llm_duration = time.time() - llm_start_time
-            logger.info(f"LLM simulation finished. Total length: {len(simulated_reflection_content)}. Duration: {llm_duration:.3f}s")
-        except Exception as e:
-            logger.exception("Error during LLM call or processing:")
-            return {"error": f"Erro ao chamar LLM ou processar resposta: {e}"}
-
-        logger.info(f"LLM simulation finished. Total length: {len(simulated_reflection_content)}")
-
-        # Log the result
-        log_entry = {
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "input": decision_context,
-            "simulation": simulated_reflection_content.strip(),
-            "model": LLAMA_MODEL_PATH, # Log which model was used
-            "retrieved_indices": retrieved_faiss_indices.tolist() if retrieved_faiss_indices is not None else [],
-            "examples_used_count": len(examples_for_prompt)
-        }
-        try:
+            log_entry = {
+                "timestamp": datetime.datetime.utcnow().isoformat() + 'Z',
+                "skill": "simulate_decision_reflection",
+                "decision_context": decision_context,
+                "chosen_action": chosen_action,
+                "alternative_actions": alternative_actions,
+                "memory_examples_used": relevant_examples, # Log the examples used
+                "simulated_reflection": simulated_reflection.strip()
+            }
             os.makedirs(LOG_DIR, exist_ok=True)
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-            logger.debug(f"Decision reflection log saved to {LOG_FILE}")
-            logger.info(f"[DIAGNÓSTICO] Tentativa de escrita do log concluída para: {LOG_FILE}")
+            logger.info(f"Logged decision reflection interaction to {LOG_FILE}")
         except Exception as log_e:
-            logger.error(f"Failed to write decision reflection log to {LOG_FILE}: {log_e}", exc_info=True)
+            logger.error(f"Failed to log decision reflection: {log_e}")
 
-        return {"simulated_reflection": simulated_reflection_content.strip()}
+        return {"status": "success", "simulated_reflection": simulated_reflection.strip()}
 
-    except Exception as e: # Catch potential errors during the overall process
-        logger.error(f"Unexpected error during simulate_decision_reflection: {e}", exc_info=True)
-        return {"error": f"Unexpected error during simulation: {e}"}
+    except Exception as e:
+        logger.exception("Error during LLM call for reflection simulation:")
+        return {"status": "error", "message": f"LLM call failed: {e}"}
 
 # Example usage block removed for clarity in production code

@@ -9,7 +9,8 @@ from a3x.core.skills import skill
 from a3x.core.prompt_builder import (
     build_planning_prompt,
 )  # Assuming this exists or will be created
-from a3x.core.llm_interface import call_llm
+from a3x.core.llm_interface import LLMInterface # <-- IMPORT CLASS
+from a3x.core.agent import _ToolExecutionContext # Import context type for hinting
 
 # from core.skills_utils import create_skill_response
 
@@ -59,28 +60,36 @@ planner_logger = logging.getLogger(__name__)
     parameters={
         "objective": (str, ...),  # The main user objective
         "available_tools": (str, ...),  # Descriptions of tools the agent can use
-        "context": (dict, {}),  # Optional context from memory or perception
+        # context is implicitly passed by the agent/tool executor
     },
 )
 async def hierarchical_planner(
-    objective: str, available_tools: str, context: Optional[Dict] = None
+    objective: str, 
+    available_tools: str, 
+    ctx: _ToolExecutionContext # <-- Accept the context object directly
 ) -> Dict[str, Any]:
     """
     Generates a multi-step plan (list of strings) to achieve the given objective.
+    Uses the LLMInterface provided in the execution context.
     Considers learned heuristics (success and failure) from the context.
     Returns a dictionary: {'status': 'success', 'data': {'plan': [...]}} on success,
     or {'status': 'error', 'data': {'message': '...'}} on failure.
     """
     planner_logger.info(f"Generating plan for objective: '{objective[:100]}...'")
-    context = context or {} # Ensure context is a dict
-    if context:
-        planner_logger.debug(f"Planning context keys: {list(context.keys())}")
+    # Access components directly from ctx
+    llm_interface = ctx.llm_interface 
+    memory_context = ctx.memory.get_memory() # Example: get memory if needed
+    
+    if not llm_interface:
+        planner_logger.error("LLMInterface not found in execution context.")
+        return {"status": "error", "data": {"message": "Internal error: LLMInterface missing."}}
 
-    # --- MODIFIED: Extract Heuristics AND Generalized Rules --- 
+    # --- Extract Heuristics from Memory Context --- 
     learned_heuristics_prompt_section = ""
-    success_heuristics_text = context.get("learned_success_heuristics")
-    failure_heuristics_text = context.get("learned_failure_heuristics")
-    generalized_rules_text = context.get("learned_generalized_rules")
+    # Assuming heuristics are stored in the main memory accessible via ctx.memory
+    success_heuristics_text = memory_context.get("learned_success_heuristics")
+    failure_heuristics_text = memory_context.get("learned_failure_heuristics")
+    generalized_rules_text = memory_context.get("learned_generalized_rules")
 
     # Format Generalized Rules Section
     if generalized_rules_text:
@@ -95,49 +104,44 @@ async def hierarchical_planner(
     if failure_heuristics_text:
         learned_heuristics_prompt_section += f"\n\n## Avisos (Falhas Passadas Recentes)\n{failure_heuristics_text}"
         planner_logger.info("Adding learned failure heuristics section to planner prompt.")
-    # --- END MODIFIED SECTION ---
+    # --- END Formatting ---
 
-    # TODO: Load a potentially more specific system prompt for the planner if needed
     planner_system_prompt = DEFAULT_PLANNER_SYSTEM_PROMPT
 
-    # Build the prompt for the planning phase - inject rules & heuristics
     prompt_messages = build_planning_prompt(
         objective,
         available_tools,
-        planner_system_prompt + learned_heuristics_prompt_section, # Append combined section
-        # context=context # Pass other context elements if build_planning_prompt accepts them
+        planner_system_prompt + learned_heuristics_prompt_section,
     )
 
     plan_json_str = ""
     plan_list = []
     try:
         plan_json_str = ""
-        llm_url = getattr(context.get('ctx'), 'llm_url', None) # Try to get from ctx if passed
-        async for chunk in call_llm(prompt_messages, llm_url=llm_url, stream=False):
+        # --- CORRECTED CALL --- Use llm_interface from context
+        async for chunk in llm_interface.call_llm(messages=prompt_messages, stream=False):
             plan_json_str += chunk
+        # --- END CORRECTION ---
         
-        planner_logger.debug(f"Planner LLM raw response: {plan_json_str[:500]}...") # Log start of response
-        parsed_plan = parse_llm_json_output(plan_json_str, expected_keys=["plan"], logger=planner_logger)
-
-        if parsed_plan and "plan" in parsed_plan:
-            plan_list = parsed_plan["plan"]
-            if isinstance(plan_list, list):
-                 # Basic validation: ensure it's a list of strings
-                if all(isinstance(step, str) for step in plan_list):
-                    planner_logger.info(f"Plan generated successfully with {len(plan_list)} steps.")
-                    return {"status": "success", "data": {"plan": plan_list}}
-                else:
-                    planner_logger.error("Planner LLM returned 'plan' but it contains non-string elements.")
-                    return {"status": "error", "data": {"message": "Plan generation failed: plan list contains invalid elements."}}
+        planner_logger.debug(f"Planner LLM raw response: {plan_json_str[:500]}...")
+        
+        # --- Parsing Logic (simplified example, use robust parsing like agent.py) ---
+        try:
+            # Attempt to find and parse JSON list directly
+            plan_list = json.loads(plan_json_str)
+            if isinstance(plan_list, list) and all(isinstance(step, str) for step in plan_list):
+                 planner_logger.info(f"Plan generated successfully with {len(plan_list)} steps.")
+                 return {"status": "success", "data": {"plan": plan_list}}
             else:
-                planner_logger.error("Planner LLM returned 'plan' but it's not a list.")
-                return {"status": "error", "data": {"message": "Plan generation failed: invalid plan format."}}
-        else:
-            planner_logger.error(f"Planner LLM response did not contain a valid 'plan' key after parsing. Raw: {plan_json_str[:200]}")
-            return {"status": "error", "data": {"message": "Plan generation failed: Could not parse plan from LLM response."}}
+                 raise ValueError("Parsed JSON is not a list of strings")
+        except (json.JSONDecodeError, ValueError) as parse_err:
+            planner_logger.error(f"Could not parse plan from LLM response: {parse_err}. Raw: {plan_json_str[:200]}")
+            # Potentially try regex extraction here as a fallback if needed
+            return {"status": "error", "data": {"message": f"Plan generation failed: Could not parse plan from LLM response: {parse_err}"}}
+        # --- End Parsing --- 
 
     except Exception as e:
-        planner_logger.exception(f"Error during planning LLM call or parsing: {e}")
+        planner_logger.exception(f"Error during planning LLM call: {e}")
         return {"status": "error", "data": {"message": f"Exception during planning: {e}"}}
 
 
