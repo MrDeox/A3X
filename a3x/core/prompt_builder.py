@@ -1,6 +1,75 @@
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
+# <<< MOVED and RENAMED from agent.py >>>
+DEFAULT_WORKER_SYSTEM_PROMPT = """
+You are an evolving AI agent designed to achieve user objectives through reasoning, action, and continuous learning. Your primary goal is to solve tasks effectively while improving your capabilities with each interaction.
+
+**IMPORTANT: You MUST ALWAYS respond using the strict ReAct format below, for EVERY step. NO other text outside this format is allowed.**
+
+Strictly follow this format in ALL your responses:
+
+Thought: [Briefly explain your reasoning, plan for the *single* next action, and how it contributes to solving the task.]
+Action: [The *exact name* of ONE skill from the provided list, e.g., read_file. DO NOT write sentences or descriptions here.]
+Action Input: [Parameters for the skill in valid JSON format, e.g., {"path": "data/users.json"}]
+
+Example:
+Thought: I need to read the JSON file specified in the user objective to access the user data.
+Action: read_file
+Action Input: {"path": "data/users.json"}
+
+**CRITICAL RULES:**
+1.  **Action Field:** The `Action:` field MUST contain ONLY the exact name of ONE skill from the list below. No extra words, descriptions, or sentences.
+2.  **Action Input Field:** The `Action Input:` field MUST be a valid JSON object containing the parameters for the chosen skill.
+3.  **No Code Blocks:** DO NOT generate code blocks (like ```python ... ```) anywhere in your response. Only provide the skill name and JSON input.
+4.  **One Step at a Time:** Focus on the immediate next step in your thought and action.
+
+If you have completed the objective, respond ONLY with:
+Final Answer: [Your final summary or result.]
+
+**Do NOT use any other format. Do NOT output explanations, markdown, or code blocks outside the required fields.**
+
+Available Skills (use ONLY these exact names for Action):
+{tool_descriptions}
+
+Previous conversation history:
+{history}
+
+User Objective for this step: {input}
+
+**Focus on executing one valid action at a time based on your thought process.**
+"""
+
+# <<< MOVED from agent.py >>>
+DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT = """
+You are the A3X Orchestrator. Your role is to analyze the user's overall objective and the conversation history, then delegate the *next single step* to the most appropriate specialized component: either a Manager (for coordination) or a direct Executor Fragment.
+
+You must choose one component from the available list and define a clear, concise sub-task for it.
+
+Available Components (Workers):
+{fragment_descriptions}
+# Note: Descriptions now include (Category: Management/Execution) and Managed/Skills info.
+
+Choose a component based on the task requirements:
+- If the task requires coordination of multiple low-level actions within a specific domain (e.g., file operations, code operations), choose the appropriate **Manager** (Category: Management).
+- If the task is self-contained or represents the final step, choose a direct **Executor** Fragment (Category: Execution, e.g., FinalAnswerProvider, Planner).
+
+Respond ONLY with a JSON object containing two keys: 'component' (the name of the chosen Manager or Fragment) and 'sub_task' (the specific instruction for that component).
+
+Example (File Operation Task):
+{{
+  "component": "FileOpsManager",
+  "sub_task": "Read the content of the file 'config.yaml'"
+}}
+
+Example (Final Step Task):
+{{
+  "component": "FinalAnswerProvider",
+  "sub_task": "Inform the user that the file has been successfully updated."
+}}
+
+Do not attempt to perform the task yourself. Only delegate.
+"""
 
 def build_react_prompt(
     objective: str,
@@ -127,3 +196,58 @@ Histórico:
 Responda agora de forma direta e informativa, como um assistente humano finalizando a tarefa.""",
         },
     ]
+
+# <<< NEW FUNCTION: Build Orchestrator Prompt >>>
+def build_orchestrator_messages(
+    objective: str,
+    history: List[Tuple[str, str]], # Expecting agent's history format
+    fragment_descriptions: str
+) -> List[Dict[str, str]]:
+    """Builds the list of messages for the Orchestrator LLM call."""
+    # Format history simply for now (can be improved)
+    # Assuming history is List[Tuple[action_str, observation_dict]]
+    formatted_history = "\n".join([f"{action}: {obs}" for action, obs in history])
+
+    system_prompt = DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT.format(
+        fragment_descriptions=fragment_descriptions
+    )
+
+    # Construct messages list
+    messages = [
+        {"role": "system", "content": system_prompt},
+        # Add history if any
+        *([{"role": "assistant", "content": f"Previous conversation history:\n{formatted_history}"}] if formatted_history else []),
+        {"role": "user", "content": f"Overall Objective: {objective}"}
+    ]
+    return messages
+
+# <<< NEW FUNCTION: Build Worker Prompt (based on old agent._build_worker_prompt) >>>
+def build_worker_messages(
+    sub_task: str,
+    history: List[Tuple[str, str]], # Expecting fragment's internal history format
+    allowed_skills: List[str],
+    all_tools: Dict # The full tool registry to get descriptions
+) -> List[Dict[str, str]]:
+    """Builds the messages list for a worker fragment's ReAct cycle."""
+    # Generate tool description string ONLY for allowed skills
+    tool_desc_parts = []
+    for skill_name in allowed_skills:
+        skill_func = all_tools.get(skill_name)
+        if skill_func and hasattr(skill_func, 'description'):
+            tool_desc_parts.append(f"- {skill_name}: {getattr(skill_func, 'description', 'No description')}")
+    tool_descriptions = "\n".join(tool_desc_parts) if tool_desc_parts else "No skills available for this fragment."
+
+    # Format history (same as orchestrator for now)
+    formatted_history = "\n".join([f"{action}: {obs}" for action, obs in history])
+
+    system_content = DEFAULT_WORKER_SYSTEM_PROMPT.format(
+        tool_descriptions=tool_descriptions, # Use filtered descriptions
+        history=formatted_history,
+        input=sub_task # Pass sub_task as 'input' here for ReAct
+    )
+
+    messages = [
+        {"role": "system", "content": system_content},
+        # Worker prompts often just need the system prompt containing the task (input) and history
+    ]
+    return messages

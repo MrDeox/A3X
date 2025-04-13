@@ -1,14 +1,19 @@
 # --- INÍCIO DO CÓDIGO PARA COPIAR ---
 import subprocess
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from a3x.core.skills import skill  # <<< Update import
 from a3x.core.db_utils import add_episodic_record # <<< Corrected import name
 from a3x.core.context import Context # Added import
+from a3x.core.context import SharedTaskContext
+from a3x.core.context_accessor import ContextAccessor
+from a3x.core.code_safety import is_safe_ast
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
+# Initialize a ContextAccessor instance for use in skills
+_context_accessor = ContextAccessor()
 
 # Renamed function, added decorator, and updated signature
 @skill(
@@ -18,7 +23,8 @@ logger = logging.getLogger(__name__)
         "context": {"type": Context, "description": "The execution context provided by the agent."},
         "code": {"type": str, "description": "The code snippet to execute."},
         "language": {"type": Optional[str], "default": "python", "description": "The programming language of the snippet (default: python)."},
-        "timeout": {"type": Optional[int], "default": 60, "description": "Maximum execution time in seconds (default: 60)."}
+        "timeout": {"type": Optional[int], "default": 60, "description": "Maximum execution time in seconds (default: 60)."},
+        "shared_task_context": {"type": "SharedTaskContext", "description": "The shared context for accessing task-related data.", "optional": True}
     }
 )
 def execute_code(
@@ -26,16 +32,19 @@ def execute_code(
     code: str,
     language: str = "python",
     timeout: int = 60,
+    shared_task_context: Optional[SharedTaskContext] = None
 ) -> dict:
     """
     Executa um bloco de código Python em um sandbox Firejail.
     Realiza uma análise AST básica para segurança antes da execução.
+    Pode usar o `shared_task_context` para resolver placeholders como `$LAST_READ_FILE`.
 
     Args:
         context (SkillContext): The execution context provided by the agent.
         code (str): The Python code to execute.
         language (str, optional): The programming language (must be 'python'). Defaults to "python".
         timeout (float, optional): Maximum execution time in seconds. Defaults to ... (implicit default).
+        shared_task_context (SharedTaskContext, optional): The shared context for the current task.
 
     Returns:
         dict: Standardized dictionary with the result of the execution.
@@ -49,9 +58,38 @@ def execute_code(
 
     language = language.lower()  # Ensure lowercase for comparison
     code_to_execute = code  # Use the direct argument
+    
+    # --- ADDED: Resolve placeholders using SharedTaskContext --- 
+    resolved_successfully = True
+    if shared_task_context:
+        placeholders = {
+            "$LAST_READ_FILE": "last_file_read_path",
+            # Add more placeholders as needed
+        }
+        for placeholder, context_key in placeholders.items():
+            if placeholder in code_to_execute:
+                resolved_value = shared_task_context.get(context_key)
+                if resolved_value:
+                    # Simple string replacement - might need more robust templating later
+                    logger.info(f"Resolving placeholder '{placeholder}' with value from context key '{context_key}'.")
+                    code_to_execute = code_to_execute.replace(placeholder, str(resolved_value))
+                else:
+                    logger.warning(f"Placeholder '{placeholder}' found, but key '{context_key}' not found in shared context.")
+                    # Decide how to handle: error out or execute with placeholder?
+                    # For now, let's error out to be safe.
+                    resolved_successfully = False
+                    return {
+                        "status": "error",
+                        "action": "execution_failed_placeholder_unresolved",
+                        "data": {"message": f"Could not resolve placeholder '{placeholder}' from shared context key '{context_key}'."}
+                    }
+    if not resolved_successfully:
+        # This return should ideally not be reachable due to the return inside the loop, but safeguard.
+        return { "status": "error", "action": "execution_failed_placeholder", "data": {"message": "Failed to resolve one or more placeholders from shared context."} }
+    # --- END ADDED --- 
 
     # Validate timeout value (must be positive)
-    timeout_sec = ...  # Default value
+    timeout_sec = 60  # Explicit default
     try:
         if timeout is not None:
             parsed_timeout = float(timeout)
@@ -59,21 +97,21 @@ def execute_code(
                 timeout_sec = parsed_timeout
             else:
                 logger.warning(
-                    f"Provided timeout ({timeout}) is not positive. Using default: {...}s"
+                    f"Provided timeout ({timeout}) is not positive. Using default: {timeout_sec}s"
                 )
-        # If timeout is None, the default ... is already set
+        # If timeout is None, the default timeout_sec is already set
     except (ValueError, TypeError):
         logger.warning(
-            f"Invalid timeout type provided: {type(timeout)}. Using default: {...}s"
+            f"Invalid timeout type provided: {type(timeout)}. Using default: {timeout_sec}s"
         )
-        # Default ... is already set
+        # Default timeout_sec is already set
 
     # Validate supported language
     if language != "python":
         logger.error(f"Unsupported language specified: '{language}'")
         return {
             "status": "error",
-            "action": "execution_failed",
+            "action": "execution_failed_language",
             "data": {
                 "message": f"Language not supported: '{language}'. Only 'python' is currently supported."
             },
@@ -83,7 +121,7 @@ def execute_code(
     code_preview = code_to_execute[:100] + ("..." if len(code_to_execute) > 100 else "")
     logger.debug(f"Code Preview:\n---\n{code_preview}\n---")
 
-    # --- Safety Check (AST) ---
+    # --- Safety Check using refined AST from core.code_safety ---
     is_safe, safety_message = is_safe_ast(code_to_execute)
     if not is_safe:
         logger.warning(f"Execution blocked by AST analysis: {safety_message}")
@@ -116,13 +154,16 @@ def execute_code(
             "--noprofile",  # Sandbox básico sem perfil específico
             "--net=none",  # Desabilitar rede
             "--private",  # Diretório home privado, tmpfs /tmp
+            "--seccomp",  # Habilitar filtro seccomp padrão
+            "--nonewprivs", # Impedir ganho de novos privilégios
+            "--noroot",     # Impedir ganho de privilégios root no sandbox
             "python3",  # Interpretador
             "-c",  # Executar código da string
             code_to_execute,  # O código em si
         ]
 
         logger.debug(
-            f"Executando comando: {' '.join(firejail_command[:6])} python3 -c '...'"
+            f"Executando comando: {' '.join(firejail_command[:8])} python3 -c '...'" # Ajustar log
         )  # Log truncado
 
         # Executar com subprocess.run
@@ -237,6 +278,22 @@ def execute_code(
             "action": "execution_failed",
             "data": {"message": f"Erro inesperado ao tentar executar código: {e}"},
         }
+
+    # Update context with execution results using ContextAccessor
+    result_payload = {
+        "status": "success" if exit_code == 0 else "error",
+        "action": "code_executed",
+        "data": {
+            "stdout": stdout_result,
+            "stderr": stderr_result,
+            "returncode": exit_code,
+            "message": "Código executado com sucesso." if exit_code == 0 else f"Falha na execução do código: {error_cause}. Stderr: {stderr_result[:200]}...",
+        },
+    }
+    _context_accessor.set_last_execution_result(result_payload)
+    logger.info(f"Updated context with last execution result")
+
+    return result_payload
 
 
 # --- FIM DO CÓDIGO PARA COPIAR ---
