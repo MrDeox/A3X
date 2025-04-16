@@ -26,50 +26,75 @@ def setup_logging(log_level_str: str = "INFO", log_file_path: Optional[str] = No
         numeric_level = logging.INFO
 
     # --- Configure Root Logger (Console and General File) ---
-    # Remove existing handlers to avoid duplication if setup is called again
     root_logger = logging.getLogger()
+    # Try removing existing handlers FIRST
     for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-        handler.close()
+        try:
+            handler.close() # Close before removing
+            root_logger.removeHandler(handler)
+        except Exception as e:
+             # Log potential error during handler removal (might not be visible)
+             print(f"[Logging Setup Error] Failed to remove/close handler: {e}")
 
     # Basic config sets up console handler by default
-    logging.basicConfig(level=numeric_level, format=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
-    root_logger.setLevel(numeric_level) # Ensure root logger level is set
+    # <<< Wrap basicConfig >>>
+    try:
+        logging.basicConfig(level=numeric_level, format=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+        root_logger.setLevel(numeric_level)
+    except Exception as e:
+        print(f"[Logging Setup CRITICAL] logging.basicConfig failed: {e}")
+        import sys
+        sys.exit(f"CRITICAL Error during basicConfig: {e}")
 
-    # --- General File Handler (Using provided path or default) ---
+    # --- General File Handler ---
     if log_file_path is None:
         log_file_path = Path(os.getcwd()) / "logs" / "a3x_cli.log"
     else:
         log_file_path = Path(log_file_path)
 
-    # Create log directory if it doesn't exist
-    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    # <<< Wrap mkdir >>>
+    try:
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"[Logging Setup CRITICAL] Failed to create log directory {log_file_path.parent}: {e}")
+        import sys
+        sys.exit(f"CRITICAL Error creating log directory: {e}")
 
-    # Create and add the general file handler
-    general_formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
-    general_file_handler = logging.FileHandler(log_file_path, mode='a') # Append mode
-    general_file_handler.setFormatter(general_formatter)
-    general_file_handler.setLevel(numeric_level) # Use the same level as console
-    root_logger.addHandler(general_file_handler)
+    # <<< Wrap FileHandler >>>
+    try:
+        general_formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+        general_file_handler = logging.FileHandler(log_file_path, mode='a')
+        general_file_handler.setFormatter(general_formatter)
+        general_file_handler.setLevel(numeric_level)
+        root_logger.addHandler(general_file_handler)
+    except Exception as e:
+        print(f"[Logging Setup CRITICAL] Failed to create/add general file handler for {log_file_path}: {e}")
+        import sys
+        sys.exit(f"CRITICAL Error creating file handler: {e}")
 
-    # --- Specific Server Log File Handler (Keep as is) ---
-    # Configure file handler specifically for server logs
-    # Ensure server log directory exists too
+    # --- Specific Server Log File Handler ---
     server_log_path = Path(SERVER_LOG_FILE)
-    server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    # <<< Wrap mkdir >>>
+    try:
+        server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"[Logging Setup CRITICAL] Failed to create server log directory {server_log_path.parent}: {e}")
+        import sys
+        sys.exit(f"CRITICAL Error creating server log directory: {e}")
 
-    server_formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
-    server_handler = logging.FileHandler(SERVER_LOG_FILE, mode='a') # Append mode
-    server_handler.setFormatter(server_formatter)
-    # Server log level can be independent if needed, keeping INFO for now
-    server_handler.setLevel(logging.INFO)
+    # <<< Wrap FileHandler >>>
+    try:
+        server_formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+        server_handler = logging.FileHandler(SERVER_LOG_FILE, mode='a')
+        server_handler.setFormatter(server_formatter)
+        server_handler.setLevel(logging.INFO) # Or numeric_level
+        root_logger.addHandler(server_handler)
+    except Exception as e:
+        print(f"[Logging Setup CRITICAL] Failed to create/add server file handler for {SERVER_LOG_FILE}: {e}")
+        import sys
+        sys.exit(f"CRITICAL Error creating server file handler: {e}")
 
-    # Assign this handler to a specific logger (or root if necessary)
-    # Let's keep it separate by assigning to 'A3XServerManager' or similar if used,
-    # or just add to root for now if server components log directly.
-    # For simplicity/capture-all, adding to root. Can refine later.
-    root_logger.addHandler(server_handler)
-
+    # If we reach here, configuration *should* have worked.
     logging.info(f"Logging configured. Level: {log_level_upper}. General Log: {log_file_path}. Server Log: {SERVER_LOG_FILE}")
 
 # <<< Call setup_logging() directly upon import? Or rely on CLI calling it? >>>

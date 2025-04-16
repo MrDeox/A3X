@@ -2,6 +2,8 @@
 import logging
 import pkgutil
 import importlib
+import time
+# No longer need atexit import here unless used elsewhere
 
 logger = logging.getLogger(__name__)
 
@@ -22,76 +24,119 @@ SKIPPED_MODULES = {
     # "web_search", # Restore - let's see if it crashes first
 }
 
-# Restore automatic discovery
-for loader, module_name, is_pkg in pkgutil.walk_packages(__path__):
-    # Ignore modules starting with _, those being consolidated, or modules within the core directory
-    if not module_name.startswith("_") and module_name not in SKIPPED_MODULES and not module_name.startswith("core."):
-        logger.info(f"---> Attempting to import skill module: {module_name} (is_pkg={is_pkg})") # Log BEFORE
+# Keep existing skill registration logic here
+# ... (skill_registry, SkillInfo, etc.) ...
+_skill_registry = {}
+
+class SkillInfo:
+    # ... (existing SkillInfo class) ...
+    pass
+
+def skill(name=None, description=None, parameters=None, examples=None):
+    # ... (existing skill decorator) ...
+    pass
+
+def get_skill(name):
+    # ... (existing get_skill function) ...
+    pass
+
+def list_skills():
+    # ... (existing list_skills function) ...
+    pass
+
+def load_skills(reload=False):
+    global _skill_registry
+    if reload:
+        _skill_registry = {} # Clear registry on reload
+
+    print("*** DEBUG: Entering walk_packages loop in skills/__init__.py ***", flush=True)
+    time.sleep(0.01) # Reduced sleep
+    for _, name, is_pkg in pkgutil.walk_packages(__path__, prefix=__name__ + '.'):
+        # Skip __init__ modules themselves if necessary, though walk_packages usually handles this
+        if name.endswith('.__init__'):
+            continue
+
+        relative_name = name.split('.')[-1]
+        print(f"*** DEBUG: walk_packages found: {relative_name} (is_pkg={is_pkg}) ***", flush=True)
+        # time.sleep(0.01) # Reduced sleep
+        logger.info(f"---> Attempting to import skill module: {relative_name} (is_pkg={is_pkg})")
         try:
-            _module = importlib.import_module(f"{__package__}.{module_name}")
-            # Optionally, add module names to __all__ if needed
-            # __all__.append(module_name)
-            logger.info(f"---> Successfully imported skill module: {module_name}") # Log AFTER success
-            # logger.debug(f"Successfully imported skill module: {module_name}") # Original debug log
+            print(f"*** DEBUG: --- Importing: {name} ---", flush=True)
+            # time.sleep(0.01) # Reduced sleep
+            module = importlib.import_module(name)
+            print(f"*** DEBUG: +++ Imported: {name} +++", flush=True)
+            # time.sleep(0.01) # Reduced sleep
+            logger.info(f"---> Successfully imported skill module: {relative_name}")
+            # Optional: Reload nested skills if the module supports it
+            # if reload and hasattr(module, 'load_skills'):
+            #     module.load_skills(reload=True)
         except Exception as e:
-            logger.error(
-                f"---> Failed to import skill module '{module_name}': {e}", exc_info=True # Log Exception
-            )
+            logger.error(f"Failed to import skill module {name}: {e}", exc_info=True)
+            print(f"*** ERROR: Failed to import {name}: {e} ***", flush=True) # Add error print
+        # time.sleep(0.01) # Reduced sleep
 
-# Optional: Log the final list of discovered modules if needed
-logger.debug(f"Skills package initialized. Autodiscovered modules (via walk_packages).")
+    print("*** DEBUG: Exited walk_packages loop in skills/__init__.py ***", flush=True)
+    time.sleep(0.01) # Reduced sleep
 
-# Explicitly import the consolidated module to ensure its class is instantiated
-# and its @skill methods are registered.
-try:
-    importlib.import_module(".file_manager", __package__)
-    logger.debug("Explicitly imported consolidated file_manager skill module.")
-except Exception as e:
-    logger.error(
-        f"Failed to explicitly import consolidated skill module 'file_manager': {e}",
-        exc_info=True,
-    )
+    # Removed atexit check here
 
-# Explicitly import the simulate sub-package to ensure its skills are registered.
-try:
-    importlib.import_module(".simulate", __package__)
-    logger.debug("Explicitly imported simulate skill sub-package.")
-except Exception as e:
-    logger.error(
-        f"Failed to explicitly import skill sub-package 'simulate': {e}",
-        exc_info=True,
-    )
+    print("*** DEBUG: Passed walk_packages. About to try importing .file_manager ***", flush=True)
+    time.sleep(0.01) # Reduced sleep
 
-# Explicitly import the monetization sub-package to ensure its skills are registered.
-try:
-    importlib.import_module(".monetization", __package__)
-    logger.debug("Explicitly imported monetization skill sub-package.")
-except Exception as e:
-    logger.error(
-        f"Failed to explicitly import skill sub-package 'monetization': {e}",
-        exc_info=True,
-    )
+    # Explicitly import specific modules after dynamic loading
+    try:
+        print("*** DEBUG: --> Trying explicit import: .file_manager", flush=True)
+        from . import file_manager
+        logger.info("Imported file_manager skill.")
+        print("*** DEBUG: <-- Finished explicit import: .file_manager", flush=True)
+    except ImportError as e:
+        logger.warning(f"Could not import file_manager skill: {e}")
+        print(f"*** WARNING: Could not import .file_manager: {e}", flush=True)
+    except Exception as e:
+        logger.error(f"Error importing file_manager skill: {e}", exc_info=True)
+        print(f"*** ERROR: Could not import .file_manager: {e}", flush=True)
 
-# Remove the explicit import block for perception
-# logger.info("Attempting explicit import of .perception...") # Log BEFORE trying
-# try:
-#     importlib.import_module(".perception", __package__)
-#     logger.debug("Explicitly imported perception skill sub-package.") # Log AFTER success
-# except Exception as e:
-#     logger.error(
-#         f"Failed to explicitly import skill sub-package 'perception': {e}",
-#         exc_info=True,
-#     )
+    try:
+        print("*** DEBUG: --> Trying explicit import: .simulate", flush=True)
+        from . import simulate # Assuming simulate is a package
+        logger.info("Imported simulate package.")
+        print("*** DEBUG: <-- Finished explicit import: .simulate", flush=True)
+    except ImportError as e:
+        logger.warning(f"Could not import simulate package: {e}")
+        print(f"*** WARNING: Could not import .simulate: {e}", flush=True)
+    except Exception as e:
+        logger.error(f"Error importing simulate package: {e}", exc_info=True)
+        print(f"*** ERROR: Could not import .simulate: {e}", flush=True)
 
-# Explicitly import the auto_generated sub-package to ensure its skills are registered.
-try:
-    importlib.import_module(".auto_generated", __package__)
-    logger.debug("Explicitly imported auto_generated skill sub-package.")
-except ModuleNotFoundError:
-    # Expected if the directory doesn't exist or has no __init__.py yet
-    logger.debug("Sub-package 'auto_generated' not found or not yet initialized, skipping import.")
-except Exception as e:
-    logger.error(
-        f"Failed to explicitly import skill sub-package 'auto_generated': {e}",
-        exc_info=True,
-    )
+    try:
+        print("*** DEBUG: --> Trying explicit import: .monetization", flush=True)
+        from . import monetization # Assuming monetization is a package
+        logger.info("Imported monetization package.")
+        print("*** DEBUG: <-- Finished explicit import: .monetization", flush=True)
+    except ImportError as e:
+        logger.warning(f"Could not import monetization package: {e}")
+        print(f"*** WARNING: Could not import .monetization: {e}", flush=True)
+    except Exception as e:
+        logger.error(f"Error importing monetization package: {e}", exc_info=True)
+        print(f"*** ERROR: Could not import .monetization: {e}", flush=True)
+
+    try:
+        print("*** DEBUG: --> Trying explicit import: .learning", flush=True)
+        from . import learning # Assuming learning is a package
+        logger.info("Imported learning package.")
+        print("*** DEBUG: <-- Finished explicit import: .learning", flush=True)
+    except ImportError as e:
+        logger.warning(f"Could not import learning package: {e}")
+        print(f"*** WARNING: Could not import .learning: {e}", flush=True)
+    except Exception as e:
+        logger.error(f"Error importing learning package: {e}", exc_info=True)
+        print(f"*** ERROR: Could not import .learning: {e}", flush=True)
+
+    print("*** DEBUG: Finished explicit imports in skills/__init__.py ***", flush=True)
+    logger.info("Skills package initialized.")
+
+
+# Initial load when the package is imported
+print("*** DEBUG: Starting initial load_skills() call in skills/__init__.py ***", flush=True)
+load_skills()
+print("*** DEBUG: Finished initial load_skills() call in skills/__init__.py ***", flush=True)

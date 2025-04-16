@@ -4,7 +4,7 @@ import inspect
 import os
 import sys
 import time
-from typing import Dict, Any, Optional, Callable, List, Tuple, Awaitable, Coroutine
+from typing import Dict, Any, Optional, Callable, List, Tuple, Awaitable, Coroutine, NamedTuple, Union
 import importlib
 import pkgutil
 from pathlib import Path
@@ -13,289 +13,241 @@ import asyncio
 import re
 import uuid
 from a3x.fragments.registry import FragmentRegistry
-from .context import SharedTaskContext
+from .context import SharedTaskContext, _ToolExecutionContext, FragmentContext
 
 # Import SKILL_REGISTRY and PROJECT_ROOT for instantiation and context
 from a3x.core.skill_management import SKILL_REGISTRY
 from a3x.core.config import PROJECT_ROOT
 
+# --- Import State Update Hooks ---
+from a3x.core.hooks.state_updates import (
+    notify_tool_execution_start,
+    notify_tool_execution_end
+)
+# --- End Hook Imports ---
+
 logger = logging.getLogger(__name__)
-
-# Define a context structure similar to the CLI for consistency
-# We might not need all fields here, but workspace_root and logger are key.
-_ToolExecutionContext = namedtuple("ToolExecutionContext", [
-    "logger", 
-    "workspace_root", 
-    "llm_url", 
-    "tools_dict", 
-    "llm_interface",
-    "fragment_registry",
-    "shared_task_context"
-])
-
 
 # Modified Signature: Accept workspace_root and context elements instead of just logger/memory
 async def execute_tool(
     tool_name: str,
     action_input: Dict[str, Any],
-    tools_dict: dict,
-    context: _ToolExecutionContext
+    tools_dict: 'ToolRegistry', # Expect ToolRegistry type
+    context: Union[_ToolExecutionContext, FragmentContext] # <<< Accept either context type
 ) -> Dict[str, Any]:
     """Executa a ferramenta/skill, medindo tempo e status, e retorna resultado + métricas."""
     log_prefix = "[Tool Executor]"
     ctx_logger = context.logger
+    ctx_logger.info(f"[DEBUG TEST] execute_tool called with tool_name={tool_name}, action_input={action_input}, tools_dict={tools_dict}, context={type(context).__name__}")
     start_time = time.time()
     result_payload: Dict[str, Any] = {}
     skill_status: str = "error"
     skill_message: str = "Execution did not start or failed before completion."
+    # Initialize metrics with default error state
+    metrics = {
+        "duration_seconds": 0.0,
+        "status": "error", 
+        "message": "Tool execution did not proceed past initial validation."
+    }
 
     ctx_logger.info(
         f"{log_prefix} Attempting tool: '{tool_name}', Input: {action_input}"
     )
 
-    # --- Initial Validation (outside main try block) ---
-    if tool_name not in tools_dict:
-        available_tools = list(tools_dict.keys())
-        error_message = (
-            f"Tool '{tool_name}' does not exist. Available: {available_tools}"
-        )
-        result_payload = {"status": "error", "action": "tool_not_found", "data": {"message": error_message}}
-        skill_message = error_message
+    # Check if the tool exists using the appropriate method if tools_dict is a ToolRegistry
+    available_tools = {}
+    if hasattr(tools_dict, 'list_tools') and callable(tools_dict.list_tools):
+        available_tools = tools_dict.list_tools() # Get the dictionary of available tools
+    elif isinstance(tools_dict, dict):
+        available_tools = tools_dict # Assume it's already a dictionary
     else:
-        skill_info = SKILL_REGISTRY.get(tool_name)
-        if not skill_info:
-            error_message = f"Skill '{tool_name}' disappeared from registry."
-            result_payload = {"status": "error", "action": "tool_not_found_in_registry", "data": {"message": error_message}}
+        ctx_logger.error(f"{log_prefix} Invalid tools_dict type: {type(tools_dict)}")
+        result_payload = {"status": "error", "action": "invalid_tool_registry_object", "data": {"message": "Invalid tool registry object provided."}}
+        skill_message = "Invalid tool registry object provided."
+        # Return metrics along with payload
+        metrics["message"] = skill_message
+        return {"result": result_payload, "metrics": metrics}
+
+    if tool_name not in available_tools:
+        error_message = f"Tool '{tool_name}' not found in the registry."
+        ctx_logger.error(f"{log_prefix} {error_message}")
+        result_payload = {"status": "error", "action": "tool_not_found_in_registry", "data": {"message": error_message}}
+        skill_message = error_message
+        # Return metrics along with payload
+        metrics["message"] = skill_message
+        return {"result": result_payload, "metrics": metrics}
+
+    try:
+        # Retrieve the instance and the bound tool method using the updated ToolRegistry
+        tool_instance, tool_method = tools_dict.get_instance_and_tool(tool_name)
+
+        if not tool_method or not callable(tool_method):
+            error_message = f"Tool '{tool_name}' found but is not callable."
+            ctx_logger.error(f"{log_prefix} {error_message}")
+            result_payload = {"status": "error", "action": "tool_not_callable", "data": {"message": error_message}}
             skill_message = error_message
-        elif not skill_info.get("function") or not callable(skill_info["function"]):
-            error_message = f"Skill '{tool_name}' is improperly registered (not callable)."
-            result_payload = {"status": "error", "action": "skill_not_callable", "data": {"message": error_message}}
-            skill_message = error_message
-        else:
-            # Tool name is valid and function exists, proceed with execution logic
+            return result_payload
+
+        # --- MODIFIED: Context Handling --- 
+        if isinstance(context, FragmentContext):
+            # If we received FragmentContext, create _ToolExecutionContext
+            ctx_logger.debug(f"{log_prefix} Received FragmentContext, creating _ToolExecutionContext.")
+            # Need to get allowed_skills from somewhere if needed by _ToolExecutionContext
+            # Placeholder: Get skills from the fragment instance if possible, else None
+            # This assumes context might have a reference to the calling fragment or its skills
+            # For now, setting allowed_skills to None as it's not directly available in FragmentContext
+            # and the original ToolExecutionContext didn't seem to reliably have it populated either.
+            effective_context = _ToolExecutionContext(
+                context.logger,
+                context.workspace_root,
+                context.llm_interface.llm_url, # Assuming llm_interface has llm_url
+                context.tool_registry,
+                context.llm_interface,
+                context.fragment_registry,
+                context.shared_task_context,
+                None, # allowed_skills - Placeholder - where should this come from?
+                tool_instance, # skill_instance - Add the instance
+                context.memory_manager # memory_manager <<< ADDED: Pass memory_manager from FragmentContext >>>
+            )
+        elif isinstance(context, _ToolExecutionContext):
+            # If we already have _ToolExecutionContext, just update skill_instance
+            ctx_logger.debug(f"{log_prefix} Received _ToolExecutionContext, replacing skill_instance.")
             try:
-                ctx_logger.debug(
-                    f"{log_prefix} Tool '{tool_name}' found. Preparing for execution."
-                )
-                func_obj = skill_info["function"]
-                executable_callable: Callable = None
-                instance: Optional[Any] = None
-                result: Dict[str, Any] = None
+                # <<< ALSO ADD memory_manager update if needed? >>>
+                # Assuming _ToolExecutionContext already has memory_manager if created elsewhere
+                effective_context = context._replace(skill_instance=tool_instance)
+            except ValueError as e:
+                 # This should not happen now if check above works, but safety net
+                 ctx_logger.error(f"{log_prefix} Error using _replace on _ToolExecutionContext: {e}. Context: {context}")
+                 raise # Re-raise the error
+        else:
+            # Handle unexpected context type
+            error_message = f"Received unexpected context type: {type(context).__name__}"
+            ctx_logger.error(f"{log_prefix} {error_message}")
+            result_payload = {"status": "error", "action": "invalid_context_type", "data": {"message": error_message}}
+            skill_message = error_message
+            # Need to wrap result here too
+            metrics["message"] = skill_message
+            return {"result": result_payload, "metrics": metrics}
+        # --- END MODIFIED Context Handling ---
 
-                # --- Detect Type and Prepare Callable ---
-                is_method = inspect.isfunction(func_obj) and '.' in func_obj.__qualname__
+        # Check if it's an async function
+        is_async = asyncio.iscoroutinefunction(tool_method)
+        sig = inspect.signature(tool_method)
+        params = sig.parameters # Get parameters from signature
+        
+        # --- REVISED Argument Passing Logic --- 
+        call_kwargs = action_input.copy() # Start with action_input
 
-                if is_method:
-                    ctx_logger.debug(f"{log_prefix} Skill '{tool_name}' detected as a method: {func_obj.__qualname__}")
-                    qname = func_obj.__qualname__
-                    class_name = qname.split('.')[-2]
-                    method_name = func_obj.__name__
+        # Check if the skill expects a 'context' argument
+        if 'context' in params:
+            # >>> Pass the FINAL effective_context <<<
+            call_kwargs['context'] = effective_context 
+            ctx_logger.debug(f"Passing _ToolExecutionContext as 'context' argument to {tool_name}")
+        # Check if the skill *specifically* expects 'ctx' (less common, but support for now)
+        elif 'ctx' in params:
+            # >>> Pass the FINAL effective_context <<<
+            call_kwargs['ctx'] = effective_context 
+            ctx_logger.debug(f"Passing _ToolExecutionContext as 'ctx' argument to {tool_name}")
+        # else: skill expects neither 'context' nor 'ctx'
+        
+        # Remove parameters from call_kwargs that are not in the function signature 
+        # to prevent "unexpected keyword argument" errors for skills that don't 
+        # accept arbitrary **kwargs.
+        final_call_kwargs = {k: v for k, v in call_kwargs.items() if k in params}
+        removed_keys = set(call_kwargs.keys()) - set(final_call_kwargs.keys())
+        if removed_keys:
+            ctx_logger.warning(f"{log_prefix} Removed unexpected arguments for {tool_name}: {removed_keys}")
+        
+        # --- END REVISED Logic --- 
 
-                    module = inspect.getmodule(func_obj)
-                    if not module:
-                        raise RuntimeError(f"Could not determine the module for {qname}")
+        ctx_logger.debug(f"{log_prefix} Preparing to call {'async' if is_async else 'sync'} tool '{tool_name}'. Final Kwargs: {list(final_call_kwargs.keys())}")
 
-                    ctx_logger.debug(f"{log_prefix} Attempting to get class '{class_name}' from module '{module.__name__}'")
-                    SkillClass = getattr(module, class_name)
+        # Execute the tool method
+        try:
+            start_time_exec = time.monotonic()
+            if is_async:
+                ctx_logger.debug(f"{log_prefix} Awaiting async tool '{tool_name}'")
+                # >>> Use final_call_kwargs <<< 
+                result = await tool_method(**final_call_kwargs)
+            else:
+                ctx_logger.debug(f"{log_prefix} Calling sync tool '{tool_name}'")
+                # >>> Use final_call_kwargs <<< 
+                result = tool_method(**final_call_kwargs)
+            
+            end_time_exec = time.monotonic()
+            duration_exec = end_time_exec - start_time_exec
+            ctx_logger.info(f"{log_prefix} Tool '{tool_name}' executed successfully in {duration_exec:.4f}s.")
 
-                    ctx_logger.info(f"{log_prefix} Instantiating class '{class_name}' for skill '{tool_name}'.")
-                    # Inspect the __init__ method of the class
-                    init_sig = inspect.signature(SkillClass.__init__)
-                    init_params = init_sig.parameters
+            # Process result
+            if isinstance(result, dict) and 'status' in result:
+                skill_status = result.get('status', 'unknown')
+                skill_message = result.get('message', 'No message provided.')
+                result_payload = result
+            else:
+                ctx_logger.warning(f"{log_prefix} Tool '{tool_name}' executed but returned an unexpected format: {type(result)}. Wrapping as success.")
+                skill_status = "success"
+                skill_message = "Execution successful, non-standard return format."
+                result_payload = {"status": skill_status, "data": result} # Wrap non-dict results
 
-                    # Prepare arguments for instantiation
-                    init_args = {}
-                    if 'workspace_root' in init_params:
-                        ctx_logger.debug(f"{log_prefix} Passing workspace_root ('{context.workspace_root}') to {class_name}.__init__")
-                        init_args['workspace_root'] = context.workspace_root
-                    # Add other potential context arguments needed by __init__ here
-                    # e.g., if 'logger' in init_params: init_args['logger'] = context.logger
+        except Exception as e:
+            end_time_exec = time.monotonic()
+            duration_exec = end_time_exec - start_time_exec
+            ctx_logger.exception(f"{log_prefix} Error executing tool '{tool_name}': {e}")
+            skill_status = "error"
+            skill_message = f"Execution failed: {str(e)}"
+            result_payload = {"status": skill_status, "message": skill_message}
+            # Ensure metrics reflect the execution duration even on error
+            metrics = {
+                "duration_seconds": duration_exec,
+                "status": skill_status,
+                "message": skill_message[:500]
+            }
+            # Exit the outer try block and go to finally
+            raise # Re-raise the exception to be caught by the outer handler if needed, or just let finally run
 
-                    # Instantiate the class
-                    try:
-                        instance = SkillClass(**init_args)
-                    except TypeError as init_err:
-                        ctx_logger.error(f"{log_prefix} Failed to instantiate '{class_name}' for skill '{tool_name}'. Mismatched __init__ arguments? Error: {init_err}")
-                        result_payload = {"status": "error", "action": f"{tool_name}_instantiation_error", "data": {"message": f"Failed to instantiate skill class: {init_err}"}}
-                        skill_message = f"Failed to instantiate skill class '{class_name}' for '{tool_name}': {init_err}"
-                        raise
-                    except Exception as init_gen_err:
-                         ctx_logger.error(f"{log_prefix} Failed to instantiate '{class_name}' for skill '{tool_name}'. Error during __init__: {init_gen_err}")
-                         result_payload = {"status": "error", "action": f"{tool_name}_instantiation_error", "data": {"message": f"Error during skill class initialization: {init_gen_err}"}}
-                         skill_message = f"Failed to instantiate skill class '{class_name}' for '{tool_name}': {init_gen_err}"
-                         raise
-                    executable_callable = getattr(instance, method_name)
-                    ctx_logger.debug(f"{log_prefix} Prepared callable: method '{method_name}' of instance {instance}")
-                else:
-                    # It's a regular function
-                    ctx_logger.debug(f"{log_prefix} Skill '{tool_name}' detected as a regular function: {func_obj.__qualname__}")
-                    executable_callable = func_obj
 
-                # --- Prepare Arguments for Execution ---
-                final_args: List[Any] = []  # For positional args (less common for skills)
-                call_args: Dict[str, Any] = {} # For keyword args
+    except Exception as e:
+        # This block catches errors during tool lookup or initial setup
+        end_time = time.time() # Use time.time() for overall duration
+        duration = end_time - start_time
+        logger.exception(f"{log_prefix} Unexpected error during tool execution setup for '{tool_name}': {e}")
+        skill_status = "error"
+        skill_message = f"Tool setup failed: {str(e)}"
+        result_payload = {"status": skill_status, "message": skill_message}
+        metrics = {
+            "duration_seconds": duration, # Use overall duration for setup errors
+            "status": skill_status,
+            "message": skill_message[:500]
+        }
+        # No need to return here, let finally handle it
 
-                # Get the signature of the target callable (function or method)
-                target_sig = inspect.signature(executable_callable)
-                target_params = target_sig.parameters
+    finally:
+        # Calculate final duration based on whether execution happened
+        if 'duration_exec' in locals(): # If execution try block was entered
+             metrics = {
+                "duration_seconds": duration_exec,
+                "status": skill_status,
+                "message": skill_message[:500]
+            }
+        else: # Setup failed before execution try block
+             metrics = {
+                "duration_seconds": time.time() - start_time, # Overall duration
+                "status": skill_status,
+                "message": skill_message[:500]
+            }
 
-                # --- Argument Validation & Preparation ---
-                validated_input = {}
-                schema = skill_info.get("schema")
-                if schema:
-                    # *** ADDED: Handle parameter name mismatch for introspect ***
-                    input_to_validate = action_input.copy() # Work on a copy
-                    if tool_name == 'introspect' and 'query' in input_to_validate and 'question' not in input_to_validate:
-                         ctx_logger.warning(f"{log_prefix} Mapping 'query' parameter to 'question' for introspect skill.")
-                         input_to_validate['question'] = input_to_validate.pop('query')
-                    # *** END ADDED SECTION ***
+        ctx_logger.info(f"{log_prefix} Completed '{tool_name}'. Status: {skill_status}, Duration: {metrics['duration_seconds']:.3f}s")
+        # --- Notify Tool Execution End --- << HOOK >>
+        final_result_for_hook = {"result": result_payload, "metrics": metrics}
+        # Ensure notify gets called even if setup failed
+        notify_tool_execution_end(tool_name, final_result_for_hook, source="ToolExecutor")
+        # ----------------------------------
 
-                    try:
-                        # Validate potentially modified input against Pydantic schema
-                        validated_data = schema(**input_to_validate)
-                        validated_input = validated_data.model_dump() # Convert back to dict
-                        ctx_logger.debug(f"{log_prefix} Action input successfully validated by Pydantic schema for '{tool_name}'. Validated: {validated_input}")
-                    except Exception as pydantic_err: # Catch Pydantic validation errors
-                        ctx_logger.error(f"{log_prefix} Pydantic validation failed for '{tool_name}'. Input: {action_input}. Error: {pydantic_err}")
-                        result_payload = {
-                            "status": "error",
-                            "action": f"{tool_name}_validation_error",
-                            "data": {"message": f"Invalid input parameters: {pydantic_err}"},
-                        }
-                        skill_message = f"Invalid input parameters for '{tool_name}': {pydantic_err}"
-                        raise
-                else:
-                    # No schema, use raw input but log a warning
-                    ctx_logger.warning(f"{log_prefix} No Pydantic schema found for skill '{tool_name}'. Using raw input: {action_input}")
-                    validated_input = action_input # Use raw input
-
-                # --- Populate call_args based on validated input and function signature ---
-                for param_name in target_params:
-                    if param_name == 'self': # Skip 'self' for method calls
-                        continue
-
-                    # <<< ADDED: Skip decorator-injected args during this phase >>>
-                    if param_name in ["resolved_path", "original_path_str"]:
-                         # These are expected to be injected by the @validate_workspace_path decorator
-                         # Do not attempt to populate them from action_input here.
-                         ctx_logger.debug(f"Skipping population of decorator-injected arg: {param_name}")
-                         continue
-                    # <<< END ADDED >>>
-
-                    # Handle special context arguments
-                    if param_name == 'workspace_root':
-                         call_args[param_name] = context.workspace_root
-                         continue
-                    if param_name == 'logger':
-                         call_args[param_name] = context.logger
-                         continue
-                    # <<< ADDED: Handle 'ctx' parameter >>>
-                    if param_name == 'ctx':
-                         call_args[param_name] = context # Pass the whole namedtuple context
-                         continue
-                    # <<< ADDED: Handle 'shared_task_context' parameter >>>
-                    if param_name == 'shared_task_context':
-                         call_args[param_name] = context.shared_task_context
-                         continue
-                    # <<< END ADDED >>>
-
-                    # Check if the parameter exists in the *validated* input
-                    if param_name in validated_input:
-                        call_args[param_name] = validated_input[param_name]
-                    # If not in input, check if it has a default value in the signature
-                    elif target_params[param_name].default != inspect.Parameter.empty:
-                        # Parameter has a default value, no need to provide it explicitly
-                        pass # Python handles default values automatically
-                    # --- REMOVED: Explicit check for decorator default - Relies on schema/signature --- #
-                    # If it's required but missing from validated input (shouldn't happen if schema validation passed)
-                    else:
-                         # This case should ideally be caught by Pydantic validation if schema is correct
-                         ctx_logger.error(f"{log_prefix} Required parameter '{param_name}' for skill '{tool_name}' missing from validated input and has no default value.")
-                         result_payload = {
-                             "status": "error",
-                             "action": f"{tool_name}_missing_argument",
-                             "data": {"message": f"Required argument '{param_name}' missing."},
-                         }
-                         skill_message = f"Required argument '{param_name}' missing for skill '{tool_name}'."
-                         raise ValueError(f"Required argument '{param_name}' missing for skill '{tool_name}'.")
-
-                # --- Execute the Callable ---
-                ctx_logger.debug(f"{log_prefix} Executing '{executable_callable.__qualname__}' with validated args: {call_args}")
-                if inspect.iscoroutinefunction(executable_callable):
-                    ctx_logger.debug(f"{log_prefix} Awaiting async skill '{tool_name}'")
-                    result = await executable_callable(*final_args, **call_args)
-                else:
-                    ctx_logger.debug(f"{log_prefix} Running sync skill '{tool_name}' in executor")
-                    loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(None, lambda: executable_callable(*final_args, **call_args))
-
-                # <<< ADDED DEBUG LOG >>>
-                ctx_logger.debug(f"{log_prefix} Raw result received from skill '{tool_name}': {result}")
-                # <<< END ADDED DEBUG LOG >>>
-
-                # --- Process Result ---
-                # Verifica se o retorno da skill é um dicionário e tem 'status'
-                if isinstance(result, dict) and 'status' in result:
-                    result_payload = result # <-- Assume o resultado da skill como payload final
-                    skill_status = result.get('status', 'error') # Pega o status do resultado
-                    skill_message = result.get('data', {}).get('message', f"Skill '{tool_name}' completed with status '{skill_status}'.") # Pega a mensagem
-                    ctx_logger.info(
-                        f"{log_prefix} Skill '{tool_name}' executed. Status: {skill_status}"
-                    )
-                    ctx_logger.debug(f"{log_prefix} Skill '{tool_name}' result: {result}")
-                else:
-                    # Se o resultado não for um dicionário ou não tiver 'status', considera sucesso mas loga um aviso
-                    ctx_logger.warning(
-                        f"{log_prefix} Skill '{tool_name}' returned non-standard dict (type: {type(result)}). Wrapping in standard success dict."
-                    )
-                    result_payload = {
-                        "status": "success",
-                        "action": f"{tool_name}_completed",
-                        "data": {"result": result} # Armazena o resultado bruto
-                    }
-                    skill_status = "success"
-                    skill_message = f"Skill completed successfully (wrapped non-standard result): {str(result)[:100]}"
-
-            except TypeError as e:
-                ctx_logger.exception(
-                    f"{log_prefix} TypeError executing skill '{tool_name}': {e}"
-                )
-                passed_args_str = f"Positional: {len(final_args)}, Keywords: {list(call_args.keys())}"
-                result_payload = {
-                    "status": "error",
-                    "action": f"{tool_name}_argument_error",
-                    "data": {
-                        "message": f"Argument mismatch calling skill '{tool_name}': {str(e)}. Passed args: {passed_args_str}"
-                    },
-                }
-                skill_message = f"Argument mismatch calling skill '{tool_name}': {str(e)}. Passed args: {passed_args_str}"
-            except Exception as e:
-                ctx_logger.exception(f"{log_prefix} Error executing skill '{tool_name}':")
-                result_payload = {
-                    "status": "error",
-                    "action": f"{tool_name}_failed",
-                    "data": {
-                        "message": f"Internal error executing skill '{tool_name}': {str(e)}"
-                    },
-                }
-                skill_message = f"Internal error executing skill '{tool_name}': {str(e)}"
-            finally:
-                duration = time.time() - start_time
-                metrics = {
-                    "duration_seconds": duration,
-                    "status": skill_status,
-                    "message": skill_message[:500] # Limit message length
-                }
-                ctx_logger.info(f"{log_prefix} Completed '{tool_name}'. Status: {skill_status}, Duration: {duration:.3f}s")
-        # <<< END of the 'else' block associated with initial validation >>>
-
-    # <<< ADDED DEBUG LOG >>>
+    # Combine result payload and metrics for the final return value
     final_return_value = {"result": result_payload, "metrics": metrics}
     ctx_logger.debug(f"{log_prefix} Final return value for '{tool_name}': {final_return_value}")
-    # <<< END ADDED DEBUG LOG >>>
-
-    # Retorna o payload do resultado da skill E as métricas
-    return final_return_value # <-- Retorna o valor logado
+    return final_return_value
 
 # Helper to parse docstrings (basic Google style)
 def _parse_docstring_args(docstring: Optional[str]) -> Dict[str, str]:

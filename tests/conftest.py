@@ -70,13 +70,7 @@ REAL_MODEL_PATH = "/home/arthur/projects/A3X/models/gemma-3-4b-it-Q4_K_M.gguf"  
 
 
 # --- Session-scoped Event Loop ---
-@pytest.fixture(scope="session")
-def event_loop():
-    """Overrides pytest default function scope event loop"""
-    policy = asyncio.get_event_loop_policy()
-    loop = policy.new_event_loop()
-    yield loop
-    loop.close()
+# <<< REMOVED DEPRECATED event_loop FIXTURE >>>
 
 
 # --- Mock Fixtures ---

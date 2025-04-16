@@ -1,0 +1,3 @@
+Este é um arquivo de exemplo para o teste natural.
+Linha 2.
+Última linha original. 

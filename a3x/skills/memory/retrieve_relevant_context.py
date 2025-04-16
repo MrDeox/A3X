@@ -18,8 +18,8 @@ DEFAULT_INDEX_BASE_PATH = "a3x/memory/indexes/semantic_memory"
     name="introspect", 
     description="Responde perguntas sobre o que o A³X aprendeu ou sobre seu estado interno, buscando na memória semântica vetorial (FAISS) por contexto relevante.",
     parameters={
-        "question": (str, ...),  # str, Obrigatório - A pergunta a ser respondida
-        "top_k": (int, 3)         # int, Opcional com default 3 - Número de chunks relevantes a buscar
+        "question": {"type": str, "description": "A pergunta a ser respondida."},
+        "top_k": {"type": int, "description": "Número máximo de chunks relevantes a buscar.", "default": 3}
     } 
 )
 def introspect(ctx: Any, question: str, top_k: int = 3) -> str:

@@ -1,6 +1,10 @@
 import logging
 from typing import List, Dict, Optional, Tuple
 
+# <<< ADDED Import >>>
+from a3x.core.context import SharedTaskContext
+from a3x.core.context_accessor import ContextAccessor
+
 # <<< MOVED and RENAMED from agent.py >>>
 DEFAULT_WORKER_SYSTEM_PROMPT = """
 You are an evolving AI agent designed to achieve user objectives through reasoning, action, and continuous learning. Your primary goal is to solve tasks effectively while improving your capabilities with each interaction.
@@ -11,12 +15,12 @@ Strictly follow this format in ALL your responses:
 
 Thought: [Briefly explain your reasoning, plan for the *single* next action, and how it contributes to solving the task.]
 Action: [The *exact name* of ONE skill from the provided list, e.g., read_file. DO NOT write sentences or descriptions here.]
-Action Input: [Parameters for the skill in valid JSON format, e.g., {"path": "data/users.json"}]
+Action Input: [Parameters for the skill in valid JSON format, e.g., {{"path": "data/users.json"}}]
 
 Example:
 Thought: I need to read the JSON file specified in the user objective to access the user data.
 Action: read_file
-Action Input: {"path": "data/users.json"}
+Action Input: {{"path": "data/users.json"}}
 
 **CRITICAL RULES:**
 1.  **Action Field:** The `Action:` field MUST contain ONLY the exact name of ONE skill from the list below. No extra words, descriptions, or sentences.
@@ -40,9 +44,9 @@ User Objective for this step: {input}
 **Focus on executing one valid action at a time based on your thought process.**
 """
 
-# <<< MOVED from agent.py >>>
+# <<< MOVED & UPDATED from agent.py >>>
 DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT = """
-You are the A3X Orchestrator. Your role is to analyze the user's overall objective and the conversation history, then delegate the *next single step* to the most appropriate specialized component: either a Manager (for coordination) or a direct Executor Fragment.
+You are the A3X Orchestrator. Your role is to analyze the user's overall objective, the conversation history, and the **current task context**, then delegate the *next single step* to the most appropriate specialized component: either a Manager (for coordination) or a direct Executor Fragment.
 
 You must choose one component from the available list and define a clear, concise sub-task for it.
 
@@ -51,6 +55,8 @@ Available Components (Workers):
 # Note: Descriptions now include (Category: Management/Execution) and Managed/Skills info.
 
 Choose a component based on the task requirements:
+# **Use the Current Context to inform your decision.** For example, if the last action failed, consider using the DebuggerFragment or retrying with different parameters. If a file was just read, the next step might involve processing it.
+
 - If the task requires coordination of multiple low-level actions within a specific domain (e.g., file operations, code operations), choose the appropriate **Manager** (Category: Management).
 - If the task is self-contained or represents the final step, choose a direct **Executor** Fragment (Category: Execution, e.g., FinalAnswerProvider, Planner).
 
@@ -198,10 +204,11 @@ Responda agora de forma direta e informativa, como um assistente humano finaliza
     ]
 
 # <<< NEW FUNCTION: Build Orchestrator Prompt >>>
-def build_orchestrator_messages(
-    objective: str,
-    history: List[Tuple[str, str]], # Expecting agent's history format
-    fragment_descriptions: str
+async def build_orchestrator_messages(
+    shared_task_context: Optional[SharedTaskContext] = None, # Use the actual class
+    objective: str = "No objective specified.",
+    history: List[Tuple[str, str]] = [], # Expecting agent's history format
+    fragment_descriptions: str = "",
 ) -> List[Dict[str, str]]:
     """Builds the list of messages for the Orchestrator LLM call."""
     # Format history simply for now (can be improved)
@@ -212,12 +219,76 @@ def build_orchestrator_messages(
         fragment_descriptions=fragment_descriptions
     )
 
+    # --- Instantiate ContextAccessor ---
+    context_accessor = ContextAccessor(shared_task_context)
+    
+    # --- Extract and Format Richer Shared Context --- 
+    context_items = []
+    
+    # Get last history result summary
+    last_result_summary = await context_accessor.get_last_history_result()
+    if last_result_summary:
+        # Truncate long results for the prompt
+        result_str = str(last_result_summary)
+        context_items.append(f"- Last Result Summary: {result_str[:200]}{'...' if len(result_str) > 200 else ''}")
+
+    # Get last error using the correct method (and await)
+    last_err = await context_accessor.get_task_data("last_error")
+    if last_err:
+        context_items.append(f"- Last Error: {last_err}")
+        
+    # Get last file read path using the correct method (and await)
+    last_file_read = await context_accessor.get_task_data("last_file_read_path")
+    if last_file_read:
+        context_items.append(f"- Last file read: {last_file_read}")
+        
+    # >>> ADDED: Get last file written path <<<
+    last_file_written = await context_accessor.get_task_data("last_file_written_path")
+    if last_file_written:
+        context_items.append(f"- Last file written: {last_file_written}")
+        
+    # Get last execution result using the correct method (and await)
+    last_exec_result = await context_accessor.get_task_data("last_execution_result")
+    if last_exec_result and isinstance(last_exec_result, dict):
+        status = last_exec_result.get('status', 'unknown')
+        # Correctly extract action from the 'data' dictionary if it exists
+        action_data = last_exec_result.get('data', {})
+        action = action_data.get('action', 'unknown_action') if isinstance(action_data, dict) else 'unknown_action'
+        message = action_data.get('message', '') if isinstance(action_data, dict) else '' # Get message from data too if available
+        # Avoid duplicating error if already captured by get("last_error")
+        # Check if last_err was retrieved before using it
+        if status != 'error' or (last_err is None):
+             # Use the extracted action in the context summary
+             context_items.append(f"- Last execution result detail ({action}): {status} {(' - ' + message) if message else ''}")
+             
+    # Add more context points here if needed in the future (e.g., summary, key variables)
+
+    # --- ADDED: Explicit Logging of Retrieved Context --- 
+    logger = logging.getLogger(__name__) # Ensure logger is available
+    logger.info(f"[Orchestrator Prompt Builder] Retrieved Context for Prompt:")
+    logger.info(f"  - Objective: {objective[:100]}...")
+    logger.info(f"  - History Length: {len(history)}")
+    logger.info(f"  - Shared Context ID: {shared_task_context.task_id if shared_task_context else 'N/A'}")
+    logger.info(f"  - Raw Retrieved Data:")
+    logger.info(f"    - last_result_summary: {last_result_summary}")
+    logger.info(f"    - last_error: {last_err}")
+    logger.info(f"    - last_file_read_path: {last_file_read}")
+    logger.info(f"    - last_file_written_path: {last_file_written}") # Log the newly added check
+    logger.info(f"    - last_execution_result: {last_exec_result}")
+    # --- END ADDED LOGGING ---
+    
+    formatted_context = "\n".join(context_items) if context_items else "No relevant context from previous steps is available."
+    # --- End Context Formatting ---
+
     # Construct messages list
     messages = [
         {"role": "system", "content": system_prompt},
-        # Add history if any
-        *([{"role": "assistant", "content": f"Previous conversation history:\n{formatted_history}"}] if formatted_history else []),
-        {"role": "user", "content": f"Overall Objective: {objective}"}
+        # Add history if any - Consider if this is still needed long-term if context is rich enough
+        *([{"role": "assistant", "content": f"Previous conversation history (raw):\n{formatted_history}"}] if formatted_history else []),
+        # Add the extracted context as a system message for emphasis
+        {"role": "system", "content": f"Current Context Summary:\n{formatted_context}"}, 
+        # Update user prompt slightly
+        {"role": "user", "content": f"Overall Objective: {objective}\n\nGiven the objective, history, and **especially the current context summary above**, what is the most appropriate next component and sub-task?"}
     ]
     return messages
 
@@ -232,9 +303,15 @@ def build_worker_messages(
     # Generate tool description string ONLY for allowed skills
     tool_desc_parts = []
     for skill_name in allowed_skills:
-        skill_func = all_tools.get(skill_name)
-        if skill_func and hasattr(skill_func, 'description'):
-            tool_desc_parts.append(f"- {skill_name}: {getattr(skill_func, 'description', 'No description')}")
+        skill_info = all_tools.get(skill_name) # Get the dictionary from the registry
+        # Check if the entry exists, is a dict, and has a description key
+        if skill_info and isinstance(skill_info, dict) and "description" in skill_info:
+            description = skill_info.get("description", "No description")
+            tool_desc_parts.append(f"- {skill_name}: {description}")
+        else:
+            # Log if a skill is allowed but not found or lacks description in the registry
+            logger.warning(f"Skill '{skill_name}' allowed for fragment but description not found in tool registry.")
+            
     tool_descriptions = "\n".join(tool_desc_parts) if tool_desc_parts else "No skills available for this fragment."
 
     # Format history (same as orchestrator for now)

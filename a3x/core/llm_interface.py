@@ -7,6 +7,7 @@ from typing import List, Dict, Optional, AsyncGenerator
 import time
 import httpx
 from urllib.parse import urlparse, urljoin
+from rich.text import Text  # Import Text
 
 # Initialize logger for this module *before* first use
 llm_logger = logging.getLogger(__name__)
@@ -188,7 +189,12 @@ class LLMInterface:
                         llm_logger.debug(f"Attempted extraction using OpenAI structure.")
 
                     llm_logger.debug(f"[LLM] Non-streaming response content length: {len(content)}")
-                    llm_logger.info(f"[LLM {target_url.split('/')[-1]}] Response:\n-------\n{content}\n-------")
+                    # Log the raw response with color if DEBUG level is active
+                    if llm_logger.isEnabledFor(logging.DEBUG):
+                        colored_response = Text(f"[LLM {target_url.split('/')[-1]}] Response:\n-------\n{content}\n-------", style="magenta")
+                        llm_logger.debug(colored_response)
+                    else:
+                        llm_logger.info(f"[LLM {target_url.split('/')[-1]}] Response:\n-------\n{content}\n-------")
                     yield content # Yield the single complete response
 
             except httpx.RequestError as e:

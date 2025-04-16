@@ -48,6 +48,8 @@ try:
         PROJECT_ROOT,
         # DEFAULT_MMPROJ_PATH, # Removed unused import
         # ENABLE_LLAMA_SERVER_AUTOSTART, # Removed unused import
+        LLAMA_SERVER_URL, # <<< CORRIGIDO: Importar a URL do servidor correta
+        SKILL_PACKAGES,
     )
 
     # from core.db_utils import initialize_database
@@ -58,10 +60,11 @@ try:
 
     # <<< Replace commented out/incorrect tool import >>>
     from a3x.core.skills import (
-        load_skills,
+        # load_skills, # <<< REMOVIDO: Esta função foi renomeada, remover a importação
         get_skill,
         get_skill_descriptions,
         SKILL_REGISTRY, # Import the registry itself
+        load_all_skills, # <<< MOVIDO: Importar daqui
         # SkillContext, # Removed import, using local definition
     )
     # from core.logging_config import setup_logging
@@ -69,10 +72,11 @@ try:
     from a3x.core.tool_executor import execute_tool
     # REMOVED direct import of call_llm
     # ADDED necessary class imports
-    from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
+    from a3x.core.llm_interface import LLMInterface
     # <<< ADDED: Import server manager functions >>>
-    from a3x.core.server_manager import start_llama_server, start_sd_server, stop_all_servers, managed_processes
-    from a3x.core.agent import DEFAULT_REACT_SYSTEM_PROMPT # <<< Import the new prompt
+    from a3x.core.server_manager import start_all_servers, stop_all_servers
+    # from a3x.core.agent import DEFAULT_REACT_SYSTEM_PROMPT # <<< Import the new prompt
+    from a3x.fragments.registry import FragmentRegistry # <<< CORRECTED Import >>>
 except ImportError as e:
     # <<< ADDED: Initialize logger here BEFORE using it >>>
     # Need a basic logger config if setup_logging hasn't run yet
@@ -81,11 +85,10 @@ except ImportError as e:
     logger = logging.getLogger(__name__) # Get the logger instance
     # <<< END ADDED >>>
 
-    print(
-        f"[CLI Interface FATAL] Failed to import core modules: {e}. Ensure PYTHONPATH is correct or run from project root."
-    )
-    # Attempt to log the warning AFTER logger is defined
-    logger.warning(f"Could not import training module: {e}. --train command will be unavailable.")
+    # Generic error message
+    error_msg = f"[CLI Interface FATAL] Failed to import core modules: {e}. Ensure PYTHONPATH is correct or run from project root."
+    print(error_msg)
+    logger.error(error_msg) # Log as error instead of warning
     sys.exit(1)
     LLMInterface = None # Add this here too
     pass
@@ -133,7 +136,7 @@ console = Console()
 # DEFAULT_SYSTEM_PROMPT = """..."""
 
 # Load configuration and setup logging at the module level
-# config = load_config()
+# <<< REMOVED config loading >>>
 # logger = setup_logging()
 
 # <<< ADDED: Global variable for server process >>>
@@ -168,7 +171,7 @@ async def _direct_llm_call_wrapper(prompt: str) -> AsyncGenerator[str, None]:
         logger.error("LLMInterface class not available due to import error.")
         yield "[Error: LLM Interface not loaded]"
         return
-        
+
     messages = [{"role": "user", "content": prompt}]
     logger.debug("Direct LLM Wrapper: Calling call_llm with stream=True")
     try:
@@ -416,7 +419,7 @@ async def _handle_task_argument(agent: CerebrumXAgent, task_arg: str):
                     console.print(f"[bold red]Erro:[/bold red] Formato inválido para 'objective' no arquivo JSON.")
                     return
 
-                logger.info(f"Processing single objective from JSON: '{objective[:100]}...'")
+                logger.info(f"Processing single objective from JSON: '{objective[:100]}...'" )
                 # Pass the objective to the agent's main interaction handler
                 await handle_agent_interaction(agent, objective, []) # Pass empty history
 
@@ -565,10 +568,14 @@ async def _handle_run_skill_argument(args, llm_url: str):
     skill_args_dict = {}
     error_occurred = False
 
-    # <<< MOVED: Define SkillContext locally >>>
-    # Define SkillContext named tuple robustly within this function's scope
-    _ConcreteSkillContext = namedtuple("SkillContext", ["logger", "llm_call", "is_test", "workspace_root", "task"])
-    # <<< END MOVED >>>
+    # <<< ADDED: Import SkillContext from core.skills >>>
+    try:
+        from a3x.core.skills import SkillContext
+    except ImportError:
+        logger.error("Failed to import SkillContext from a3x.core.skills. Skill execution might fail.")
+        # Define a dummy context to potentially avoid immediate crash
+        SkillContext = namedtuple("DummySkillContext", ["logger", "llm_call", "is_test", "workspace_root", "task"])
+
 
     # 1. Load Skill Arguments (same as before)
     if args.skill_args_file:
@@ -645,7 +652,7 @@ async def _handle_run_skill_argument(args, llm_url: str):
         if not LLMInterface:
             logger.error("LLMInterface class not available due to import error.")
             return "[Error: LLM Interface not loaded]"
-            
+
         messages = [{"role": "user", "content": prompt}]
         logger.debug(f"Non-Streaming LLM Wrapper: Calling call_llm (prompt: {prompt[:50]}...)")
         response_content = ""
@@ -661,18 +668,18 @@ async def _handle_run_skill_argument(args, llm_url: str):
             # Collect chunks from the async generator
             async for chunk in llm_interface.call_llm(**call_params):
                 response_content += chunk
-            
+
             if not response_content:
                  logger.warning("Non-streaming LLM call returned empty content.")
                  return "(LLM returned empty response)"
             return response_content.strip()
-            
+
         except Exception as e:
             logger.error(f"Error in non_streaming_llm_call_wrapper: {e}", exc_info=True)
             return f"[LLM Call Error: {e}]"
 
-    # Create the skill context using the locally defined _ConcreteSkillContext
-    skill_context = _ConcreteSkillContext(
+    # Create the skill context using the imported SkillContext
+    skill_context = SkillContext(
         logger=logger,
         llm_call=non_streaming_llm_call_wrapper,
         is_test=True,
@@ -1152,140 +1159,148 @@ def run_cli():
         args = _parse_arguments()
 
         # Setup logging based on args
-        setup_logging(args.log_level, args.log_file)
-        logger.info("A³X CLI starting...")
-        logger.debug(f"Arguments received: {args}")
+        setup_logging(log_level_str=args.log_level, log_file_path=args.log_file)
+        print("*** DEBUG: setup_logging() finished. ***", flush=True)
+        logger.info("Logging initialized.")
 
-        # Change to project root directory
-        change_to_project_root()
-        logger.info(f"Changed working directory to: {os.getcwd()}")
+        # <<< REMOVED config loading - happens in config.py >>>
 
-        # Inicializa o banco de dados (cria tabelas se não existirem)
-        try:
-            initialize_database()
-        except Exception as db_err:
-            logger.exception("Falha crítica ao inicializar o banco de dados:")
-            console.print(f"[bold red][Error][/] Database initialization failed: {db_err}")
-            sys.exit(1)
-
-        # <<< CONSTRUIR LLM URL AQUI >>>
-        llm_url = f"http://{args.host}:{args.port}"
-        logger.info(f"LLM Server URL constructed: {llm_url}")
-
-        # Iniciar servidores (LLM e SD) se necessário
-        # <<< REMOVE GLOBAL _llama_server_process >>>
-        # global _llama_server_process, _llava_server_process
-
-        # <<< CORRECTED INDENTATION >>>
+        # --- START SERVER LOGIC (MOVED EARLIER) ---
+        manager_instance = None # Initialize manager_instance
         if not args.no_server:
-            model_path_arg = args.model or DEFAULT_MODEL_PATH
-            logger.info(f"Tentando iniciar Llama server com modelo: {model_path_arg}")
-
-            # <<< REMOVED: Health check before starting. Manager checks internally now. >>>
+            console.print("[bold cyan]Verificando e iniciando servidores necessários...[/]")
             try:
-                # Start LLaMA server using the new manager
-                await start_llama_server(
-                    model_path=model_path_arg,
-                    port=args.port,
-                    host=args.host,
-                    gpu_layers=args.gpu_layers,
-                    context_size=args.context_size,
-                    mmproj_path=args.mmproj,
-                )
-            except Exception as start_err:
-                logger.exception("Erro ao tentar iniciar o servidor Llama automaticamente:")
-                console.print(f"[bold red][Error][/] Could not auto-start Llama server: {start_err}")
+                logger.info("Starting background servers...")
+                # <<< MODIFIED CALL >>> Use the unified server starter
+                manager_instance = await start_all_servers()
+                if manager_instance:
+                    # Cleanup is registered via atexit at the top level
+                    logger.info("Server manager instance obtained. Cleanup registered.")
+                    console.print("[bold green]Servidores verificados/iniciados com sucesso.[/]")
+                else:
+                    # <<< MODIFIED ERROR MESSAGE >>>
+                    logger.critical("Falha ao iniciar um servidor essencial. Instância do ServerManager não foi criada.")
+                    console.print("[bold red]Erro: Falha ao iniciar um servidor essencial (ex: Llama). Verifique os logs. Saindo.[/]")
+                    return # Exit if manager instance failed
+            except Exception as server_err:
+                logger.exception("Erro durante a inicialização do servidor:")
+                console.print(f"[bold red]Erro crítico ao iniciar servidores: {server_err}. Saindo.[/]")
+                return # Exit on critical server start error
+        else:
+            logger.info("Inicialização de servidor desabilitada via --no-server.")
+        # --- END SERVER START LOGIC ---
 
-            # <<< DISABLED SD Server Startup >>>
-            # # Start SD server if needed (assuming same --no-server flag controls it)
-            # if not _check_sd_server_health(): # Assuming a similar check function exists
-            #     try:
-            #         await start_sd_server()
-            #         await asyncio.sleep(5) # Give it time
-            #         if not _check_sd_server_health(timeout=15.0):
-            #              console.print(
-            #                 f"[bold yellow][Warning][/] Falha ao verificar saúde do servidor Stable Diffusion após tentativa de início automático."
-            #              )
-            #     except Exception as sd_start_err:
-            #         logger.exception("Erro ao tentar iniciar o servidor Stable Diffusion automaticamente:")
-            #         console.print(f"[bold yellow][Warning][/] Could not auto-start Stable Diffusion server: {sd_start_err}")
-            #     else:
-            #     logger.info("Servidor Stable Diffusion já está rodando ou respondeu ao teste de saúde.")
-            # <<< END DISABLED SD Server Startup >>>
+        # Initialize Database
+        initialize_database()
+        logger.info("Database initialized.")
 
-        # Carregar skills após configurar tudo
-        loaded_tools = {}
+        # Load skills
         try:
-            logger.info("Carregando skills...")
-            loaded_tools = load_skills("a3x.skills")
-            logger.info(f"Skills carregadas: {list(loaded_tools.keys())}")
-            # Validate skills after loading
-            # expected_skills = discover_expected_skills(os.path.join(PROJECT_ROOT, "a3x", "skills"))
-            # validate_registered_skills(expected_skills, loaded_tools)
-        except CriticalSkillRegistrationError as skill_err:
-            logger.error(f"Erro crítico no registro de skills: {skill_err}")
-            console.print(f"[bold red][Fatal Error][/] {skill_err}")
-            if skill_err.missing_skills:
-                console.print("Skills faltando ou com erro:")
-                for skill_name in skill_err.missing_skills:
-                    console.print(f"- {skill_name}")
-            console.print("Verifique os arquivos de skills e seus decoradores `@skill`.")
-            sys.exit(1)
-        except Exception as load_err:
-            logger.exception("Erro inesperado durante o carregamento das skills:")
-            console.print(f"[bold red][Fatal Error][/] Failed to load skills: {load_err}")
+            logger.info("Loading skills...")
+            # Load skills explicitly instead of relying on agent init
+            tool_registry = load_all_skills(SKILL_PACKAGES)
+            # skill_registry = load_skill_registry(SKILL_PACKAGES)
+            # if not skill_registry:
+            #     raise RuntimeError("Skill registry is empty after loading.")
+            logger.info(f"Skills loaded successfully. Registry contains: {list(tool_registry.keys())}")
+        except Exception as e:
+            import traceback # <<< ADICIONADO: Importar traceback
+            logger.error(f"[CLI Interface FATAL] Failed to load skills: {e}", exc_info=True)
+            print("--- DETAILED TRACEBACK --- ") # <<< ADICIONADO: Imprimir traceback detalhado
+            traceback.print_exc()                # <<< ADICIONADO: Imprimir traceback detalhado
+            print("--- END TRACEBACK --- ")      # <<< ADICIONADO: Imprimir traceback detalhado
             sys.exit(1)
 
-        # Inicializar o agente
-        system_prompt = _load_system_prompt() # Carrega do arquivo padrão
-        # <<< PASSA LLM URL CONSTRUÍDA >>>
-        agent = _initialize_agent(system_prompt, llm_url_override=llm_url, loaded_tools=loaded_tools)
-        if agent is None:
-            console.print("[bold red][Fatal Error][/] Failed to initialize the agent.")
-            sys.exit(1)
+        # <<< ADDED Print >>>
+        print("*** DEBUG: About to initialize LLMInterface... ***", flush=True)
 
-        # Selecionar e rodar o modo apropriado
-        # <<< CORRECTED INDENTATION >>>
-        if args.task:
-            await _handle_task_argument(agent, args.task)
-        elif args.command:
-            await _handle_command_argument(agent, args.command)
-        elif args.input_file:
-            await _handle_file_argument(agent, args.input_file)
-        elif args.stream_direct:
-            await stream_direct_llm(args.stream_direct, agent) # Pass agent
-        elif args.train:
-            # <<< CORRECTED INDENTATION >>>
-            if run_qlora_finetuning:
-                console.print("[bold green]Iniciando ciclo de fine-tuning QLoRA...[/]")
-                try:
-                    await run_qlora_finetuning()
-                    console.print("[bold green]Ciclo de fine-tuning concluído.[/]")
-                except Exception as train_err:
-                    logger.exception("Erro durante o fine-tuning:")
-                    console.print(f"[bold red][Error][/] Fine-tuning failed: {train_err}")
+        # Initialize LLM Interface
+        llm_url = args.llm_url or os.getenv("LLAMA_SERVER_URL", LLAMA_SERVER_URL)
+        logger.info(f"Initializing LLM Interface with URL: {llm_url}")
+        llm_interface = LLMInterface(llm_url=llm_url)
+
+        # Initialize Fragment Registry
+        logger.info("Initializing Fragment Registry...")
+        fragment_registry = FragmentRegistry(
+             llm_interface=llm_interface,
+             skill_registry=tool_registry,
+             # config=config # Config no longer loaded here
+        )
+        logger.info(f"Fragment Registry initialized. Found fragments: {list(fragment_registry.get_all_definitions().keys())}")
+
+        # <<< Initialize Agent >>>
+        logger.info("Initializing A3X Agent (CerebrumX)...")
+        agent = CerebrumXAgent(
+            llm_interface=llm_interface,
+            fragment_registry=fragment_registry,
+            tools=tool_registry,
+            workspace_root=project_root,
+            # system_prompt=args.system_prompt or DEFAULT_REACT_SYSTEM_PROMPT # System prompt not directly used by CerebrumX
+        )
+        logger.info("A3X Agent initialized.")
+
+        print_welcome_message()
+
+        try:
+            if args.interactive:
+                await _handle_interactive_argument(agent)
+            elif args.task:
+                await _handle_task_argument(agent, args.task)
+            elif args.command:
+                await _handle_command_argument(agent, args.command)
+            elif args.input_file:
+                await _handle_file_argument(agent, args.input_file)
+            elif args.stream_direct:
+                await stream_direct_llm(args.stream_direct, agent) # Pass agent
+            elif args.train:
+                # <<< CORRECTED INDENTATION >>>
+                if run_qlora_finetuning:
+                    console.print("[bold green]Iniciando ciclo de fine-tuning QLoRA...[/]")
+                    try:
+                        await run_qlora_finetuning()
+                        console.print("[bold green]Ciclo de fine-tuning concluído.[/]")
+                    except Exception as train_err:
+                        logger.exception("Erro durante o fine-tuning:")
+                        console.print(f"[bold red][Error][/] Fine-tuning failed: {train_err}")
+                else:
+                    console.print("[bold red][Error][/] Módulo de treinamento não disponível. Não é possível executar --train.")
+            elif args.run_skill:
+                # <<< CORRECTED INDENTATION >>>
+                await _handle_run_skill_argument(args, llm_url) # Pass llm_url
+            else: # Modo interativo por padrão
+                # <<< CORRECTED INDENTATION >>>
+                await _handle_interactive_argument(agent)
+
+        except KeyboardInterrupt:
+            logger.info("\nKeyboard interrupt received. Exiting gracefully.")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+            print(f"\n[Error] An unexpected error occurred: {e}")
+        finally:
+            logger.info("CLI session finished.")
+            # Ensure servers are stopped in finally block too, using the instance if available
+            if not args.no_server and 'manager_instance' in locals() and manager_instance:
+                 logger.info("Ensuring all servers are stopped via finally block...")
+                 await stop_all_servers(manager_instance) # Pass the instance
             else:
-                console.print("[bold red][Error][/] Módulo de treinamento não disponível. Não é possível executar --train.")
-        elif args.run_skill:
-            # <<< CORRECTED INDENTATION >>>
-            await _handle_run_skill_argument(args, llm_url) # Pass llm_url
-        else: # Modo interativo por padrão
-            # <<< CORRECTED INDENTATION >>>
-            await _handle_interactive_argument(agent)
+                # Fallback if instance wasn't created or no_server was True
+                # This might rely on the old global managed_processes, needs review
+                # For now, let's assume stop_all_servers without instance might not work cleanly
+                logger.info("Skipping server stop in finally block (no_server or manager instance missing).")
 
     # --- Ponto de Entrada Principal ---
     try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        logger.info("CLI interrupted by user (KeyboardInterrupt).")
-        # A limpeza de atexit deve ser chamada aqui automaticamente
-        # Mas podemos tentar uma limpeza explícita adicional se necessário,
-        # embora possa causar problemas de loop se main_async não terminou.
-    except Exception as e:
-        logger.critical(f"A critical error occurred outside the main async loop: {e}", exc_info=True)
-    finally:
-        logger.info("A³X CLI finished.")
+        import uvloop
+        uvloop.install()
+        logger.info("Using uvloop for event loop.")
+    except ImportError:
+        logger.info("uvloop not found, using default asyncio event loop.")
+        pass # uvloop is optional
 
-
-if __name__ == "__main__":
-    run_cli()
+    if __name__ == "__main__":
+        try:
+            asyncio.run(main_async())
+        except Exception as e:
+            # Catch any top-level errors during asyncio.run or main()
+            logger.critical(f"Critical error during CLI execution: {e}", exc_info=True)
+            sys.exit(1) # Exit with error status

@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
     description="Reloads and re-discovers all available agent fragments dynamically.",
     parameters={ 
         # No parameters needed, uses context
-        "ctx": {"type": "Context", "description": "The execution context providing access to the fragment registry."}
     }
 )
 async def reload_fragments(ctx: _ToolExecutionContext) -> Dict[str, Any]:

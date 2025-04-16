@@ -5,8 +5,8 @@ import pkgutil
 import sys
 from typing import Dict, Any, List, Set
 
-from a3x.core.skills import skill, load_skills, SKILL_REGISTRY
-from a3x.core.config import PROJECT_ROOT
+from a3x.core.skills import skill, load_all_skills, SKILL_REGISTRY
+from a3x.core.config import PROJECT_ROOT, SKILL_PACKAGES
 # from a3x.core.config import get_project_root # REMOVED - Function doesn't exist there
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ AUTO_GENERATED_PACKAGE_NAME = "a3x.skills.auto_generated"
     name="reload_auto_generated_skills",
     description="Detecta novas skills em 'a3x/skills/auto_generated', atualiza o __init__.py e recarrega todas as skills.",
     parameters={
-        "ctx": {"type": "Any", "description": "O contexto de execução da skill."}
+        # "ctx": {"type": "Any", "description": "O contexto de execução da skill."} <-- REMOVE THIS LINE
     } # Added ctx parameter
 )
 async def reload_auto_generated_skills(ctx: Any) -> Dict[str, Any]:
@@ -107,18 +107,17 @@ async def reload_auto_generated_skills(ctx: Any) -> Dict[str, Any]:
         # Reload the skills package. This will re-execute __init__.py files
         # and re-run @skill decorators.
         try:
-            # Ensure the main skills package is loaded/reloaded
-            # load_skills handles the import logic including subpackages
-            load_skills(SKILLS_PACKAGE_NAME)
+            # Use the new function that loads based on the config list
+            load_all_skills(SKILL_PACKAGES)
             count_after = len(SKILL_REGISTRY)
-            ctx.logger.info(f"Skills reloaded successfully via load_skills('{SKILLS_PACKAGE_NAME}'). Total skills now: {count_after}")
+            ctx.logger.info(f"Skills reloaded successfully via load_all_skills({SKILL_PACKAGES}). Total skills now: {count_after}")
             skills_reloaded = True
             message = f"Detected {len(detected_py_files)} file(s). Updated __init__: {init_updated}. Reloaded {count_after} skills."
 
         except Exception as load_err:
             status = "error"
-            message = f"Failed to reload skills via load_skills: {load_err}"
-            ctx.logger.exception(f"Error during load_skills('{SKILLS_PACKAGE_NAME}'):")
+            message = f"Failed to reload skills via load_all_skills: {load_err}"
+            ctx.logger.exception(f"Error during load_all_skills({SKILL_PACKAGES}):")
             skills_reloaded = False # Explicitly set false on error
 
     except Exception as e:

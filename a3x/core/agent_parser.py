@@ -1,199 +1,123 @@
 import json
 import logging
 import re
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Union
 
 
 def parse_llm_response(
     response: str, agent_logger: logging.Logger
-) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Parses the LLM's raw response string, expecting a multi-line text format
-    with 'Thought:', 'Action:', and 'Action Input:' prefixes.
-    The 'Action Input' value is expected to be a JSON string.
-    Includes fallbacks for common Portuguese keywords.
+    with 'Thought:', 'Action:', and potentially 'Action Input:' prefixes.
+    It prioritizes finding 'Action:' and extracting the tool name and JSON input from it.
+    If 'Action:' is missing, it checks for 'Final Answer:'.
 
-    Returns: thought (str), action (str), action_input (dict)
-             Returns None, None, None if parsing fails significantly.
-    Raises: Does not raise JSONDecodeError directly anymore unless Action Input parsing fails.
+    Returns: thought (str), action_name (str), action_input_str (str | None)
+             Returns None, None, None if critical parsing fails.
     """
     agent_logger.debug(
-        f"[Agent Parse DEBUG] Raw LLM Response (expecting ReAct Text):\n{response}"
+        f"[Agent Parse DEBUG] Raw LLM Response (expecting ReAct Text):\\n{response}"
     )
 
     thought = None
-    action = None
+    action_name = None
     action_input_str = None
-    action_input = {}
 
     try:
-        # Use regex to find the sections, allowing for optional whitespace and case variations
-        # Include Portuguese fallbacks
+        # Extract Thought (optional)
         thought_match = re.search(
-            r"^[ \t]*(?:Thought|Pensamento):(.*)", response, re.MULTILINE | re.IGNORECASE
+            r"^[ \\t]*(?:Thought|Pensamento):(.*)", response, re.MULTILINE | re.IGNORECASE
         )
-        action_match = re.search(
-            r"^[ \t]*(?:Action|Ação):(.*)", response, re.MULTILINE | re.IGNORECASE
-        )
-        action_input_match = re.search(
-            # Note: Action Input fallback might be less common, but added for completeness
-            r"^[ \t]*(?:Action Input|Input da Ação):(.*)",
-            response,
-            re.MULTILINE | re.IGNORECASE | re.DOTALL,
-        ) # DOTALL for multi-line JSON
-        final_answer_match = re.search(
-            r"^[ \t]*(?:Final Answer|Resposta Final):(.*)", response, re.MULTILINE | re.IGNORECASE | re.DOTALL
-        )
-
         if thought_match:
             thought = thought_match.group(1).strip()
             agent_logger.debug(f"[Agent Parse DEBUG] Extracted Thought: {thought}")
 
+        # --- Primary Logic: Look for Action first ---
+        action_match = re.search(
+            r"^[ \\t]*(?:Action|Ação):(.*)", response, re.MULTILINE | re.IGNORECASE | re.DOTALL
+        )
+        
         if action_match:
-            action = action_match.group(1).strip()
-            agent_logger.debug(f"[Agent Parse DEBUG] Extracted Action: {action}")
-        elif final_answer_match:
-            # If Action is missing, but Final Answer is present, treat it as the final action
-            action = "final_answer"
-            # Attempt to extract the answer content for the action_input dictionary
-            action_input_str = final_answer_match.group(1).strip()
-            if action_input_str: # If content exists, wrap it in the expected structure
-                action_input = {"answer": action_input_str}
-            else: # If Final Answer line exists but is empty, use thought or placeholder
-                action_input = {"answer": thought if thought else "(Final answer content not found)"}
-            agent_logger.debug(f"[Agent Parse DEBUG] Extracted Final Answer as Action: {action}, Input: {action_input}")
-        else:
-            # Fallback: tentar extrair intenção de ação mesmo sem o formato estrito
-            agent_logger.warning(
-                "[Agent Parse WARN] 'Action:' ou 'Final Answer:' não encontrados. Tentando fallback de parsing adaptativo."
-            )
-            # Heurística: procurar comandos de skill em texto livre
-            action_fallback = None
-            action_input_fallback = {}
-            # Exemplo: "use the write_file tool to create..." ou "utilize a ferramenta write_file para criar..."
-            skill_match = re.search(r"(?:use|utilize|utilize a ferramenta|utilize a skill|execute|chame|call) (?:the )?(\w+)[\s_-]?(?:tool|skill|ferramenta)?", response, re.IGNORECASE)
-            if skill_match:
-                action_fallback = skill_match.group(1).strip()
-                agent_logger.warning(f"[Agent Parse FALLBACK] Skill inferida: {action_fallback}")
-                # Tentar extrair parâmetros básicos (ex: path, content) do texto
-                path_match = re.search(r"(?:file|arquivo|path|diretório|directory)[\s:]*['\"]?([^\s'\"\,\)]+)", response, re.IGNORECASE)
-                content_match = re.search(r"(?:content|conteúdo|texto|text)[\s:]*['\"]?([^\n'\"\,\)]+)", response, re.IGNORECASE)
-                if path_match:
-                    # Se o path foi extraído, assume uma operação de arquivo
-                    # Assume que o nome da action é o verbo extraído (list, read, write, etc.)
-                    action_input_fallback["path"] = path_match.group(1)
-                    if action_match: # Usa a action extraída se disponível
-                        action_fallback = action_match.group(1).lower().strip()
-                        # Tenta mapear para um nome de skill conhecido (simplificado)
-                        # Registrar heurística de parsing adaptativo
-                        try:
-                            from a3x.core.learning_logs import log_heuristic_with_traceability
-                            import datetime
-                            plan_id = f"plan-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                            execution_id = f"exec-parse-fallback-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                            heuristic = {
-                                "type": "parsing_fallback",
-                                "raw_response": response[:500],
-                                "action_inferred": action_fallback,
-                                "action_input_inferred": action_input_fallback,
-                            }
-                            log_heuristic_with_traceability(heuristic, plan_id, execution_id, validation_status="pending_manual")
-                            agent_logger.info("[Agent Parse FALLBACK] Heurística de parsing adaptativo registrada.")
-                        except Exception as log_err:
-                            agent_logger.warning(f"[Agent Parse FALLBACK] Falha ao registrar heurística de parsing: {log_err}")
-                        return thought, action_fallback, action_input_fallback
-                    else:
-                        agent_logger.error(
-                            f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response, e fallback também falhou.\nResponse:\n{response}"
-                        )
-                        return None, None, None # Critical parsing failure
-                else:
-                    agent_logger.error(
-                        f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response, e fallback também falhou.\nResponse:\n{response}"
-                    )
-                    return None, None, None # Critical parsing failure
-            else:
-                agent_logger.error(
-                    f"[Agent Parse ERROR] 'Action:' or 'Final Answer:' section not found in LLM response, e fallback também falhou.\nResponse:\n{response}"
-                )
-                return None, None, None # Critical parsing failure
+            full_action_content = action_match.group(1).strip()
+            agent_logger.debug(f"[Agent Parse DEBUG] Full Action content found: {full_action_content}")
 
-        # Process Action Input only if the action is NOT final_answer (handled above)
-        if action != "final_answer":
-            if action_input_match:
-                action_input_str = action_input_match.group(1).strip()
-                agent_logger.debug(
-                    f"[Agent Parse DEBUG] Extracted Action Input String: {action_input_str}"
-                )
-                if action_input_str:
-                    try:
-                        # Replace curly quotes
-                        cleaned_input_str = action_input_str.replace("\u201c", '"').replace("\u201d", '"') # " " -> "
-                        if cleaned_input_str != action_input_str:
-                            agent_logger.debug("[Agent Parse DEBUG] Replaced curly quotes in Action Input string.")
+            # --- Revised Parsing Logic ---
+            # Split content into potential action name (first line) and the rest
+            parts = full_action_content.split('\n', 1)
+            potential_action_name = parts[0].strip()
+            rest_of_content = parts[1].strip() if len(parts) > 1 else ""
 
-                        # Clean potential markdown
+            agent_logger.debug(f"[Agent Parse DEBUG] Split Action Name: '{potential_action_name}', Rest: '{rest_of_content}'")
+
+            action_input_str = None # Default to no input
+
+            # Now, look for Action Input and JSON *only* in the 'rest_of_content'
+            if rest_of_content:
+                # Check if the rest starts with "Action Input:" or similar
+                action_input_marker_match = re.match(r"^[ \\t]*(?:Action Input|Input da Ação):(.*)", rest_of_content, re.IGNORECASE | re.DOTALL)
+                if action_input_marker_match:
+                    content_after_marker = action_input_marker_match.group(1).strip()
+                    agent_logger.debug(f"[Agent Parse DEBUG] Found Action Input marker. Content after marker: '{content_after_marker}'")
+
+                    # Try to find the first JSON object ({...}) within this remaining content
+                    json_match = re.search(r"(\{.*?\})", content_after_marker, re.DOTALL)
+                    if json_match:
+                        potential_json_str = json_match.group(1).strip()
+                        # Clean potential markdown fences
+                        cleaned_input_str = potential_json_str
                         if cleaned_input_str.startswith("```json"):
-                            cleaned_input_str = (
-                                cleaned_input_str.removeprefix("```json")
-                                .removesuffix("```")
-                                .strip()
-                            )
+                            cleaned_input_str = cleaned_input_str.removeprefix("```json").removesuffix("```").strip()
                         elif cleaned_input_str.startswith("```"):
-                            cleaned_input_str = (
-                                cleaned_input_str.removeprefix("```")
-                                .removesuffix("```")
-                                .strip()
-                            )
+                            cleaned_input_str = cleaned_input_str.removeprefix("```").removesuffix("```").strip()
 
-                        decoder = json.JSONDecoder()
-                        action_input, end_pos = decoder.raw_decode(cleaned_input_str)
-                        agent_logger.debug(
-                            f"[Agent Parse DEBUG] raw_decode parsed JSON up to position {end_pos}. Parsed object: {action_input}"
-                        )
-                        if end_pos < len(cleaned_input_str.strip()):
-                            trailing_data = cleaned_input_str[end_pos:].strip()
-                            agent_logger.warning(
-                                f"[Agent Parse WARN] Trailing data found after JSON in Action Input: '{trailing_data[:100]}...'"
-                            )
-                        if not isinstance(action_input, dict):
-                            agent_logger.warning(
-                                f"[Agent Parse WARN] Action Input parsed but is not a dictionary ({type(action_input)}): {action_input}. Using empty dict."
-                            )
-                            action_input = {}
+                        # Basic validation: Does it look like a JSON object?
+                        if cleaned_input_str.startswith('{') and cleaned_input_str.endswith('}'):
+                            action_input_str = cleaned_input_str
+                            agent_logger.debug(f"[Agent Parse DEBUG] Extracted Valid JSON Input: '{action_input_str}'")
                         else:
-                            agent_logger.debug(
-                                "[Agent Parse DEBUG] Action Input parsed successfully (using raw_decode)."
-                            )
-
-                    except json.JSONDecodeError as e:
-                        agent_logger.error(
-                            f"[Agent Parse ERROR] Failed to decode Action Input string with raw_decode: {e}\nString was: '{action_input_str}'"
-                        )
-                        action_input = {
-                            "_parse_error": f"Failed to decode JSON with raw_decode: {e}"
-                        }
+                            agent_logger.warning(f"[Agent Parse WARN] Found JSON-like block after Action Input marker but failed validation: '{cleaned_input_str}'. Input set to None.")
+                            # action_input_str remains None
+                    else:
+                         agent_logger.debug("[Agent Parse DEBUG] No JSON object found after Action Input marker. Input set to None.")
+                         # action_input_str remains None
                 else:
-                    agent_logger.debug(
-                        "[Agent Parse DEBUG] Action Input section found but was empty."
-                    )
-                    action_input = {}
+                    agent_logger.debug(f"[Agent Parse DEBUG] No 'Action Input:' marker found in rest_of_content: '{rest_of_content}'. Assuming no input.")
+                    # action_input_str remains None
             else:
-                # Action Input is missing for a non-final_answer action
-                agent_logger.warning(
-                    f"[Agent Parse WARN] 'Action Input:' section not found for action '{action}'. Assuming empty input."
-                )
-                action_input = {} # Assume empty if section is missing
+                 agent_logger.debug("[Agent Parse DEBUG] No content after the first line (Action Name). Assuming no input.")
+                 # action_input_str remains None
 
-        agent_logger.info(
-            f"[Agent Parse INFO] Text parsed successfully. Action: '{action}'"
-        )
-        return thought, action, action_input
+            # Assign the confirmed action name
+            action_name = potential_action_name
+            # --- End Revised Parsing Logic ---
 
-    except Exception:
-        agent_logger.exception(
-            "[Agent Parse ERROR] Unexpected error during text parsing:"
+            # If action_name ended up empty (e.g., "Action:"), it's an error
+            if not action_name:
+                 agent_logger.error(f"[Agent Parse ERROR] Extracted empty action_name from content: {full_action_content}")
+                 return None, None, None
+
+            agent_logger.info(f"[Agent Parse INFO] Parsed from Action block. Action: '{action_name}'. Input String: '{action_input_str}'")
+            return thought, action_name, action_input_str
+
+        # --- Fallback Logic: Look for Final Answer if Action was missing ---
+        final_answer_match = re.search(
+            r"^[ \t]*(?:Final Answer|Resposta Final):(.*)", response, re.MULTILINE | re.IGNORECASE | re.DOTALL
         )
+        if final_answer_match:
+            action_name = "final_answer"
+            raw_final_answer = final_answer_match.group(1).strip()
+            # Always wrap final answer in JSON for consistency
+            action_input_str = json.dumps({"answer": raw_final_answer})
+            agent_logger.info(f"[Agent Parse INFO] Parsed from Final Answer block. Action: '{action_name}'. Input String: '{action_input_str}'")
+            return thought, action_name, action_input_str
+
+        # --- Error Case: Neither Action nor Final Answer found ---
+        agent_logger.error(f"[Agent Parse ERROR] Neither 'Action:' nor 'Final Answer:' section found in response: {response[:500]}...")
+        return None, None, None
+
+    except Exception as e:
+        agent_logger.exception(f"[Agent Parse ERROR] Unexpected error during text parsing: {e}")
         return None, None, None
 
 

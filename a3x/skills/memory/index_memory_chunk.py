@@ -18,9 +18,9 @@ DEFAULT_EMBEDDING_DIM = 768 # Assumed default, should ideally come from config
     name="index_memory_chunk", 
     description="Adiciona um chunk de texto à memória semântica FAISS para futura recuperação vetorial.",
     parameters={
-        "content": (str, ...),              # str, Obrigatório
-        "source": (str, "unknown"),       # str, Opcional com default "unknown"
-        "tags": (List[str], [])           # List[str], Opcional com default []
+        "content": {"type": str, "description": "O texto a ser indexado."},
+        "source": {"type": str, "description": "A origem do conteúdo (e.g., nome do arquivo, URL).", "default": "unknown"},
+        "tags": {"type": Optional[List[str]], "description": "Lista de tags associadas ao conteúdo.", "default": []}
     } 
 )
 def index_memory_chunk(ctx: Any, content: str, source: str = "unknown", tags: Optional[List[str]] = None) -> str:

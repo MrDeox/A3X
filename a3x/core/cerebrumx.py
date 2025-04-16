@@ -41,7 +41,7 @@ cerebrumx_logger = logging.getLogger(__name__) # <<< Rename logger? agent_logger
 from .agent import _is_simple_list_files_task, ReactAgent # <<< ADD ReactAgent import
 
 # Helper to create context for direct execution calls
-_ToolExecutionContext = namedtuple("_ToolExecutionContext", ["logger", "workspace_root", "llm_url", "tools_dict"])
+# _ToolExecutionContext = namedtuple("_ToolExecutionContext", ["logger", "workspace_root", "llm_url", "tools_dict"])
 
 class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
     """
@@ -52,7 +52,24 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
     def __init__(self, system_prompt: str, llm_url: Optional[str] = None, tools_dict: Optional[Dict[str, Dict[str, Any]]] = None, exception_policy=None, agent_config: Optional[Dict] = None):
         """Inicializa o Agente CerebrumX."""
         # Initialize ReactAgent first
-        super().__init__(system_prompt, llm_url, tools_dict=tools_dict)
+        # Pass llm_interface (which ReactAgent expects) and map tools_dict to skill_registry
+        # ReactAgent uses get_skill_registry() if skill_registry is None, so passing tools_dict directly seems correct.
+        # Assuming llm_url can be handled by creating an LLMInterface or passed if ReactAgent accepts it.
+        # Let's create a minimal LLMInterface if llm_url is provided.
+        llm_interface_instance = None
+        if llm_url:
+            from a3x.core.llm_interface import LLMInterface # Local import
+            llm_interface_instance = LLMInterface(llm_url=llm_url)
+        
+        super().__init__(
+            llm_interface=llm_interface_instance, # Pass the interface object
+            skill_registry=tools_dict # Map tools_dict to skill_registry
+            # system_prompt is handled by CerebrumXAgent, not passed to ReactAgent super?
+            # Need to verify if ReactAgent __init__ uses system_prompt
+        )
+        # Store system_prompt locally if not handled by super
+        self.system_prompt = system_prompt 
+        
         self.agent_logger.info("[CerebrumX INIT] Agente CerebrumX inicializado (Ciclo Unificado).")
         self.config = agent_config or {}
 
@@ -76,11 +93,11 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         # Using self.tools as a simplified skill registry for now
         # TODO: Implement a proper SkillRegistry class if needed
         self.fragment_registry = FragmentRegistry(
-            llm_interface=self.llm, # Pass the LLM interface from ReactAgent
+            llm_interface=self.llm_interface, # <<< CORRECTED: Use self.llm_interface >>>
             skill_registry=get_skill_registry(), # Pass the actual skill registry
             config=self.config # Pass the main agent config
         )
-        self.agent_logger.info(f"[CerebrumX INIT] Fragment Registry inicializado. {len(self.fragment_registry.list_available_fragments())} fragments carregados.")
+        self.agent_logger.info(f"[CerebrumX INIT] Fragment Registry inicializado. {len(self.fragment_registry.get_all_definitions())} fragments carregados.")
         # <<< END ADDED Section >>>
 
     # --- Novo Ciclo Cognitivo Unificado ---
@@ -340,14 +357,18 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         """
         self.agent_logger.info(f"Iniciando Reflexão e Aprendizado para Fragment '{fragment_name}' (Status: {final_status})...")
 
-        # Create execution context for reflection skills
-        # Note: Reflection skills might need access to the *Orchestrator's* tools
-        # or potentially tools specific to reflection/analysis.
+        # <<< Create the full execution context using the imported definition >>>
+        # Note: Passing placeholders (None) for fields likely not needed by reflection skills.
+        # We pass the actual llm_interface now.
         exec_context = _ToolExecutionContext(
             logger=self.agent_logger,
             workspace_root=self.workspace_root,
-            llm_url=self.llm_url,
-            tools_dict=self.tools # Or a specific subset for reflection
+            llm_url=self.llm_url, # Keep llm_url for potential direct use
+            tools_dict=self.tools, # Reflection skills might call other tools
+            llm_interface=self.llm_interface, # <<< Pass the full interface >>>
+            fragment_registry=None, # Likely not needed by reflection skills
+            shared_task_context=None, # Reflection happens after task context is potentially finalized
+            allowed_skills=list(self.tools.keys()) # Allow reflection skills to call any known tool? Or restrict?
         )
 
         try:

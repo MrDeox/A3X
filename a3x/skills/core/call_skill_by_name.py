@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
     name="call_skill_by_name",
     description="Dynamically calls another registered skill by its name with the given arguments.",
     parameters={
-        "ctx": {"type": Context, "description": "The execution context provided by the agent."},
         "skill_name": {"type": str, "description": "The exact name of the skill to call."},
         "skill_args": {"type": Optional[Dict[str, Any]], "default": None, "description": "Dictionary of arguments to pass to the target skill." }
     }

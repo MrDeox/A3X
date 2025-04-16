@@ -28,47 +28,59 @@ classifiers = [
 ]
 
 dependencies = [
-    # Copy dependencies from requirements.txt, pinning if desired
-    # Example format: "requests>=2.20", "numpy"
-    # From requirements.txt (add versions if known/needed):
+    # Core web/async
     "fastapi",
     "uvicorn[standard]",
     "requests",
-    "beautifulsoup4",
+    "httpx>=0.27.0,<0.29.0", # Pinned
+    "aiohttp",
+    "anyio",
+
+    # Langchain Suite (v0.3 compatible)
+    "langchain>=0.3.0,<0.4",
+    "langchain-community>=0.3.0,<0.4",
+    "langchain-core>=0.3.0,<0.4",
+    "langchain-openai>=0.2.0,<0.3",
+    "langchain-text-splitters>=0.3.0,<0.4",
+    "langsmith>=0.1.0,<0.2.0", # Pinned
+
+    # Data handling / ML Core
     "python-dotenv",
-    "unstructured", # Added dependency
-    "langchain",
-    "langchain_community",
-    "langchain_core",
-    "langchain_openai", # Assuming openai is used, adjust if not
-    "tiktoken", # Often used with langchain/openai
-    "ollama", # If using Ollama locally
-    "pytest",
-    "pytest-asyncio",
-    "pytest-mock",
-    "httpx", # For async requests, often used by langchain/clients
-    "anyio", # For pytest-asyncio compatibility
-    "sqlalchemy", # Added dependency
-    "faiss-cpu", # or faiss-gpu if applicable
-    "pypdf", # Added dependency
-    "aiohttp", # Added based on llm_interface usage
-    "peft", # Added for QLoRA
-    "accelerate", # Added for Hugging Face Trainer/optimization
-    "datasets", # Added for preparing data for Trainer
+    "unstructured",
+    "tiktoken",
+    "ollama>=0.4.0,<0.5.0", # Pinned
+    "sqlalchemy>=2.0.0,<2.1.0", # Pinned
+    "faiss-cpu",
+    "pypdf",
+    "peft",
+    "accelerate",
+    "datasets",
+    "sentence-transformers",
+    "pydantic>=2.0.0,<3.0.0", # Pinned to v2
+    "Pillow",
+    "ultralytics",
+    "pytesseract",
+    
+    # Web Scraping / Interaction
+    "beautifulsoup4",
+    "lxml",
+    "readability-lxml",
+    "playwright",
+    "duckduckgo-search",
+
+    # Desktop Interaction
     "pyperclip",
     "pyautogui",
     "mss",
-    "lxml", # Already implied by beautifulsoup4 often, but good to be explicit
-    "readability-lxml",
+
+    # Utilities
     "rich",
-    "pytesseract",
-    "ultralytics",
-    "sentence-transformers",
-    "pydantic", # Already present via fastapi usually
-    "playwright",
-    "duckduckgo-search",
-    "Pillow", # For image manipulation
-    "python-slugify", # For creating file-safe names
+    "python-slugify",
+
+    # Testing (often moved to optional-dependencies)
+    "pytest",
+    "pytest-asyncio",
+    "pytest-mock",
 ]
 
 [project.optional-dependencies]
@@ -85,7 +97,7 @@ dev = [
 [project.scripts]
 # If you want to make assistant_cli.py runnable from anywhere after installation
 # assistant-cli = "a3x.cli.main:app" # Example path, adjust based on actual file/function
-assistant-cli = "a3x.assistant_cli:main" # Assuming main function exists
+a3x = "a3x.assistant_cli:cli_entry" # Assuming main function exists
 
 [tool.pytest.ini_options]
 # Keep existing pytest settings if any

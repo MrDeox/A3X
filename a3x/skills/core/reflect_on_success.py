@@ -50,11 +50,10 @@ REFLECTION_PROMPT_TEMPLATE_SUCCESS = """
     name="reflect_on_success",
     description="Reflete sobre uma execução bem-sucedida para extrair heurísticas e aprendizados.",
     parameters={
-        "ctx": {"type": "Context", "description": "O contexto de execução, fornecendo acesso a LLM, logger, etc."},
-        "objective": {"type": "str", "description": "O objetivo geral da tarefa que foi executada."},
-        "plan": {"type": "List[str]", "description": "A sequência de passos (ações/skills) que foram executadas."},
-        "execution_results": {"type": "List[Dict[str, Any]]", "description": "Uma lista de dicionários, cada um representando o resultado de um passo do plano."},
-        "final_task_context": {"type": "SharedTaskContext", "description": "The final state of the shared task context for analysis.", "optional": True}
+        "objective": {"type": str, "description": "O objetivo geral da tarefa que foi executada."},
+        "plan": {"type": List[str], "description": "A sequência de passos (ações/skills) que foram executadas."},
+        "execution_results": {"type": List[Dict[str, Any]], "description": "Uma lista de dicionários, cada um representando o resultado de um passo do plano."},
+        "final_task_context": {"type": Optional[SharedTaskContext], "description": "The final state of the shared task context for analysis.", "default": None}
     }
 )
 async def reflect_on_success(

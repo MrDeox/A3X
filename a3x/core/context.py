@@ -2,7 +2,52 @@
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple, NamedTuple, TYPE_CHECKING, Type
+import asyncio
+from dataclasses import dataclass, field
+from collections import namedtuple # Ensure namedtuple is imported
+import uuid # <<< ADDED import >>>
+
+# <<< ADDED Forward references if needed by FragmentContext >>>
+if TYPE_CHECKING:
+    from a3x.core.llm_interface import LLMInterface
+    from a3x.core.tool_registry import ToolRegistry
+    from a3x.fragments.registry import FragmentRegistry # Assuming FragmentRegistry lives here
+    from a3x.skills.base_skill import BaseSkill
+    from a3x.core.memory.memory_manager import MemoryManager # Added
+    from a3x.fragments.base import BaseFragment # <<< ADDED for active_fragments typing >>>
+
+# Moved from tool_executor.py
+_ToolExecutionContext = namedtuple("ToolExecutionContext", [
+    "logger", 
+    "workspace_root", 
+    "llm_url", 
+    "tools_dict", 
+    "llm_interface",
+    "fragment_registry",
+    "shared_task_context",
+    "allowed_skills",
+    "skill_instance",
+    "memory_manager"
+])
+
+class FragmentContext(namedtuple('FragmentContext', [
+    'logger', 
+    'llm_interface', 
+    'tool_registry', 
+    'fragment_registry',
+    'shared_task_context',
+    'workspace_root',
+    'memory_manager'
+])):
+    # Adding __new__ with default for optional field
+    def __new__(cls, logger: logging.Logger, llm_interface: 'LLMInterface', 
+                tool_registry: 'ToolRegistry', fragment_registry: 'FragmentRegistry', 
+                shared_task_context: Optional[Dict[str, Any]], workspace_root: Path,
+                memory_manager: Optional['MemoryManager'] = None): # Default to None
+        return super().__new__(cls, logger, llm_interface, tool_registry, 
+                               fragment_registry, shared_task_context, workspace_root,
+                               memory_manager)
 
 class Context:
     """
@@ -52,6 +97,7 @@ class ContextEntry:
     def __repr__(self):
         return f"ContextEntry(value={str(self.value)[:50]}..., source={self.source}, tags={self.tags}, meta_keys={list(self.metadata.keys())})"
 
+@dataclass
 class SharedTaskContext:
     """
     Manages shared state and intermediate results for a single agent task execution,
@@ -65,131 +111,129 @@ class SharedTaskContext:
     The context is typically created at the start of an agent task and discarded
     once the task concludes (successfully or not).
     """
-    def __init__(self, task_id: str, initial_objective: str):
-        """
-        Initializes the shared context for a specific task.
+    task_id: str
+    initial_objective: Optional[str] = None
+    task_data: Dict[str, Any] = field(default_factory=dict)
+    execution_history: List[Tuple[str, str]] = field(default_factory=list)
+    # --- Chat and Active Fragment Fields ---
+    internal_chat_queue: asyncio.Queue = field(default_factory=asyncio.Queue) # <<< CHANGED to Queue >>>
+    active_fragments: Dict[str, 'BaseFragment'] = field(default_factory=dict) # <<< ADDED active fragments tracker >>>
+    # --- Other Fields ---
+    sandbox_dialogue_queue: List[Tuple[str, Dict]] = field(default_factory=list) # Kept for sandbox mode
+    _context_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
-        Args:
-            task_id: A unique identifier for the current task run.
-            initial_objective: The initial objective provided to the agent.
-        """
-        self._task_id = task_id
-        self._objective = initial_objective
-        # Alterado para armazenar ContextEntry
-        self._context_data: Dict[str, ContextEntry] = {}
-        logger.debug(f"[SharedTaskContext:{self._task_id}] Initialized for objective: '{initial_objective}'")
+    async def update_data(self, key: str, value: Any):
+        async with self._context_lock:
+            self.task_data[key] = value
 
-    def set(self,
-            key: str, 
-            value: Any,
-            source: Optional[str] = None,
-            tags: Optional[List[str]] = None,
-            metadata: Optional[Dict[str, Any]] = None):
-        """
-        Sets or updates a value in the shared context, storing it as a ContextEntry
-        with associated metadata.
+    async def get_data(self, key: str, default: Any = None) -> Any:
+        async with self._context_lock:
+            return self.task_data.get(key, default)
 
-        Args:
-            key: The unique key for the data entry.
-            value: The value to store.
-            source: Optional identifier for the fragment/skill setting the value.
-            tags: Optional list of string tags for categorization/querying.
-            metadata: Optional dictionary for additional metadata (e.g., priority, confidence).
-        """
-        entry = ContextEntry(value, source=source, tags=tags, metadata=metadata)
-        logger.debug(f"[SharedTaskContext:{self._task_id}] Setting '{key}' = {entry!r}")
-        self._context_data[key] = entry
+    async def add_history(self, fragment_name: str, result_summary: str):
+        async with self._context_lock:
+            self.execution_history.append((fragment_name, result_summary))
 
-    def get_entry(self, key: str) -> Optional[ContextEntry]:
-        """Retrieves the full ContextEntry object associated with a key.
+    async def get_history(self) -> List[Tuple[str, str]]:
+        async with self._context_lock:
+            return list(self.execution_history)
 
-        This allows access to the value as well as all associated metadata (source,
-        timestamp, tags, etc.).
+    async def add_sandbox_message(self, fragment_name: str, message: Dict):
+        """Adds a message to the shared sandbox dialogue queue."""
+        async with self._context_lock:
+            self.sandbox_dialogue_queue.append((fragment_name, message))
 
-        Args:
-            key: The key of the entry to retrieve.
+    async def get_sandbox_messages(self, since_index: int = 0) -> List[Tuple[str, Dict]]:
+        """Gets messages from the sandbox dialogue queue after a given index."""
+        async with self._context_lock:
+            return list(self.sandbox_dialogue_queue[since_index:])
 
-        Returns:
-            The ContextEntry object, or None if the key is not found.
-        """
-        return self._context_data.get(key)
+    # <<< MODIFIED Chat Methods for Queue >>>
+    def add_chat_message(self, fragment_name: str, message_type: str, message_content: Dict) -> str:
+        """Adds a message to the internal chat queue (non-blocking)."""
+        # No lock needed for asyncio.Queue put_nowait
+        message_id = f"chat-{uuid.uuid4()}"
+        timestamp = time.time()
+        chat_entry = {
+            "timestamp": timestamp,
+            "sender": fragment_name,
+            "type": message_type.upper(), # Standardize type to uppercase
+            "content": message_content,
+            "message_id": message_id
+        }
+        try:
+            self.internal_chat_queue.put_nowait(chat_entry)
+            logger.debug(f"Added chat message from {fragment_name} (ID: {message_id}) to queue.")
+            return message_id
+        except asyncio.QueueFull:
+            logger.error(f"Internal chat queue is full! Could not add message from {fragment_name}.")
+            # Handle queue full? Maybe log and drop, or wait? For now, log and drop.
+            return "error-queue-full"
+        # Removed get_chat_messages - consumption happens via queue.get()
+    # <<< END MODIFIED Chat Methods >>>
 
-    def get(self, key: str, default: Optional[Any] = None) -> Optional[Any]:
-        """
-        Retrieves only the underlying value associated with a key from the shared context.
+    # <<< ADDED Active Fragment Management Methods >>>
+    async def register_active_fragment(self, name: str, instance: 'BaseFragment'):
+        async with self._context_lock: # Protect dictionary access
+            self.active_fragments[name] = instance
+            logger.debug(f"Registered active fragment: {name}")
 
-        Args:
-            key: The key of the data entry to retrieve.
-            default: The value to return if the key is not found (defaults to None).
+    async def unregister_active_fragment(self, name: str):
+        async with self._context_lock:
+            if name in self.active_fragments:
+                del self.active_fragments[name]
+                logger.debug(f"Unregistered active fragment: {name}")
 
-        Returns:
-            The stored value associated with the key, or the default value.
-        """
-        entry = self.get_entry(key)
-        value = entry.value if entry else default
-        logger.debug(f"[SharedTaskContext:{self._task_id}] Getting value for '{key}'. Found: {entry is not None}")
-        return value
+    async def get_active_fragment(self, name: str) -> Optional['BaseFragment']:
+        async with self._context_lock:
+            return self.active_fragments.get(name)
+            
+    async def get_all_active_fragment_names(self) -> List[str]:
+        async with self._context_lock:
+            return list(self.active_fragments.keys())
+    # <<< END ADDED Active Fragment Methods >>>
 
-    def get_by_tag(self, tag: str) -> Dict[str, ContextEntry]:
-        """Retrieves all context entries that have a specific tag.
-
-        Allows filtering the context based on assigned tags.
-
-        Args:
-            tag: The tag to search for.
-
-        Returns:
-            A dictionary mapping keys to their corresponding ContextEntry objects
-            that contain the specified tag.
-        """
-        logger.debug(f"[SharedTaskContext:{self._task_id}] Getting entries tagged with '{tag}'")
-        return {k: entry for k, entry in self._context_data.items() if tag in entry.tags}
-
-    def get_by_source(self, source: str) -> Dict[str, ContextEntry]:
-        """Retrieves all context entries originating from a specific source.
-
-        Allows filtering the context based on which fragment/skill created the entry.
-
-        Args:
-            source: The source identifier to search for.
-
-        Returns:
-            A dictionary mapping keys to their corresponding ContextEntry objects
-            originating from the specified source.
-        """
-        logger.debug(f"[SharedTaskContext:{self._task_id}] Getting entries from source '{source}'")
-        return {k: entry for k, entry in self._context_data.items() if entry.source == source}
-
-    # Manter update e get_all_data (adaptar se necessário)
-    def update(self, data: Dict[str, Any], source: Optional[str] = None):
-         """
-        Updates the context with multiple key-value pairs from a dictionary.
-        Note: This currently creates basic ContextEntry objects without rich tags/metadata
-        for the bulk update. Enhance if needed.
-
-        Args:
-            data: A dictionary containing key-value pairs to merge.
-            source: Optional source identifier applied to all updated entries.
-        """
-         logger.debug(f"[SharedTaskContext:{self._task_id}] Updating context with {len(data)} keys from source '{source}'.")
-         for key, value in data.items():
-             # Creates simple entries; enhance if needed
-             self.set(key, value, source=source)
-
-    # <<< RENAMED from get_all_data >>>
-    def get_all_entries(self) -> Dict[str, ContextEntry]:
-        """Returns a copy of the entire context data dictionary containing ContextEntry objects.
-
-        Provides a snapshot of the full shared context, including all values and metadata.
-
-        Returns:
-            A dictionary mapping keys to their corresponding ContextEntry objects.
-        """
-        return self._context_data.copy()
-
-    # Adaptar __str__ e __repr__
     def __str__(self) -> str:
-        return f"SharedTaskContext(task_id={self._task_id}, objective='{self._objective}', data_keys={list(self._context_data.keys())})"
+        # <<< UPDATED __str__ for Queue and Active Fragments >>>
+        qsize = self.internal_chat_queue.qsize() # Non-blocking size check
+        active_names = list(self.active_fragments.keys()) # Get keys without lock (dict keys are atomic)
+        return f"SharedTaskContext(task_id={self.task_id}, objective='{self.initial_objective}', data_keys={list(self.task_data.keys())}, chat_qsize={qsize}, active={active_names})"
 
     def __repr__(self) -> str:
-        return f"<SharedTaskContext task_id={self._task_id} data_keys={list(self._context_data.keys())}>" 
+        # <<< UPDATED __repr__ for Queue and Active Fragments >>>
+        qsize = self.internal_chat_queue.qsize()
+        active_names = list(self.active_fragments.keys())
+        return f"<SharedTaskContext task_id={self.task_id} data_keys={list(self.task_data.keys())} chat_qsize={qsize} active_count={len(active_names)}>" 
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Returns a serializable dictionary representation of the context."""
+        # Note: asyncio.Lock is not serializable, so we exclude it.
+        # We also might need to handle non-serializable items in task_data if they exist.
+        return {
+            "task_id": self.task_id,
+            "initial_objective": self.initial_objective,
+            "task_data": self.task_data, # Consider deep copying or filtering non-serializable items
+            "execution_history": self.execution_history,
+            "sandbox_dialogue_queue": self.sandbox_dialogue_queue,
+            # internal_chat_queue and active_fragments are NOT included as they are not easily serializable
+            # Relevant info might be extracted if needed for specific logging/saving
+        }
+
+# Context specifically for executing a single tool/skill
+# Defined here for consistency
+class _ToolExecutionContext(NamedTuple):
+    logger: logging.Logger
+    workspace_root: Path
+    llm_url: str
+    tools_dict: 'ToolRegistry' # Forward reference
+    llm_interface: Any # Replace Any with specific LLM Interface type
+    fragment_registry: 'FragmentRegistry' # Forward reference
+    shared_task_context: SharedTaskContext
+    allowed_skills: Optional[List[str]]
+    memory_manager: 'MemoryManager' # <<< MOVED UP >>>
+    skill_instance: Optional[Any] = None # The instance whose method is being called
+
+# Ensure ToolRegistry and FragmentRegistry are imported if needed for type hints elsewhere,
+# or handle potential circular imports carefully.
+# from .tool_registry import ToolRegistry
+# from a3x.fragments.registry import FragmentRegistry 

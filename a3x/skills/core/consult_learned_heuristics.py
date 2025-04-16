@@ -21,13 +21,12 @@ MIN_KEYWORD_MATCH_SCORE = 1 # Minimum overlap to consider a heuristic relevant
     name="consult_learned_heuristics",
     description="Consulta o log CONSOLIDADO de heurísticas aprendidas (representativas/únicas) para encontrar regras relevantes.",
     parameters={
-        "objective": {"type": "str", "description": "The objective to find relevant heuristics for."},
-        "top_k": {"type": "int", "description": "The maximum number of heuristics of each type (success/failure) to return.", "default": 3},
-        "ctx": {"type": "Context", "description": "The optional execution context."} # ctx is Optional[Context] in signature
+        "objective": {"type": str, "description": "The objective to find relevant heuristics for."},
+        "top_k": {"type": int, "description": "The maximum number of heuristics of each type (success/failure) to return.", "default": 3}
     }
 )
 # <<< RESTORED async def and ctx parameter >>>
-async def consult_learned_heuristics(objective: str, top_k: int = 3, ctx: Optional[Context] = None) -> Dict[str, Any]:
+async def consult_learned_heuristics(ctx: Context, objective: str, top_k: int = 3) -> Dict[str, Any]:
     """Busca heurísticas relevantes (sucesso e falha) no log consolidado."""
 
     log_prefix = "[ConsultHeuristics Skill]"
@@ -158,7 +157,7 @@ if __name__ == '__main__':
 
     async def run_test():
         test_objective = "Preciso editar o arquivo principal do projeto."
-        result = await consult_learned_heuristics(objective=test_objective, top_k=2)
+        result = await consult_learned_heuristics(ctx=None, objective=test_objective, top_k=2)
         print("\n--- Consultation Result ---")
         print(json.dumps(result, indent=2, ensure_ascii=False))
 

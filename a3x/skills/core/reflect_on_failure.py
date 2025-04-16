@@ -50,11 +50,10 @@ REFLECTION_PROMPT_TEMPLATE_FAILURE = """
     name="reflect_on_failure",
     description="Reflete sobre uma execução falha para extrair heurísticas preventivas.",
     parameters={
-        "ctx": {"type": "Context", "description": "The execution context."},
-        "objective": {"type": "str", "description": "The original objective that failed."},
-        "plan": {"type": "List[str]", "description": "The plan that was being executed."},
-        "execution_results": {"type": "List[Dict[str, Any]]", "description": "The results of each step of the plan execution."},
-        "final_task_context": {"type": "SharedTaskContext", "description": "The final state of the shared task context for analysis.", "optional": True}
+        "objective": {"type": str, "description": "The original objective that failed."},
+        "plan": {"type": List[str], "description": "The plan that was being executed."},
+        "execution_results": {"type": List[Dict[str, Any]], "description": "The results of each step of the plan execution."},
+        "final_task_context": {"type": Optional[SharedTaskContext], "description": "The final state of the shared task context for analysis.", "default": None}
     }
 )
 async def reflect_on_failure(

@@ -9,6 +9,8 @@ import asyncio
 import time
 from urllib.parse import urlparse, urljoin
 from pathlib import Path
+from rich.console import Console  # Import Console from rich
+from typing import Callable, Dict, Any, get_type_hints
 
 # <<< START VENV WORKAROUND >>>
 # Manually add the venv site-packages directory to sys.path
@@ -48,7 +50,7 @@ try:
         SEMANTIC_SEARCH_TOP_K,
         EPISODIC_RETRIEVAL_LIMIT
     )
-    from a3x.core.db_utils import initialize_database
+    from a3x.core.db_utils import initialize_database, _db_connections, close_db_connection
     from a3x.core.agent import ReactAgent # Usando ReactAgent diretamente por enquanto
     # Import LLMInterface and its DEFAULT_LLM_URL
     from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
@@ -60,6 +62,15 @@ try:
     from a3x.core.context import Context # Import Context
     # SKILL_REGISTRY e get_skill_descriptions são carregados dinamicamente agora
     # from a3x.core.skills import SKILL_REGISTRY, get_skill_descriptions
+    from a3x.core.tool_registry import ToolRegistry
+    from a3x.fragments.registry import FragmentRegistry
+    from a3x.core.skills import get_skill_registry
+    # >>> ADD skill imports for registration <<<
+    from a3x.skills.file_manager import FileManagerSkill
+    from a3x.skills.planning import hierarchical_planner
+    from a3x.skills.final_answer import final_answer
+    from a3x.skills.core.learning_cycle import learning_cycle_skill as learning_cycle
+    import inspect
 except ImportError as e:
     import logging
     logging.basicConfig(level=logging.INFO)
@@ -75,41 +86,63 @@ except ImportError as e:
     print(f"[CLI Interface FATAL] Could not import run_cli: {e}")
     sys.exit(1)
 
-# <<< Imports Globais >>>
-from a3x.core.skills import get_skill_registry
-
 # Setup logging ASAP
 logger = setup_logging() # Assuming setup_logging doesn't need config dict anymore
+
+# Initialize Rich Console
+console = Console()
 
 # DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant. Your goal is to assist the user with their tasks, providing accurate and relevant information."
 
 def parse_arguments():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='A³X Assistant CLI')
-    parser.add_argument('--task', type=str, help='The task for the agent to perform')
-    # Use a hardcoded default for model name
-    parser.add_argument('--model-name', type=str, default='default_model', help='Name of the model to use (default: default_model)')
-    parser.add_argument('--context-size', type=int, default=4096, help='Context size for the LLM (default: 4096)')
-    parser.add_argument('--ngl', type=int, default=20, help='Number of GPU layers to offload (default: 20)')
+    """Parses command line arguments for the A³X Assistant CLI."""
+    parser = argparse.ArgumentParser(description="A³X Assistant CLI")
+    
+    # Removed the 'run' subcommand, making --task the trigger
     parser.add_argument(
-        "--log-level",
+        "--task",
         type=str,
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        default='INFO',
-        help="Nível de logging para a console e arquivo (padrão: INFO)"
+        required=True, # Task is now required to run
+        help="The task for the agent to perform."
     )
     parser.add_argument(
-        "--log-file",
+        "--model-name",
         type=str,
-        default=None, # Default to None, setup_logging handles default path
-        help="Arquivo para salvar os logs (padrão: logs/a3x_cli.log)"
+        default="mistral",
+        help="Name of the LLM model to use."
     )
     parser.add_argument(
-        "--max-steps",
+        "--context-size",
         type=int,
-        default=20, # Default to 20 steps
-        help="Maximum number of orchestration steps allowed (default: 20)"
+        default=4096,
+        help="Context size for the LLM."
     )
+    parser.add_argument(
+        "--ngl",
+        type=int,
+        default=0,
+        help="Number of GPU layers to offload."
+    )
+    parser.add_argument(
+        '--log-level', 
+        type=str, 
+        default='INFO', 
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
+        help='Set the logging level.'
+    )
+    parser.add_argument(
+        '--log-file', 
+        type=str, 
+        default=None, 
+        help='Specify a file to write logs to.'
+    )
+    parser.add_argument(
+        '--max-steps', 
+        type=int, 
+        default=10, 
+        help='Maximum number of steps the agent can take.'
+    )
+
     return parser.parse_args()
 
 # <<< Context Definition (Placeholder/Example) >>>
@@ -118,6 +151,68 @@ class CLISkillContext: # Define a context class specific to CLI usage
         self.logger = logger_instance
         self.llm_interface = llm_interface_instance
         self.workspace_root = Path(PROJECT_ROOT).resolve()
+
+# <<< Helper function to generate basic schema >>>
+def generate_schema(func: Callable, name: str, description: str) -> Dict[str, Any]:
+    """Generates a basic JSON-like schema from function signature and docstring."""
+    schema = {
+        "name": name,
+        "description": description or f"Skill: {name}",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    }
+    try:
+        sig = inspect.signature(func)
+        type_hints = get_type_hints(func)
+        for param_name, param in sig.parameters.items():
+            # Skip context-like parameters injected by system? (e.g., 'ctx', 'context')
+            # For now, include all parameters found.
+            #if param_name in ['ctx', 'context']: 
+            #    continue
+            
+            param_info = {}
+            param_type = type_hints.get(param_name)
+            
+            # Basic type mapping (extend as needed)
+            if param_type == str:
+                param_info["type"] = "string"
+            elif param_type == int:
+                param_info["type"] = "integer"
+            elif param_type == float:
+                param_info["type"] = "number"
+            elif param_type == bool:
+                param_info["type"] = "boolean"
+            elif param_type == list or getattr(param_type, '__origin__', None) == list:
+                 param_info["type"] = "array"
+                 # Try to infer item type (basic)
+                 item_type_args = getattr(param_type, '__args__', [])
+                 if item_type_args and item_type_args[0] == str:
+                    param_info["items"] = {"type": "string"}
+                 else:
+                    param_info["items"] = {} # Generic item
+            elif param_type == dict or getattr(param_type, '__origin__', None) == dict:
+                 param_info["type"] = "object"
+            else:
+                param_info["type"] = "string" # Default to string if type is unknown/complex
+
+            # Add description from docstring if possible (simple parsing)
+            # This requires a specific docstring format (e.g., Google style)
+            # For now, just add the type.
+            # param_info["description"] = f"Parameter {param_name}" 
+            
+            schema["parameters"]["properties"][param_name] = param_info
+
+            # Check if parameter is required
+            if param.default == inspect.Parameter.empty:
+                schema["parameters"]["required"].append(param_name)
+                
+    except Exception as e:
+        logger.warning(f"Could not introspect signature for {name}: {e}")
+        
+    return schema
 
 async def main():
     """Main function to run the A³X Assistant CLI."""
@@ -139,6 +234,19 @@ async def main():
     # Use imported constants directly
     db_path = DATABASE_PATH
     logger.info(f"Using database path from config: {db_path}")
+    semantic_index_path = SEMANTIC_INDEX_PATH
+    semantic_top_k = SEMANTIC_SEARCH_TOP_K
+    episodic_limit = EPISODIC_RETRIEVAL_LIMIT
+
+    # Create config dict for MemoryManager
+    memory_config = {
+        "DATABASE_PATH": db_path,
+        "SEMANTIC_INDEX_PATH": semantic_index_path,
+        "SEMANTIC_SEARCH_TOP_K": semantic_top_k,
+        "EPISODIC_RETRIEVAL_LIMIT": episodic_limit
+    }
+    logger.info(f"Initializing MemoryManager with config: {memory_config}")
+    memory_manager = MemoryManager(config=memory_config)
 
     # Initialize ServerManager
     # Use LLAMA_SERVER_URL from env or default from llm_interface
@@ -156,7 +264,7 @@ async def main():
     except Exception as e:
         logger.warning(f"Could not parse LLM URL {llm_url} for host/port. Using defaults {server_host}:{server_port}. Error: {e}")
 
-    server_manager = ServerManager(host=server_host, port=server_port, ngl=args.ngl)
+    server_manager = ServerManager()
 
     # Instantiate LLMInterface
     completion_url = llm_url
@@ -169,30 +277,84 @@ async def main():
         context_size=args.context_size
     )
 
-    # Load skills and get the registry dictionary
+    # Load skills (keep this for now, maybe used elsewhere)
     skill_registry_dict = get_skill_registry() 
-    logger.info(f"Loaded {len(skill_registry_dict)} skills.")
+    logger.info(f"Loaded {len(skill_registry_dict)} skills (from dynamic load).")
     
-    # Create config dict for MemoryManager
-    memory_config = {
-        "DATABASE_PATH": DATABASE_PATH,
-        "SEMANTIC_INDEX_PATH": SEMANTIC_INDEX_PATH,
-        "SEMANTIC_SEARCH_TOP_K": SEMANTIC_SEARCH_TOP_K,
-        "EPISODIC_RETRIEVAL_LIMIT": EPISODIC_RETRIEVAL_LIMIT
-    }
-    # Initialize MemoryManager with the config dict
-    memory = MemoryManager(config=memory_config)
+    # --- Initialize ToolRegistry WITH tools ---
+    tool_registry = ToolRegistry()
+    
+    # Initialize skills that need instances (like FileManager)
+    # Use PROJECT_ROOT as the default workspace for the CLI run
+    file_manager = FileManagerSkill(workspace_root=PROJECT_ROOT)
+    
+    # Register file manager skills
+    for name, method in inspect.getmembers(FileManagerSkill, predicate=inspect.isfunction):
+        if hasattr(method, '_skill_name'): # Check for the decorator attribute
+            skill_name = getattr(method, '_skill_name')
+            bound_method = getattr(file_manager, name) # Get bound method
+            description = getattr(method, '_skill_description', method.__doc__ or f"Skill: {skill_name}")
+            # Generate schema
+            schema = generate_schema(method, skill_name, description)
+            tool_registry.register_tool(
+                name=skill_name,
+                instance=file_manager, # Pass the instance
+                tool=bound_method,
+                schema=schema # Pass the generated schema
+            )
+            logger.debug(f"Registered tool: {skill_name} from FileManagerSkill")
+
+    # Register standalone skills
+    planner_description = hierarchical_planner.__doc__ or "Generates a plan."
+    planner_schema = generate_schema(hierarchical_planner, "hierarchical_planner", planner_description)
+    tool_registry.register_tool(
+        name="hierarchical_planner",
+        instance=None,
+        tool=hierarchical_planner,
+        schema=planner_schema
+    )
+    logger.debug("Registered tool: hierarchical_planner")
+    
+    final_answer_description = final_answer.__doc__ or "Provides the final answer."
+    final_answer_schema = generate_schema(final_answer, "final_answer", final_answer_description)
+    tool_registry.register_tool(
+        name="final_answer",
+        instance=None,
+        tool=final_answer,
+        schema=final_answer_schema
+    )
+    logger.debug("Registered tool: final_answer")
+    
+    learning_cycle_description = learning_cycle.__doc__ or "Learning cycle skill."
+    learning_cycle_schema = generate_schema(learning_cycle, "learning_cycle", learning_cycle_description)
+    tool_registry.register_tool(
+        name="learning_cycle",
+        instance=None,
+        tool=learning_cycle,
+        schema=learning_cycle_schema
+    )
+    logger.debug("Registered tool: learning_cycle")
+    
+    logger.info(f"Initialized ToolRegistry with {len(tool_registry.list_tools())} tools.")
+
+    # --- Initialize FragmentRegistry ---
+    fragment_registry = FragmentRegistry() 
+    logger.info(f"Initialized FragmentRegistry. Found {len(fragment_registry.get_all_definitions())} fragment definitions.")
 
     try:
         logger.info("Starting llama-server...")
-        server_manager.start_server() # Synchronous call
+        await server_manager.start_server(server_name="llama")
         await asyncio.sleep(2)
 
         agent = ReactAgent(
             agent_id="1",
             llm_interface=llm_interface,
             skill_registry=skill_registry_dict,
-            workspace_root=str(PROJECT_ROOT)
+            tool_registry=tool_registry,
+            fragment_registry=fragment_registry,
+            memory_manager=memory_manager,
+            workspace_root=str(PROJECT_ROOT),
+            logger=logger
         )
 
         # --- Execute Task using run_task --- 
@@ -202,10 +364,12 @@ async def main():
         # --- Handle Result --- 
         if result.get("status") == "success":
             print("\n\033[92m✅ Final Answer:\033[0m") # Green color for success
-            print(result.get("final_answer", "(No final answer content)"))
+            # Print final answer content in cyan
+            console.print(result.get("final_answer", "(No final answer content)"), style="cyan")
         else:
             print("\n\033[91m❌ Task Failed:\033[0m") # Red color for failure
-            print(result.get("message", "Unknown error"))
+            # Print failure message in red
+            console.print(result.get("message", "Unknown error"), style="red")
 
         logger.info("[CLI] Task execution finished.")
 
@@ -213,9 +377,30 @@ async def main():
         logger.fatal(f"❌ FATAL: Unexpected error during agent execution: {e}", exc_info=True)
     finally:
         logger.info("Stopping llama-server...")
-        server_manager.stop_server() # Synchronous call
-        logger.info("Synchronous cleanup finished.")
+        await server_manager.stop_server(server_name="llama")
+        logger.info("Server stop initiated.")
+
+        # <<< ADDED: Close all open DB connections >>>
+        logger.info("Closing database connections...")
+        closed_count = 0
+        # Iterate over a copy of the keys to avoid issues if dict changes during iteration
+        db_paths = list(_db_connections.keys())
+        for db_path in db_paths:
+            conn = _db_connections.pop(db_path, None)
+            if conn:
+                try:
+                    await close_db_connection(conn)
+                    logger.info(f"Closed DB connection for: {db_path}")
+                    closed_count += 1
+                except Exception as db_close_err:
+                    logger.error(f"Error closing DB connection for {db_path}: {db_close_err}")
+        logger.info(f"Database cleanup complete. Closed {closed_count} connection(s).")
+        # <<< END ADDED >>>
 
 if __name__ == "__main__":
     # Chama a função principal da interface CLI using asyncio
+    asyncio.run(main())
+
+def cli_entry():
+    """Synchronous entry point for the CLI script."""
     asyncio.run(main())

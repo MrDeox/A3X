@@ -190,16 +190,17 @@ class FragmentRegistry:
 
                 try:
                     # --- Reload Module if force_reload is True --- 
-                    # This is crucial for picking up code changes in existing fragment files
-                    # Note: Reloading has caveats, especially with complex dependencies or stateful modules
                     if force_reload and modname in importlib.sys.modules:
+                         self.logger.debug(f"Attempting to reload module: {modname}")
                          module = importlib.reload(importlib.sys.modules[modname])
                          self.logger.info(f"Reloaded module: {modname}")
                     else:
+                         self.logger.debug(f"Attempting to import module: {modname}")
                          module = importlib.import_module(modname)
+                         self.logger.debug(f"Successfully imported module: {modname}")
                     # --- End Reload Logic --- 
 
-                    self.logger.debug(f"Inspecting module: {modname}")
+                    self.logger.debug(f"Inspecting members of module: {modname}")
                     for attribute_name, attribute in inspect.getmembers(module):
                         # Check if it's a class AND has the _fragment_metadata attribute set by our decorator
                         if inspect.isclass(attribute) and hasattr(attribute, '_fragment_metadata'):
@@ -269,52 +270,81 @@ class FragmentRegistry:
 
 
     def load_fragment(self, name: str) -> Optional[BaseFragment]:
-        """Instantiates a single fragment class by name if not already loaded.
+        """
+        Instantiates a fragment based on its registered definition.
 
-        If the fragment instance is already cached, it's returned directly.
-        Otherwise, it looks up the registered class, instantiates it (passing necessary
-        dependencies like llm_interface and skill_registry), caches the instance, and returns it.
+        If the fragment is already instantiated, returns the existing instance.
+        Otherwise, it finds the class definition, prepares necessary dependencies
+        (like LLMInterface, SkillRegistry, etc., based on the fragment's needs),
+        and instantiates it.
 
         Args:
             name: The name of the fragment to load.
 
         Returns:
-            An instance of the requested fragment, or None if instantiation fails or the
-            class is not registered.
+            An instance of the requested fragment, or None if instantiation fails.
         """
         if name in self._fragments:
-            return self._fragments[name] # Return cached instance
+            self.logger.debug(f"Returning cached instance for fragment '{name}'.")
+            return self._fragments[name]
 
-        fragment_cls = self._fragment_classes.get(name)
-        if not fragment_cls:
-            # Attempt discovery again? Or rely on initial discovery?
-            # For simplicity, let's assume initial discovery found the class if it exists.
-             self.logger.error(f"Cannot load fragment '{name}': Class not found in registry. Was it discovered?")
-             return None
-
-        # Instantiate the fragment class
-        try:
-            fragment_config = self.config.get("fragments", {}).get(name, {})
-            # Pass dependencies needed by __init__
-            init_kwargs = {
-                "llm_interface": self.llm_interface,
-                "skill_registry": self.skill_registry,
-                "config": fragment_config
-            }
-            # Inspect __init__ to pass only required args? Safer but more complex.
-            # For now, pass all standard dependencies.
-            instance = fragment_cls(**{k: v for k, v in init_kwargs.items()}) # Pass all, let __init__ handle
-
-            self._fragments[name] = instance # Cache the instance
-            self.logger.info(f"Successfully instantiated Fragment: '{name}' on demand.")
-            return instance
-        except Exception as e:
-            # Log detailed error if instantiation fails
-            self.logger.error(f"Failed to instantiate Fragment '{name}' ({fragment_cls.__name__}): {e}", exc_info=True)
+        if name not in self._fragment_classes or name not in self._fragment_defs:
+            self.logger.error(f"Fragment '{name}' class or definition not found in registry. Cannot load.")
             return None
 
+        fragment_cls = self._fragment_classes[name]
+        fragment_def = self._fragment_defs[name]
+        self.logger.info(f"Attempting to instantiate Fragment '{name}' (Class: {fragment_cls.__name__}).")
+
+        # --- Prepare dependencies --- 
+        # Gather potential dependencies the fragment might need
+        # The fragment's __init__ signature will determine which ones are actually passed
+        all_possible_kwargs = {
+            "fragment_def": fragment_def,
+            "llm_interface": self.llm_interface,
+            "skill_registry": self.skill_registry, 
+            "tool_registry": self.skill_registry, # Pass skill registry as tool_registry
+            "config": self.config, 
+            # Add other potential dependencies here
+        }
+
+        try:
+            # --- Inspect __init__ and Filter kwargs --- 
+            init_sig = inspect.signature(fragment_cls.__init__)
+            init_params = init_sig.parameters
+            
+            actual_init_kwargs = {}
+            for param_name, param in init_params.items():
+                if param_name == 'self': # Skip self
+                    continue
+                if param_name in all_possible_kwargs:
+                    actual_init_kwargs[param_name] = all_possible_kwargs[param_name]
+                # If param has a default, it's optional, don't raise error if not provided
+                elif param.default == inspect.Parameter.empty:
+                    self.logger.warning(f"Required __init__ parameter '{param_name}' for {fragment_cls.__name__} not found in registry dependencies.")
+                    # Decide if this should be a hard error or just a warning
+                    # raise ValueError(f"Missing dependency for {fragment_cls.__name__}: {param_name}")
+            
+            self.logger.debug(f"Filtered kwargs for {fragment_cls.__name__}.__init__: {list(actual_init_kwargs.keys())}")
+
+            # --- Instantiate with filtered args --- 
+            instance = fragment_cls(**actual_init_kwargs)
+            
+            self._fragments[name] = instance
+            self.logger.info(f"Successfully instantiated and cached Fragment '{name}'.")
+            return instance
+        except TypeError as e:
+            # Catch TypeErrors specifically related to instantiation (wrong args)
+            self.logger.error(f"Failed to instantiate Fragment '{name}' ({fragment_cls.__name__}): {e}", exc_info=True)
+        except Exception as e:
+            # Catch other potential errors during instantiation
+            self.logger.error(f"An unexpected error occurred during instantiation of Fragment '{name}' ({fragment_cls.__name__}): {e}", exc_info=True)
+        
+        return None # Return None if instantiation failed
+
     def get_fragment(self, name: str) -> Optional[BaseFragment]:
-        """Retrieves an instantiated fragment by its name. Loads it if not already loaded.
+        """
+        Returns an instantiated fragment, loading it if necessary.
 
         This is the primary method for accessing fragment instances.
 
@@ -394,5 +424,33 @@ class FragmentRegistry:
                   if self.load_fragment(name):
                        count += 1
          self.logger.info(f"Finished loading fragments. {count} new instances created.")
+
+    # <<< ADDED Method >>>
+    async def select_fragment_for_task(self, objective: str, context: Optional[Dict] = None) -> Optional[BaseFragment]:
+        """
+        Selects the most appropriate Fragment based on the objective.
+        Currently uses simple keyword matching for file operations.
+        """
+        self.logger.info(f"Attempting to select fragment for objective: '{objective[:100]}...'")
+
+        # Simple keyword matching for file operations
+        file_op_keywords = ['list', 'read', 'write', 'delete', 'file', 'directory', 'arquivo', 'diretorio', 'listar', 'ler', 'escrever', 'apagar', 'deletar']
+        objective_lower = objective.lower()
+        if any(keyword in objective_lower for keyword in file_op_keywords):
+            self.logger.info("Objective seems related to file operations. Selecting FileOpsManager.")
+            # Return the *instance* of the FileOpsManager
+            file_ops_manager = self.get_fragment("FileOpsManager")
+            if file_ops_manager:
+                return file_ops_manager
+            else:
+                self.logger.error("FileOpsManager fragment is registered but failed to load/instantiate.")
+                return None
+
+        # --- Default Fallback ---
+        # TODO: Implement more sophisticated selection (LLM call, semantic search, etc.)
+        # For now, if no specific match, return None
+        self.logger.warning(f"No specific fragment matched objective via keyword search: '{objective[:100]}...'")
+        return None
+    # <<< END ADDED Method >>>
 
 # --- Standalone functions are removed --- 

@@ -2,6 +2,7 @@ import logging
 import requests
 from a3x.core.skills import skill
 from a3x.core.config import GUMROAD_API_BASE_URL, GUMROAD_API_KEY
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -12,19 +13,19 @@ logger = logging.getLogger(__name__)
         "e analisar oportunidades de monetização digital de forma autônoma e segura."
     ),
     parameters={
-        "endpoint": (str, ...),  # Ex: "products", "sales", "analytics"
-        "method": (str, "GET"),  # "GET", "POST", "PUT", "DELETE"
-        "params": (dict, None),  # Parâmetros de query ou body
-        "api_key": (str, None),   # Chave de API da Gumroad (opcional, usa config se não fornecido)
-        "base_url": (str, None),  # Base URL da API (opcional, usa config se não fornecido)
+        "endpoint": {"type": str, "description": "O endpoint da API a ser chamado (ex: 'products', 'sales')."},
+        "method": {"type": str, "description": "Método HTTP (GET, POST, PUT, DELETE)."},
+        "params": {"type": Optional[dict], "description": "Parâmetros de query (GET) ou corpo da requisição (POST/PUT)."},
+        "api_key": {"type": Optional[str], "description": "Chave de API da Gumroad (usa config se None)."},
+        "base_url": {"type": Optional[str], "description": "URL base da API (usa config se None)."},
     },
 )
 async def gumroad_api_skill(
-    endpoint,
-    method="GET",
-    params=None,
-    api_key=None,
-    base_url=None,
+    endpoint: str,
+    method: str = "GET",
+    params: Optional[dict] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
 ):
     """
     Skill para integração autônoma com a API da Gumroad.

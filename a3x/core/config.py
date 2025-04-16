@@ -92,3 +92,23 @@ TRAINING_EPOCHS = int(os.getenv("TRAINING_EPOCHS", 1)) # Default to 1 epoch for 
 TRAINING_LEARNING_RATE = float(os.getenv("TRAINING_LEARNING_RATE", 2e-5))
 
 # Outras configurações podem ser adicionadas aqui conforme necessário
+
+# <<< ADDED: Define where skill packages are located >>>
+# List of Python package paths where skills are defined (e.g., 'a3x.skills.core', 'a3x.skills.web')
+# SKILL_PACKAGES = os.getenv("SKILL_PACKAGES", '["a3x.skills"]').split(',') # Original line with potential parsing issue
+
+# <<< CORRIGIDO: Parsing correto para SKILL_PACKAGES >>>
+skill_packages_env = os.getenv("SKILL_PACKAGES")
+if skill_packages_env:
+    try:
+        # Tenta carregar como JSON se for uma lista no .env (ex: '["pkg1", "pkg2"]')
+        import json
+        SKILL_PACKAGES = json.loads(skill_packages_env)
+        if not isinstance(SKILL_PACKAGES, list):
+            raise ValueError("SKILL_PACKAGES env var must be a JSON list of strings.")
+    except (json.JSONDecodeError, ValueError):
+        # Se não for JSON válido ou não for lista, trata como string separada por vírgula
+        SKILL_PACKAGES = [pkg.strip() for pkg in skill_packages_env.split(',') if pkg.strip()]
+else:
+    # Default é uma lista Python
+    SKILL_PACKAGES = ["a3x.skills"]

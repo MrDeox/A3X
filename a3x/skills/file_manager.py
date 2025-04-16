@@ -13,6 +13,7 @@ from a3x.core.skills import skill
 from a3x.core.validators import validate_workspace_path
 from a3x.core.context import SharedTaskContext
 from a3x.core.context_accessor import ContextAccessor
+from a3x.core.context import _ToolExecutionContext
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ class FileManagerSkill:
     )
     async def list_directory(
         self,
+        ctx: _ToolExecutionContext,
         resolved_path: Path,
         original_path_str: str,
         directory: str = ".",
@@ -214,42 +216,31 @@ class FileManagerSkill:
         name="read_file",
         description="Reads the contents of a file at the specified path.",
         parameters={
-            "path": {"type": "string", "description": "The path to the file to read."},
-            "shared_task_context": {"type": "SharedTaskContext", "description": "The shared context for accessing task-related data.", "optional": True}
+            "path": {"type": str, "description": "The path to the file to read."},
         }
     )
     @validate_workspace_path(arg_name="path", check_existence=True, target_type="file")
     async def read_file(
         self,
+        ctx: _ToolExecutionContext,
         path: str,
-        shared_task_context: Optional[SharedTaskContext] = None,
-        # Injected by decorator:
-        resolved_path: Path = None,  # Re-added = None
-        original_path_str: str = None,  # Re-added = None
-        agent_memory: Optional[Dict] = None,  # Keep agent_memory optional if needed
+        resolved_path: Path = None,
+        original_path_str: str = None,
     ) -> dict:
         """
         Reads the contents of a file at the specified path.
         
         Args:
             path (str): The path to the file to read.
-            shared_task_context (SharedTaskContext, optional): The shared context for the current task.
-        
-        Returns:
-            dict: The contents of the file if successful, or an error message if the file cannot be read.
         """
         log_prefix = "[read_file]"
-        logger.info(f"{log_prefix} Attempting to read file at path: {path}")
-        
-        # Update context accessor if shared_task_context is provided
-        if shared_task_context:
-            _context_accessor.set_context(shared_task_context)
-            logger.info(f"{log_prefix} Updated ContextAccessor with task ID: {shared_task_context._task_id}")
+        # Use original_path_str for user-facing logs/messages if needed
+        logger.info(f"{log_prefix} Attempting to read file: '{original_path_str}' (Resolved: {resolved_path})")
         
         try:
-            # Check if file exists
-            if not os.path.exists(path):
-                error_msg = f"File not found: {path}"
+            # Check if file exists (using resolved_path)
+            if not resolved_path.exists(): # <<< CORRECTED
+                error_msg = f"File not found: '{original_path_str}' (Resolved path did not exist: {resolved_path})" # Use original for msg
                 logger.error(f"{log_prefix} {error_msg}")
                 return {
                     "status": "error",
@@ -257,9 +248,9 @@ class FileManagerSkill:
                     "data": {"message": f"Error: {error_msg}"},
                 }
             
-            # Check if it's actually a file
-            if not os.path.isfile(path):
-                error_msg = f"Path is not a file: {path}"
+            # Check if it's actually a file (using resolved_path)
+            if not resolved_path.is_file(): # <<< CORRECTED
+                error_msg = f"Path is not a file: '{original_path_str}' (Resolved: {resolved_path})" # Use original for msg
                 logger.error(f"{log_prefix} {error_msg}")
                 return {
                     "status": "error",
@@ -267,25 +258,33 @@ class FileManagerSkill:
                     "data": {"message": f"Error: {error_msg}"},
                 }
             
-            # Check if file is readable
-            if not os.access(path, os.R_OK):
-                error_msg = f"File is not readable (permission denied): {path}"
+            # Check if file is readable (using Path.stat() for permission check)
+            # os.access might not be reliable, Path object methods are better
+            try:
+                _ = resolved_path.stat() # Check accessibility
+            except PermissionError:
+                error_msg = f"File is not readable (permission denied): '{original_path_str}' (Resolved: {resolved_path})" # Use original for msg
                 logger.error(f"{log_prefix} {error_msg}")
                 return {
                     "status": "error",
                     "action": "read_file_failed",
                     "data": {"message": f"Error: {error_msg}"},
                 }
-            
-            # Read the file contents
-            with open(path, 'r', encoding='utf-8') as file:
+            except FileNotFoundError: # Should be caught above, but handle defensively
+                 error_msg = f"File disappeared after check: '{original_path_str}'"
+                 logger.error(f"{log_prefix} {error_msg}")
+                 return {"status": "error", "action": "read_file_failed", "data": {"message": f"Error: {error_msg}"}}
+
+            # Read the file contents (using resolved_path)
+            with resolved_path.open('r', encoding='utf-8') as file: # <<< CORRECTED
                 content = file.read()
             
-            logger.info(f"{log_prefix} Successfully read file: {path} ({len(content)} characters)")
+            # Log using original path for user clarity
+            logger.info(f"{log_prefix} Successfully read file: '{original_path_str}' ({len(content)} characters)")
             
-            # Update the shared context with the last read file path using ContextAccessor
-            _context_accessor.set_last_read_file(path)
-            logger.info(f"{log_prefix} Updated context with last read file: {path}")
+            # Update context accessor using original path string (consistent key)
+            await _context_accessor.set_last_read_file(original_path_str) # <<< Use original path
+            logger.info(f"{log_prefix} Updated context with last read file: {original_path_str}")
             
             max_len_preview = 500
             content_preview = content[:max_len_preview] + (
@@ -299,34 +298,16 @@ class FileManagerSkill:
                 "status": "success",
                 "action": "file_read",
                 "data": {
-                    "filepath": original_path_str,
+                    "filepath": original_path_str, # Keep original path here
                     "content": file_content,
                     "message": f"File '{original_path_str}' read successfully (Preview: {content_preview})",
                     "lines_read": line_count,
                 },
             }
 
-            if shared_task_context:
-                context_data_key = f"file_content:{original_path_str}"
-                context_metadata = {"file_size_bytes": len(content), "lines_read": line_count}
-                tags = ["file_read", "data_loaded"]
-                shared_task_context.set(
-                    key=context_data_key, 
-                    value=file_content, 
-                    source="read_file", 
-                    tags=tags, 
-                    metadata=context_metadata
-                )
-                shared_task_context.set(
-                    key="last_file_read_path",
-                    value=original_path_str,
-                    source="read_file"
-                )
-                logger.debug(f"Updated shared context with key '{context_data_key}'")
-
             return result_payload
         except Exception as e:
-            error_msg = f"Failed to read file {path}: {str(e)}"
+            error_msg = f"Failed to read file '{original_path_str}': {str(e)}" # Use original for msg
             logger.error(f"{log_prefix} {error_msg}", exc_info=True)
             return {
                 "status": "error",
@@ -338,103 +319,124 @@ class FileManagerSkill:
         name="write_file",
         description="Writes content to a specified file within the workspace.",
         parameters={
-            "path": {"type": str, "description": "The relative path to the file."},
+            "filename": {"type": str, "description": "The relative path (filename) of the file."},
             "content": {"type": str, "description": "The content to write to the file."},
             "overwrite": {"type": bool, "default": False, "description": "Whether to overwrite the file if it exists (default: False)."},
-            "create_backup_flag": {"type": bool, "default": True, "description": "Whether to create a backup before writing (default: True)."}
+            "create_backup_flag": {"type": bool, "default": True, "description": "Whether to create a backup before writing (default: True)."},
         },
     )
-    @validate_workspace_path(arg_name="path", check_existence=False, target_type="file")
+    @validate_workspace_path(arg_name="filename", check_existence=False, target_type="file")
     async def write_file(
         self,
-        path: str,
+        ctx: _ToolExecutionContext,
+        filename: str,
         content: str,
         overwrite: bool = False,
         create_backup_flag: bool = True,
-        # Injected by decorator:
-        resolved_path: Path = None,  # Re-added = None
-        original_path_str: str = None,  # Re-added = None
-        agent_memory: Optional[Dict] = None,  # Keep agent_memory optional if needed
+        resolved_path: Path = None,
+        original_path_str: str = None,
     ) -> dict:
-        """Creates/overwrites file. Path validation via decorator."""
-        logger.debug(
-            f"Skill 'write_file' requested. Path: '{original_path_str}', Overwrite: {overwrite}"
-        )
+        logger.debug(f"[DEBUG write_file] Entrou no método com argumentos: self={self}, ctx={ctx}, filename={filename}, content={content}, overwrite={overwrite}, create_backup_flag={create_backup_flag}, resolved_path={resolved_path}, original_path_str={original_path_str}")
+        print(f"[DEBUG write_file] self={self}, ctx={ctx}, filename={filename}, content={content}, overwrite={overwrite}, create_backup_flag={create_backup_flag}, resolved_path={resolved_path}, original_path_str={original_path_str}")
+        if resolved_path is None:
+            logger.error(f"[DEBUG write_file] resolved_path está None! original_path_str={original_path_str}")
+            print(f"[DEBUG write_file] resolved_path está None! original_path_str={original_path_str}")
+        else:
+            logger.debug(f"[DEBUG write_file] resolved_path={resolved_path}")
+            print(f"[DEBUG write_file] resolved_path={resolved_path}")
+        """
+        Writes content to a specified file within the workspace.
 
-        if not isinstance(content, str):
+        Args:
+            filename (str): The relative path (filename) of the file.
+            content (str): The content to write to the file.
+            overwrite (bool): Whether to overwrite the file if it exists.
+            create_backup_flag (bool): Whether to create a backup before writing.
+            resolved_path (Path): The resolved absolute path (injected by decorator).
+            original_path_str (str): The original path string passed (injected by decorator).
+
+        Returns:
+            dict: A dictionary indicating the result of the operation.
+        """
+        log_prefix = f"[write_file: '{original_path_str}']"
+        logger.info(f"[DEBUG TEST] write_file called with filename={filename}, resolved_path={resolved_path}, overwrite={overwrite}, create_backup_flag={create_backup_flag}")
+        # --- Log context if available ---
+        # Access task_id via the shared context
+        try:
+            # task_id_info = f"Task ID from context: {ctx.task_id}" # OLD: Incorrect access
+            task_id_info = f"Task ID from context: {ctx.shared_task_context.task_id}" # CORRECT: Access via shared_task_context
+            ctx.logger.info(f"Write operation for {filename}. {task_id_info}")
+        except AttributeError:
+            ctx.logger.warning(f"Could not retrieve task_id from context in write_file.")
+            task_id_info = "Task ID: Unknown"
+
+        # Use the resolved path injected by the decorator
+        target_path = resolved_path
+
+        # Check if file exists and handle overwrite logic
+        if target_path.exists() and not overwrite:
+            msg = f"File '{original_path_str}' already exists and overwrite is False."
+            logger.warning(f"{log_prefix} {msg}")
             return {
                 "status": "error",
                 "action": "write_file_failed",
-                "data": {"message": "Content parameter must be a string."},
+                "data": {"message": msg},
             }
-        if not isinstance(overwrite, bool):
-            return {
-                "status": "error",
-                "action": "write_file_failed",
-                "data": {
-                    "message": "Overwrite parameter must be a boolean (true/false)."
-                },
-            }
+
+        # Attempt backup before writing if required and possible
+        backup_made = False
+        if (
+            create_backup_flag
+            and self._backup_enabled
+            and target_path.exists()
+        ):
+            try:
+                self._create_backup(target_path)
+                backup_made = True
+                logger.info(f"{log_prefix} Backup created for '{original_path_str}'")
+            except Exception as backup_err:
+                logger.error(
+                    f"{log_prefix} Backup failed for '{original_path_str}'. Write operation cancelled. Error: {backup_err}",
+                    exc_info=True,
+                )
+                return {
+                    "status": "error",
+                    "action": "write_file_failed_backup",
+                    "data": {
+                        "message": f"Backup failed for '{original_path_str}', write cancelled: {backup_err}"
+                    },
+                }
 
         try:
-            # Check existence and type *again* based on overwrite flag
-            if resolved_path.exists():
-                if resolved_path.is_dir():
-                    return {
-                        "status": "error",
-                        "action": "write_file_failed",
-                        "data": {
-                            "message": f"Cannot create file, a directory already exists at '{original_path_str}'"
-                        },
-                    }
-                if not overwrite:
-                    return {
-                        "status": "error",
-                        "action": "write_file_failed",
-                        "data": {
-                            "message": f"File '{original_path_str}' already exists. Use overwrite=True to replace it."
-                        },
-                    }
-                # If overwrite=True and it's a file, we proceed.
+            # Ensure parent directory exists
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"{log_prefix} Ensured directory exists: {target_path.parent}")
 
-            resolved_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(resolved_path, "w", encoding="utf-8") as f:
+            # Write the content
+            with open(target_path, "w", encoding="utf-8") as f:
                 f.write(content)
+            logger.info(f"{log_prefix} Content successfully written.")
 
-                action_name = (
-                    "file_overwritten"
-                    if overwrite and resolved_path.exists()
-                    else "file_created"
-                )  # Adjust action based on prior existence for accuracy
-                message = f"File '{original_path_str}' was successfully {action_name.replace('_', ' ')}."
-            logger.info(message)
             return {
                 "status": "success",
-                "action": action_name,
-                "data": {"message": message, "filepath": original_path_str},
-            }
-
-        except PermissionError:
-            logger.error(
-                f"Permission error writing file: {resolved_path}", exc_info=True
-            )
-            return {
-                "status": "error",
-                "action": "write_file_failed",
+                "action": "file_written",
                 "data": {
-                    "message": f"Permission denied to write file: '{original_path_str}'"
+                    "filename": original_path_str, # Report original name
+                    "message": f"File '{original_path_str}' written successfully.",
+                    "backup_created": backup_made,
                 },
             }
-        except IsADirectoryError:  # Should be caught above, but safeguard
+        except PermissionError:
+            logger.error(f"{log_prefix} Permission error writing to file.", exc_info=True)
             return {
                 "status": "error",
                 "action": "write_file_failed",
                 "data": {
-                    "message": f"Cannot write to a directory: '{original_path_str}'"
+                    "message": f"Permission denied writing to file: '{original_path_str}'"
                 },
             }
         except Exception as e:
-            logger.exception(f"Unexpected error writing file '{resolved_path}':")
+            logger.exception(f"{log_prefix} Unexpected error writing file:")
             return {
                 "status": "error",
                 "action": "write_file_failed",
@@ -454,6 +456,7 @@ class FileManagerSkill:
     @validate_workspace_path(arg_name="path", target_type="file", check_existence=False)
     async def append_to_file(
         self,
+        ctx: _ToolExecutionContext,
         content: str,
         path: str,
         *,
@@ -527,13 +530,12 @@ class FileManagerSkill:
         description="Deletes a specified file or directory within the workspace. Backup is mandatory.",
         parameters={
             "path": {"type": str, "description": "The relative path to the file or directory to delete."},
-            "backup": {"type": bool, "default": True, "description": "Whether to create a backup before deleting (default: True, mandatory)."}
         },
     )
     @validate_workspace_path(arg_name="path", target_type="any", check_existence=True)
     async def delete_path(
         self,
-        backup: bool,
+        ctx: _ToolExecutionContext,
         resolved_path: Path,
         original_path_str: str,
         path: str,
@@ -541,21 +543,8 @@ class FileManagerSkill:
     ) -> dict:
         """Deletes file/directory. Path validation via decorator. Backup mandatory."""
         logger.debug(
-            f"Skill 'delete_path' requested for: '{original_path_str}', backup={backup}"
+            f"Skill 'delete_path' requested for: '{original_path_str}', backup={True}"
         )
-
-        # Enforce backup=True
-        if not backup:
-            logger.warning(
-                f"Deletion requires 'backup=True' for '{original_path_str}'. Aborting."
-            )
-            return {
-                "status": "error",
-                "action": "delete_confirmation_missing",
-                "data": {
-                    "message": f"Deletion requires 'backup=True' for '{original_path_str}'. Operation aborted."
-                },
-            }
 
         # --- Security Check - Protected Extension ---
         if (
@@ -679,6 +668,47 @@ class FileManagerSkill:
                 "data": {
                     "message": f"Unexpected error deleting '{original_path_str}': {e}"
                 },
+            }
+
+    @skill(
+        name="create_directory",
+        description="Creates a directory (including any necessary parent directories) at the specified path within the workspace.",
+        parameters={
+            "directory": {"type": str, "description": "The relative path to the directory to create."}
+        }
+    )
+    @validate_workspace_path(arg_name="directory", target_type="dir", check_existence=False)
+    async def create_directory(
+        self,
+        ctx: _ToolExecutionContext,
+        directory: str,
+        resolved_path: Path,
+        original_path_str: str,
+    ) -> dict:
+        """Creates a directory, including parent directories if needed."""
+        logger.info(f"[create_directory] Attempting to create directory: '{original_path_str}' (Resolved: {resolved_path})")
+        
+        try:
+            resolved_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[create_directory] Successfully created directory: {resolved_path}")
+            return {
+                "status": "success",
+                "action": "directory_created",
+                "data": {"message": f"Directory '{original_path_str}' created successfully."}
+            }
+        except PermissionError:
+            logger.error(f"[create_directory] Permission denied to create directory: {resolved_path}", exc_info=True)
+            return {
+                "status": "error",
+                "action": "create_directory_failed",
+                "data": {"message": f"Permission denied to create directory '{original_path_str}'."}
+            }
+        except Exception as e:
+            logger.exception(f"[create_directory] Unexpected error creating directory '{resolved_path}':")
+            return {
+                "status": "error",
+                "action": "create_directory_failed",
+                "data": {"message": f"Unexpected error creating directory '{original_path_str}': {e}"}
             }
 
 
