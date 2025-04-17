@@ -1,0 +1,4 @@
+This is dummy text line 1 for placeholder LoRA training.
+This is dummy text line 2, content doesn't matter much.
+This is dummy text line 3, just need some data to process.
+This is dummy text line 4, ensuring the file is not empty. 

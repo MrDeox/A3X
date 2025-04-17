@@ -26,25 +26,32 @@ def notify_task_planning_complete(plan: List[str]):
     except Exception as e:
         hooks_logger.error(f"Error in notify_task_planning_complete: {e}", exc_info=True)
 
-def notify_task_completion(final_answer: str):
-    """Called when the agent successfully completes the task."""
+async def notify_task_completion(task_id: str, final_answer: str = ""):
+    """Hook to notify when a task completes successfully."""
     try:
-        AGENT_STATE.set_status("finished")
-        log_event("INFO", f"Task finished. Final Answer: {final_answer}", source="AgentLoop", extra_data={"final_answer": final_answer})
+        hooks_logger.info(f"Task {task_id} completed successfully.")
+        # Log completion event with final answer if provided
+        log_event(
+            task_id=task_id,
+            event_type=EVENT_TASK_COMPLETION,
+            message=f"Task completed successfully.",
+            extra_data={"final_answer": final_answer} if final_answer else None
+        )
+        # Here you could add logic to update a database, send notifications, etc.
     except Exception as e:
         hooks_logger.error(f"Error in notify_task_completion: {e}", exc_info=True)
 
-def notify_task_error(error_message: str, source: str = "Unknown", error_details: Optional[Dict] = None):
+async def notify_task_error(error_message: str, source: str = "Unknown", error_details: Optional[Dict] = None):
     """Called when the agent encounters an unrecoverable error during the task."""
     try:
         AGENT_STATE.set_error(error_message)
-        log_event("ERROR", f"Task failed: {error_message}", source=source, extra_data=error_details)
+        log_event("ERROR", f"Task failed: {error_message}", source=source, extra_data=error_details if isinstance(error_details, dict) else {"error_details_raw": str(error_details)})
     except Exception as e:
         hooks_logger.error(f"Error in notify_task_error hook itself: {e}", exc_info=True)
 
 # --- Fragment/Step Lifecycle Hooks --- #
 
-def notify_fragment_selection(fragment_name: str):
+async def notify_fragment_selection(fragment_name: str):
     """Called when a specific fragment is chosen to handle a step/sub-task."""
     try:
         AGENT_STATE.set_active_fragment(fragment_name)

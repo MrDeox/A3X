@@ -71,6 +71,26 @@ try:
     from a3x.skills.final_answer import final_answer
     from a3x.skills.core.learning_cycle import learning_cycle_skill as learning_cycle
     import inspect
+    # <<< ADDED IMPORTS for Web/Visual Skills >>>
+    from a3x.skills.web_search import web_search
+    from a3x.skills.browser_skill import (
+        open_url,
+        click_element,
+        fill_form_field,
+        get_page_content,
+        # close_browser # Optionally add later if needed
+    )
+    from a3x.skills.perception.describe_image_blip import describe_image_blip
+    # --- End Added Imports ---
+    # <<< ADDED: Import execute_code >>>
+    from a3x.skills.execute_code import execute_code
+    # <<< END ADDED >>>
+    # <<< ADDED: Import propose_skill_from_gap >>>
+    from a3x.skills.propose_skill_from_gap import propose_skill_from_gap
+    # <<< END ADDED >>>
+    # <<< ADDED: Import reload_generated_skills >>>
+    from a3x.skills.reload_generated_skills import reload_generated_skills
+    # <<< END ADDED >>>
 except ImportError as e:
     import logging
     logging.basicConfig(level=logging.INFO)
@@ -222,6 +242,16 @@ async def main():
     setup_logging(log_level_str=args.log_level, log_file_path=args.log_file)
     logger = logging.getLogger(__name__) # Now get the configured logger
     
+    # --- Initialize Database EARLY --- #
+    try:
+        logger.info("Initializing database structure...")
+        initialize_database() # Call using default DATABASE_PATH from config
+        logger.info("Database initialized successfully.")
+    except Exception as db_init_err:
+        logger.fatal(f"FATAL: Failed to initialize database: {db_init_err}", exc_info=True)
+        return # Exit if DB initialization fails
+    # --- End DB Initialization --- #
+
     # Log the received arguments
     logger.info(f"Received task: {args.task}")
     logger.info(f"Using model name: {args.model_name}")
@@ -335,6 +365,103 @@ async def main():
     )
     logger.debug("Registered tool: learning_cycle")
     
+    # <<< ADDED: Register Web and Visual Skills >>>
+    # --- Web Search ---
+    try:
+        web_search_description = web_search.__doc__ or "Performs a web search."
+        web_search_schema = generate_schema(web_search, "web_search", web_search_description)
+        tool_registry.register_tool(
+            name="web_search",
+            instance=None,
+            tool=web_search,
+            schema=web_search_schema
+        )
+        logger.debug("Registered tool: web_search")
+    except Exception as e:
+        logger.error(f"Failed to register web_search: {e}")
+
+    # --- Browser Skills ---
+    # Note: These might ideally belong to a BrowserSkill instance if they share state,
+    # but registering as standalone for now based on initial observation.
+    browser_skills_to_register = {
+        "open_url": open_url,
+        "click_element": click_element,
+        "fill_form_field": fill_form_field,
+        "get_page_content": get_page_content,
+    }
+    for skill_name, skill_func in browser_skills_to_register.items():
+        try:
+            description = skill_func.__doc__ or f"Browser skill: {skill_name}"
+            schema = generate_schema(skill_func, skill_name, description)
+            tool_registry.register_tool(
+                name=skill_name,
+                instance=None, # Assuming standalone for now
+                tool=skill_func,
+                schema=schema
+            )
+            logger.debug(f"Registered tool: {skill_name}")
+        except Exception as e:
+            logger.error(f"Failed to register {skill_name}: {e}")
+            
+    # --- Visual Perception ---
+    try:
+        describe_image_blip_description = describe_image_blip.__doc__ or "Describes an image using BLIP."
+        describe_image_blip_schema = generate_schema(describe_image_blip, "describe_image_blip", describe_image_blip_description)
+        tool_registry.register_tool(
+            name="describe_image_blip",
+            instance=None,
+            tool=describe_image_blip,
+            schema=describe_image_blip_schema
+        )
+        logger.debug("Registered tool: describe_image_blip")
+    except Exception as e:
+        logger.error(f"Failed to register describe_image_blip: {e}")
+        
+    # <<< ADDED: Register execute_code skill >>>
+    try:
+        execute_code_description = execute_code.__doc__ or "Executes a code block."
+        execute_code_schema = generate_schema(execute_code, "execute_code", execute_code_description)
+        tool_registry.register_tool(
+            name="execute_code",
+            instance=None, # Standalone function
+            tool=execute_code,
+            schema=execute_code_schema
+        )
+        logger.debug("Registered tool: execute_code")
+    except Exception as e:
+        logger.error(f"Failed to register execute_code: {e}")
+    # <<< END ADDED >>>
+    
+    # <<< ADDED: Register propose_skill_from_gap >>>
+    try:
+        propose_skill_description = propose_skill_from_gap.__doc__ or "Generates Python code for a new skill."
+        propose_skill_schema = generate_schema(propose_skill_from_gap, "propose_skill_from_gap", propose_skill_description)
+        tool_registry.register_tool(
+            name="propose_skill_from_gap",
+            instance=None, # Standalone function
+            tool=propose_skill_from_gap,
+            schema=propose_skill_schema
+        )
+        logger.debug("Registered tool: propose_skill_from_gap")
+    except Exception as e:
+        logger.error(f"Failed to register propose_skill_from_gap: {e}")
+    # <<< END ADDED >>>
+    
+    # <<< ADDED: Register reload_generated_skills >>>
+    try:
+        reload_skills_description = reload_generated_skills.__doc__ or "Reloads and registers skills from the generated directory."
+        reload_skills_schema = generate_schema(reload_generated_skills, "reload_generated_skills", reload_skills_description)
+        tool_registry.register_tool(
+            name="reload_generated_skills",
+            instance=None, # Standalone function
+            tool=reload_generated_skills,
+            schema=reload_skills_schema
+        )
+        logger.debug("Registered tool: reload_generated_skills")
+    except Exception as e:
+        logger.error(f"Failed to register reload_generated_skills: {e}")
+    # <<< END ADDED >>>
+        
     logger.info(f"Initialized ToolRegistry with {len(tool_registry.list_tools())} tools.")
 
     # --- Initialize FragmentRegistry ---

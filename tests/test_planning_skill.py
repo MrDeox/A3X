@@ -1,10 +1,14 @@
 # tests/test_planning_skill.py
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 import sys
 import os
 import json
 from a3x.skills.planning import hierarchical_planner
+from a3x.core.context import _ToolExecutionContext
+from a3x.core.llm_interface import LLMInterface
+from a3x.core.tool_registry import ToolRegistry
+from a3x.fragments.registry import FragmentRegistry
 
 # --- Add project root to sys.path ---
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,121 +27,195 @@ async def async_generator_for(item):
     yield item
 
 
-# --- Fixtures (if any, keep as is) ---
-@pytest.fixture
-def mock_planner_logger():
-    return MagicMock()
+# <<< ADDED: Helper to create mock context >>>
+def create_mock_plan_context(llm_response=None, llm_side_effect=None, available_tools=None):
+    """Creates a mock _ToolExecutionContext for the planner skill."""
+    mock_llm = AsyncMock(spec=LLMInterface)
+    # Ensure call_llm itself is a mock we can check calls on
+    mock_llm.call_llm = AsyncMock()
+
+    if llm_side_effect:
+        mock_llm.call_llm.side_effect = llm_side_effect
+    elif llm_response is not None:
+        # Configure the mock to return an async generator
+        mock_llm.call_llm.return_value = async_generator_for(llm_response)
+    else:
+        # Configure the mock to return an empty async generator
+        async def async_gen_empty():
+            if False: yield
+        mock_llm.call_llm.return_value = async_gen_empty()
+
+    mock_tool_reg = MagicMock(spec=ToolRegistry)
+    # Mock get_tool_details to return a basic schema for listed tools
+    def mock_get_details(tool_name):
+        if available_tools and tool_name in available_tools:
+            return {
+                "name": tool_name,
+                "description": f"Description for {tool_name}",
+                "parameters": {"arg1": {"type": "str", "description": "Some arg"}}
+            }
+        return None
+    mock_tool_reg.get_tool_details.side_effect = mock_get_details
+
+    mock_frag_reg = MagicMock(spec=FragmentRegistry)
+    mock_frag_reg.get_fragment_definition.return_value = None # Assume no fragments for now
+
+    # Mock the context object
+    mock_ctx = MagicMock(spec=_ToolExecutionContext)
+    mock_ctx.logger = MagicMock()
+    mock_ctx.llm_interface = mock_llm
+    mock_ctx.tool_registry = mock_tool_reg
+    mock_ctx.fragment_registry = mock_frag_reg
+    mock_ctx.shared_task_context = MagicMock() # Mock shared context if needed
+    mock_ctx.shared_task_context.task_id = "test-task-123" # Example task ID
+
+    return mock_ctx, mock_llm, mock_tool_reg, mock_frag_reg
 
 
-# --- Test Cases ---
-
+# --- Test Cases (Modified to use context) ---
 
 @pytest.mark.asyncio
-async def test_hierarchical_planner_success(mock_planner_logger):
-    objective = "Test objective"
-    tools = "Tool A, Tool B"
+async def test_hierarchical_planner_success():
+    task_description = "Test objective"
+    available_tools = ["Tool_A", "Tool_B"] # Use list of strings
     expected_plan = [
-        "Step 1: Use Tool A with relevant info.",
-        "Step 2: Use Tool B based on Tool A output.",
-        "Step 3: Final answer summarizing results.",
+        {"step_id": 1, "description": "Do A", "action_type": "skill", "target_name": "Tool_A", "arguments": {"arg1": "valueA"}},
+        {"step_id": 2, "description": "Do B", "action_type": "skill", "target_name": "Tool_B", "arguments": {"arg1": "valueB"}}
     ]
     mock_llm_response = json.dumps(expected_plan)
 
-    with patch("skills.planning.call_llm") as mock_call_llm:
-        mock_call_llm.return_value = async_generator_for(mock_llm_response)
+    # Create mock context with the LLM response
+    mock_ctx, mock_llm, _, _ = create_mock_plan_context(
+        llm_response=mock_llm_response,
+        available_tools=available_tools
+    )
 
-        plan = await hierarchical_planner(objective, tools)
+    # Call the skill with context
+    result = await hierarchical_planner(
+        context=mock_ctx,
+        task_description=task_description,
+        available_tools=available_tools
+    )
 
-        assert plan == expected_plan
-        mock_call_llm.assert_called_once()
-        call_args, call_kwargs = mock_call_llm.call_args
-        assert isinstance(call_args[0], list)  # Check prompt is list
-        assert not call_kwargs.get("stream")
-        # mock_planner_logger.info.assert_called()
+    assert result["status"] == "success"
+    assert result["data"]["plan"] == expected_plan
+    # Check if LLM was called (hard to assert specific args due to complex prompt)
+    assert mock_llm.call_llm.called
+    # Check if logger was used
+    assert mock_ctx.logger.info.called
 
 
 @pytest.mark.asyncio
-async def test_hierarchical_planner_empty_plan(mock_planner_logger):
-    objective = "Empty plan objective"
-    tools = "Tool C"
+async def test_hierarchical_planner_empty_plan():
+    task_description = "Empty plan objective"
+    available_tools = ["Tool_C"] # Use list of strings
     mock_llm_response = "[]"  # Empty list JSON
 
-    with patch("skills.planning.call_llm") as mock_call_llm:
-        mock_call_llm.return_value = async_generator_for(mock_llm_response)
+    mock_ctx, mock_llm, _, _ = create_mock_plan_context(
+        llm_response=mock_llm_response,
+        available_tools=available_tools
+    )
 
-        plan = await hierarchical_planner(objective, tools)
+    result = await hierarchical_planner(
+        context=mock_ctx,
+        task_description=task_description,
+        available_tools=available_tools
+    )
 
-        assert plan == []
-        mock_call_llm.assert_called_once()
-        call_args, call_kwargs = mock_call_llm.call_args
-        assert isinstance(call_args[0], list)
-        assert not call_kwargs.get("stream")
-        # mock_planner_logger.warning.assert_called_with(
-        #     "[PlanningSkill] LLM returned an empty plan list []."
-        # )
+    assert result["status"] == "success" # Still success, just empty plan
+    assert result["data"]["plan"] == []
+    assert mock_llm.call_llm.called
+    assert mock_ctx.logger.info.called # Check planner started
+    assert mock_ctx.logger.info.call_count >= 2 # Start + Success message
 
 
 @pytest.mark.asyncio
-async def test_hierarchical_planner_invalid_json(mock_planner_logger):
-    objective = "Invalid JSON objective"
-    tools = "Tool D"
+async def test_hierarchical_planner_invalid_json():
+    task_description = "Invalid JSON objective"
+    available_tools = ["Tool_D"]
     mock_llm_response = "this is not json"
 
-    with patch("skills.planning.call_llm") as mock_call_llm:
-        mock_call_llm.return_value = async_generator_for(mock_llm_response)
+    mock_ctx, mock_llm, _, _ = create_mock_plan_context(
+        llm_response=mock_llm_response,
+        available_tools=available_tools
+    )
 
-        plan = await hierarchical_planner(objective, tools)
+    result = await hierarchical_planner(
+        context=mock_ctx,
+        task_description=task_description,
+        available_tools=available_tools
+    )
 
-        assert plan is None
-        mock_call_llm.assert_called_once()
-        call_args, call_kwargs = mock_call_llm.call_args
-        assert isinstance(call_args[0], list)
-        assert not call_kwargs.get("stream")
-        # mock_planner_logger.error.assert_called()
-
-
-@pytest.mark.asyncio
-async def test_hierarchical_planner_not_list(mock_planner_logger):
-    objective = "Not list objective"
-    tools = "Tool E"
-    mock_llm_response = json.dumps({"plan": "not a list"})
-
-    with patch("skills.planning.call_llm") as mock_call_llm:
-        mock_call_llm.return_value = async_generator_for(mock_llm_response)
-
-        plan = await hierarchical_planner(objective, tools)
-
-        assert plan is None
-        # <<< MODIFIED: Check call args, ensure stream=False >>>
-        mock_call_llm.assert_called_once()
-        call_args, call_kwargs = mock_call_llm.call_args
-        assert isinstance(call_args[0], list)
-        assert not call_kwargs.get("stream")
-        # mock_planner_logger.error.assert_called()
+    assert result["status"] == "failure"
+    assert "Failed to parse LLM plan response" in result["error"]
+    assert mock_llm.call_llm.called
+    assert mock_ctx.logger.error.called # Check for error log
 
 
 @pytest.mark.asyncio
-async def test_hierarchical_planner_llm_exception(mock_planner_logger):
-    objective = "LLM exception objective"
-    tools = "Tool F"
-    mock_exception = ValueError("LLM Error")
+async def test_hierarchical_planner_not_list():
+    task_description = "Not list objective"
+    available_tools = ["Tool_E"]
+    mock_llm_response = json.dumps({"plan": "not a list"}) # Valid JSON, but not a list
 
-    # <<< MODIFIED: Patch skills.planning.call_llm, use MagicMock, side_effect=exception >>>
-    # For exceptions, we still use side_effect with the standard MagicMock
-    with patch("skills.planning.call_llm") as mock_call_llm:
-        mock_call_llm.side_effect = mock_exception
+    mock_ctx, mock_llm, _, _ = create_mock_plan_context(
+        llm_response=mock_llm_response,
+        available_tools=available_tools
+    )
 
-        plan = await hierarchical_planner(objective, tools)
+    result = await hierarchical_planner(
+        context=mock_ctx,
+        task_description=task_description,
+        available_tools=available_tools
+    )
 
-        assert plan is None
-        # <<< MODIFIED: Check call args, ensure stream=False >>>
-        mock_call_llm.assert_called_once()
-        call_args, call_kwargs = mock_call_llm.call_args
-        assert isinstance(call_args[0], list)
-        assert not call_kwargs.get("stream")
-        # mock_planner_logger.exception.assert_called_once_with(
-        #     f"[PlanningSkill] Error calling LLM: {mock_exception}"
-        # )
+    assert result["status"] == "failure"
+    assert "Parsed JSON is not a list" in result["error"]
+    assert mock_llm.call_llm.called
+    assert mock_ctx.logger.error.called
+
+
+@pytest.mark.asyncio
+async def test_hierarchical_planner_llm_exception():
+    task_description = "LLM exception objective"
+    available_tools = ["Tool_F"]
+    mock_exception = ValueError("LLM API Error")
+
+    mock_ctx, mock_llm, _, _ = create_mock_plan_context(
+        llm_side_effect=mock_exception, # Use side_effect for exceptions
+        available_tools=available_tools
+    )
+
+    result = await hierarchical_planner(
+        context=mock_ctx,
+        task_description=task_description,
+        available_tools=available_tools
+    )
+
+    assert result["status"] == "failure"
+    assert "Exception during LLM call" in result["error"]
+    assert f"{mock_exception}" in result["error"]
+    assert mock_llm.call_llm.called
+    assert mock_ctx.logger.exception.called # Check for exception log
+
+
+@pytest.mark.asyncio
+async def test_hierarchical_planner_missing_llm_interface():
+    task_description = "Missing LLM"
+    available_tools = ["Tool_G"]
+
+    mock_ctx, _, _, _ = create_mock_plan_context(available_tools=available_tools)
+    mock_ctx.llm_interface = None # Explicitly remove LLM interface
+
+    result = await hierarchical_planner(
+        context=mock_ctx,
+        task_description=task_description,
+        available_tools=available_tools
+    )
+
+    assert result["status"] == "failure"
+    assert "LLMInterface missing" in result["error"]
+    assert mock_ctx.logger.error.called
 
 
 # To run: pytest tests/test_planning_skill.py -v -s

@@ -23,7 +23,11 @@ def log_event(level: str, message: str, source: Optional[str] = None, extra_data
         "source": source, # e.g., Orchestrator, FileManagerFragment, LLMInterface
     }
     if extra_data:
-        event.update(extra_data) # Merge any additional structured data
+        if isinstance(extra_data, dict):
+            event.update(extra_data) # Merge if it's a dictionary
+        else:
+            log_buffer_logger.warning(f"Received non-dict extra_data in log_event (type: {type(extra_data)}). Storing under 'raw_extra_data'.")
+            event["raw_extra_data"] = str(extra_data) # Store as string representation
 
     LOG_EVENTS.appendleft(event)
     # Optional: Also log to standard logger

@@ -1,5 +1,6 @@
 import logging
 from typing import List, Dict, Optional, Tuple
+import json
 
 # <<< ADDED Import >>>
 from a3x.core.context import SharedTaskContext
@@ -17,31 +18,45 @@ Thought: [Briefly explain your reasoning, plan for the *single* next action, and
 Action: [The *exact name* of ONE skill from the provided list, e.g., read_file. DO NOT write sentences or descriptions here.]
 Action Input: [Parameters for the skill in valid JSON format, e.g., {{"path": "data/users.json"}}]
 
-Example:
-Thought: I need to read the JSON file specified in the user objective to access the user data.
+Example 1 (Reading a file):
+Thought: I need to read the user's configuration file to understand their settings.
 Action: read_file
-Action Input: {{"path": "data/users.json"}}
+Action Input: {{"path": "config/settings.yaml"}}
+
+Example 2 (Writing to a file):
+Thought: The user asked me to save the results to a file. I will use the write_file skill.
+Action: write_file
+Action Input: {{"path": "output/results.txt", "content": "These are the final results."}}
+
+Example 3 (Using a planner):
+Thought: The task is complex and requires multiple steps. I should use the hierarchical_planner first to break it down.
+Action: hierarchical_planner
+Action Input: {{"task_description": "Create a new web component and integrate it into the main page.", "available_tools": ["read_file", "write_file", "execute_code"]}}
 
 **CRITICAL RULES:**
-1.  **Action Field:** The `Action:` field MUST contain ONLY the exact name of ONE skill from the list below. No extra words, descriptions, or sentences.
-2.  **Action Input Field:** The `Action Input:` field MUST be a valid JSON object containing the parameters for the chosen skill.
-3.  **No Code Blocks:** DO NOT generate code blocks (like ```python ... ```) anywhere in your response. Only provide the skill name and JSON input.
-4.  **One Step at a Time:** Focus on the immediate next step in your thought and action.
+1.  **ReAct Format:** Always use the "Thought:", "Action:", "Action Input:" structure.
+2.  **Action Field:** The `Action:` field MUST contain ONLY the exact name of ONE skill from the available list. No extra words, descriptions, or sentences.
+3.  **Action Input Field:** The `Action Input:` field MUST be a valid JSON object matching the parameters required by the chosen skill. Pay close attention to the required arguments for each skill. If a skill needs `path` and `content`, your JSON must provide both.
+4.  **JSON Validity:** Ensure the JSON in `Action Input:` is correctly formatted (double quotes around keys and string values, correct braces and commas).
+5.  **No Code Blocks:** DO NOT generate markdown code blocks (like ```json ... ```) around the Action Input JSON or anywhere else.
+6.  **One Step at a Time:** Focus only on the immediate next action required to progress towards the objective.
 
-If you have completed the objective, respond ONLY with:
-Final Answer: [Your final summary or result.]
+If you have completed the objective and no further actions are needed, respond ONLY with:
+Thought: I have completed the task.
+Action: final_answer
+Action Input: {{"answer": "[Your final summary or result.]"}}
 
 **Do NOT use any other format. Do NOT output explanations, markdown, or code blocks outside the required fields.**
 
-Available Skills (use ONLY these exact names for Action):
+Available Skills (use ONLY these exact names for `Action` and provide required args in `Action Input`):
 {tool_descriptions}
 
-Previous conversation history:
+Previous conversation history (Actions and Observations):
 {history}
 
-User Objective for this step: {input}
+Current User Objective: {input}
 
-**Focus on executing one valid action at a time based on your thought process.**
+**Respond now with your next Thought, Action, and Action Input.**
 """
 
 # <<< MOVED & UPDATED from agent.py >>>
@@ -57,6 +72,7 @@ Available Components (Workers):
 Choose a component based on the task requirements:
 # **Use the Current Context to inform your decision.** For example, if the last action failed, consider using the DebuggerFragment or retrying with different parameters. If a file was just read, the next step might involve processing it.
 
+- **If the overall objective seems complex, requires multiple steps, or involves actions across different domains (e.g., reading a file, then searching the web), ALWAYS choose the `PlannerFragment` first to create a structured plan.**
 - If the task requires coordination of multiple low-level actions within a specific domain (e.g., file operations, code operations), choose the appropriate **Manager** (Category: Management).
 - If the task is self-contained or represents the final step, choose a direct **Executor** Fragment (Category: Execution, e.g., FinalAnswerProvider, Planner).
 
@@ -297,34 +313,134 @@ def build_worker_messages(
     sub_task: str,
     history: List[Tuple[str, str]], # Expecting fragment's internal history format
     allowed_skills: List[str],
-    all_tools: Dict # The full tool registry to get descriptions
+    all_tools: Dict, # The full tool registry {name: schema}
+    max_history_items: int = 15 # Limit history in prompt
 ) -> List[Dict[str, str]]:
-    """Builds the messages list for a worker fragment's ReAct cycle."""
-    # Generate tool description string ONLY for allowed skills
-    tool_desc_parts = []
-    for skill_name in allowed_skills:
-        skill_info = all_tools.get(skill_name) # Get the dictionary from the registry
-        # Check if the entry exists, is a dict, and has a description key
-        if skill_info and isinstance(skill_info, dict) and "description" in skill_info:
-            description = skill_info.get("description", "No description")
-            tool_desc_parts.append(f"- {skill_name}: {description}")
-        else:
-            # Log if a skill is allowed but not found or lacks description in the registry
-            logger.warning(f"Skill '{skill_name}' allowed for fragment but description not found in tool registry.")
+    """
+    Builds the prompt messages for a worker Fragment's ReAct cycle.
+
+    Args:
+        sub_task: The specific objective for this fragment/cycle.
+        history: The ReAct history (Thought, Action, Action Input, Observation tuples).
+        allowed_skills: List of skill names this fragment is allowed to use.
+        all_tools: Dictionary mapping all available tool names to their schemas.
+
+    Returns:
+        A list of messages formatted for the LLM.
+    """
+    logger = logging.getLogger(__name__) # Use module logger
+
+    # <<< Inner helper function _format_allowed_tools >>>
+    def _format_allowed_tools(skills_to_format: List[str], tool_schemas: Dict) -> str:
+        formatted_lines = []
+        if not tool_schemas:
+            return "No tool schemas provided."
+        
+        for skill_name in skills_to_format:
+            schema = tool_schemas.get(skill_name)
+            if schema and isinstance(schema, dict):
+                formatted_lines.append(f"### Skill: {schema.get('name', skill_name)}")
+                formatted_lines.append(f"* Description: {schema.get('description', 'No description.')}")
+                
+                # Format parameters
+                params_obj = schema.get('parameters', {})
+                properties = params_obj.get('properties', {}) if isinstance(params_obj, dict) else {}
+                required = set(params_obj.get('required', [])) if isinstance(params_obj, dict) else set()
+                
+                param_strs = []
+                for p_name, p_info in properties.items():
+                     if isinstance(p_info, dict) and p_name not in ('self', 'cls', 'ctx', 'context'):
+                         p_type = p_info.get('type', 'any')
+                         p_desc = p_info.get('description', '')
+                         req_ind = " (required)" if p_name in required else ""
+                         param_strs.append(f"  - {p_name} ({p_type}){req_ind}: {p_desc}")
+                
+                if param_strs:
+                    formatted_lines.append("* Parameters:")
+                    formatted_lines.extend(param_strs)
+                else:
+                    formatted_lines.append("* Parameters: None")
+                formatted_lines.append("") # Add blank line after each tool
+            else:
+                logger.warning(f"Schema not found or invalid for allowed skill: {skill_name}")
+                formatted_lines.append(f"### Skill: {skill_name} (Schema Error)")
+                formatted_lines.append("")
+
+        return "\n".join(formatted_lines).strip() if formatted_lines else "No allowed tools specified or schemas found."
+
+    # <<< Inner helper function _format_history >>>
+    def _format_history(history_list: List[Tuple[str, str]], max_items: int) -> str:
+        if not history_list:
+            return "No history yet."
+        
+        formatted_entries = []
+        # Take the most recent 'max_items'
+        start_index = max(0, len(history_list) - max_items)
+        
+        for i, (thought_action_input, observation) in enumerate(history_list[start_index:]):
+            # Ensure structure matches expectation for worker prompt
+            formatted_entries.append(f"Previous Step {i+1} Thought/Action/Input:")
+            formatted_entries.append(thought_action_input)
+            formatted_entries.append(f"Previous Step {i+1} {observation}") # Observation already has prefix
+            formatted_entries.append("---") # Separator
             
-    tool_descriptions = "\n".join(tool_desc_parts) if tool_desc_parts else "No skills available for this fragment."
+        return "\n".join(formatted_entries).strip()
+    
+    # <<< MOVED: Prepare JSON list before using in f-string >>>
+    allowed_skills_json = json.dumps(allowed_skills)
+    # logger.debug(f"Allowed skills JSON: {allowed_skills_json}")
 
-    # Format history (same as orchestrator for now)
-    formatted_history = "\n".join([f"{action}: {obs}" for action, obs in history])
+    # --- System Prompt ---
+    # <<< MODIFIED: Changed from f-string to regular string, ensure placeholders use single braces >>>
+    system_prompt = """You are an AI assistant fragment. Complete the sub-task using Thought/Action/Action Input.
 
-    system_content = DEFAULT_WORKER_SYSTEM_PROMPT.format(
-        tool_descriptions=tool_descriptions, # Use filtered descriptions
-        history=formatted_history,
-        input=sub_task # Pass sub_task as 'input' here for ReAct
-    )
+Available Tools (Skills):
+--- Tools Start ---
+{formatted_allowed_tools}
+--- Tools End ---
 
-    messages = [
-        {"role": "system", "content": system_content},
-        # Worker prompts often just need the system prompt containing the task (input) and history
-    ]
+Respond ONLY in this format:
+
+Thought: [Your reasoning]
+Action: [EXACT tool name]
+Action Input: [Arguments as a single JSON object. Keys MUST match tool parameters. Use {{}} if no arguments. DO NOT use a 'context' key.]
+
+Example:
+Thought: I need to plan the main task.
+Action: hierarchical_planner
+Action Input: {{
+    "task_description": "{sub_task}",
+    "available_tools": {allowed_skills_json}
+}}
+"""
+
+    # --- Format Allowed Tools --- 
+    formatted_allowed_tools = _format_allowed_tools(allowed_skills, all_tools)
+    # logger.debug(f"Formatted allowed tools for prompt:\\n{formatted_allowed_tools}")
+
+    # --- Format History ---
+    formatted_history = _format_history(history, max_history_items) 
+
+    # --- Build Messages ---
+    # Pass sub_task and allowed_skills_json into the system prompt format
+    messages = [{
+        "role": "system", 
+        "content": system_prompt.format(
+            formatted_allowed_tools=formatted_allowed_tools, 
+            sub_task=sub_task, # Pass sub_task for the example
+            allowed_skills_json=allowed_skills_json # Pass JSON list for example
+        )
+    }]
+
+    # Add history and user request (simplified)
+    user_prompt = f"""Previous History:
+{formatted_history}
+
+===
+
+Current Sub-Task: {sub_task}
+
+Determine the next step."""
+    messages.append({"role": "user", "content": user_prompt})
+
     return messages

@@ -273,8 +273,7 @@ def add_episodic_record(context: str, action: str, outcome: str, metadata: dict 
     except sqlite3.Error as e:
         logger.error(f"Erro ao registrar experiência: {e}")
     finally:
-        if conn:
-            conn.close()
+        pass
 
 
 def sample_experiences(batch_size: int) -> list[sqlite3.Row]:
@@ -320,8 +319,7 @@ def sample_experiences(batch_size: int) -> list[sqlite3.Row]:
     except ImportError:
         logger.error("Módulo 'random' não encontrado para amostragem.")
     finally:
-        if conn:
-            conn.close()
+        pass
     return experiences
 
 
@@ -350,8 +348,7 @@ def retrieve_recent_episodes(limit: int = 5) -> list[sqlite3.Row]:
         logger.error(f"Erro ao recuperar episódios recentes: {e}")
         # Retorna lista vazia em caso de erro
     finally:
-        if conn:
-            conn.close()
+        pass
     return episodes
 
 
@@ -422,8 +419,7 @@ def retrieve_relevant_context(objective: str, top_k: int = 5) -> list[str]:
     except Exception as e:
         logger.error(f"Erro inesperado durante a busca vetorial (VEC): {e}", exc_info=True)
     finally:
-        if conn:
-            conn.close()
+        pass
     # return results # Don't return results from here, it's handled by the skill
 
 

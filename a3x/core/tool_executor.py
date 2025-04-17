@@ -136,29 +136,41 @@ async def execute_tool(
         sig = inspect.signature(tool_method)
         params = sig.parameters # Get parameters from signature
         
-        # --- REVISED Argument Passing Logic --- 
-        call_kwargs = action_input.copy() # Start with action_input
-
-        # Check if the skill expects a 'context' argument
+        # --- REVISED Argument Passing Logic (Again) --- 
+        call_kwargs = {} # Start fresh
+        
+        # 1. Add context/ctx if expected
         if 'context' in params:
-            # >>> Pass the FINAL effective_context <<<
             call_kwargs['context'] = effective_context 
-            ctx_logger.debug(f"Passing _ToolExecutionContext as 'context' argument to {tool_name}")
-        # Check if the skill *specifically* expects 'ctx' (less common, but support for now)
+            ctx_logger.debug(f"Adding _ToolExecutionContext as 'context' argument for {tool_name}")
         elif 'ctx' in params:
-            # >>> Pass the FINAL effective_context <<<
             call_kwargs['ctx'] = effective_context 
-            ctx_logger.debug(f"Passing _ToolExecutionContext as 'ctx' argument to {tool_name}")
-        # else: skill expects neither 'context' nor 'ctx'
+            ctx_logger.debug(f"Adding _ToolExecutionContext as 'ctx' argument for {tool_name}")
         
-        # Remove parameters from call_kwargs that are not in the function signature 
-        # to prevent "unexpected keyword argument" errors for skills that don't 
-        # accept arbitrary **kwargs.
-        final_call_kwargs = {k: v for k, v in call_kwargs.items() if k in params}
-        removed_keys = set(call_kwargs.keys()) - set(final_call_kwargs.keys())
-        if removed_keys:
-            ctx_logger.warning(f"{log_prefix} Removed unexpected arguments for {tool_name}: {removed_keys}")
-        
+        # 2. Add shared_task_context if expected and available in effective_context
+        if 'shared_task_context' in params and hasattr(effective_context, 'shared_task_context'):
+            call_kwargs['shared_task_context'] = effective_context.shared_task_context
+            ctx_logger.debug(f"Adding SharedTaskContext as 'shared_task_context' argument for {tool_name}")
+
+        # 3. Merge action_input, preferring values from action_input if keys overlap
+        #    Only add keys from action_input that are expected by the function signature.
+        original_action_input = action_input or {}
+        provided_unexpected_args = set()
+        for k, v in original_action_input.items():
+            if k in params:
+                # Overwrite context/shared_context if explicitly provided in action_input? 
+                # Generally no, context should come from the executor.
+                if k not in ('context', 'ctx', 'shared_task_context'): 
+                    call_kwargs[k] = v
+                else:
+                    ctx_logger.warning(f"{log_prefix} Ignoring '{k}' from action_input for {tool_name}; using executor-provided context.")
+            else:
+                 provided_unexpected_args.add(k)
+
+        if provided_unexpected_args:
+            ctx_logger.warning(f"{log_prefix} Action input provided unexpected arguments for {tool_name}: {provided_unexpected_args}. These were ignored.")
+
+        final_call_kwargs = call_kwargs # Use the carefully constructed kwargs
         # --- END REVISED Logic --- 
 
         ctx_logger.debug(f"{log_prefix} Preparing to call {'async' if is_async else 'sync'} tool '{tool_name}'. Final Kwargs: {list(final_call_kwargs.keys())}")

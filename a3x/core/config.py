@@ -33,10 +33,11 @@ LOG_DATE_FORMAT = os.getenv("LOG_DATE_FORMAT", "%Y-%m-%d %H:%M:%S")
 
 # Limites e parâmetros
 MAX_REACT_ITERATIONS = int(os.getenv("MAX_REACT_ITERATIONS", 10))
-MAX_HISTORY_TURNS = int(os.getenv("MAX_HISTORY_TURNS", 5))
+MAX_HISTORY_TURNS = int(os.getenv("MAX_HISTORY_TURNS", 10))
 MAX_TOKENS_FALLBACK = int(os.getenv("MAX_TOKENS_FALLBACK", 4096))
 SEMANTIC_SEARCH_TOP_K = int(os.getenv("SEMANTIC_SEARCH_TOP_K", 5))
 EPISODIC_RETRIEVAL_LIMIT = int(os.getenv("EPISODIC_RETRIEVAL_LIMIT", 10))
+MAX_FRAGMENT_RUNTIME = 300  # Max time in seconds for a single fragment execution
 
 # Modelos
 LLAMA_SERVER_MODEL_PATH = os.getenv("LLAMA_SERVER_MODEL_PATH", "models/google_gemma-3-4b-it-Q4_K_S.gguf")

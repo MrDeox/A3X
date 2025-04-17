@@ -13,6 +13,17 @@ from pathlib import Path
 # Initialize logger before potentially using it in print statements
 logger = logging.getLogger(__name__)
 
+# <<< ADDED: Base class for Context-Aware Skills >>>
+class ContextAwareSkill:
+    """Base class for skills that need access to a specific execution context ID."""
+    def __init__(self, context_id: str):
+        self._context_id = context_id
+
+    @property
+    def context_id(self) -> str:
+        return self._context_id
+# <<< END ADDED >>>
+
 # <<< ADDED: Define SkillContext centrally >>>
 SkillContext = namedtuple(
     "SkillContext",

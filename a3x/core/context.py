@@ -2,7 +2,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Union, Tuple, NamedTuple, TYPE_CHECKING, Type
+from typing import Optional, Dict, Any, List, Union, Tuple, NamedTuple, TYPE_CHECKING, Type, Callable, Coroutine
 import asyncio
 from dataclasses import dataclass, field
 from collections import namedtuple # Ensure namedtuple is imported
@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from a3x.core.llm_interface import LLMInterface
     from a3x.core.tool_registry import ToolRegistry
     from a3x.fragments.registry import FragmentRegistry # Assuming FragmentRegistry lives here
-    from a3x.skills.base_skill import BaseSkill
     from a3x.core.memory.memory_manager import MemoryManager # Added
     from a3x.fragments.base import BaseFragment # <<< ADDED for active_fragments typing >>>
 
@@ -218,20 +217,6 @@ class SharedTaskContext:
             # internal_chat_queue and active_fragments are NOT included as they are not easily serializable
             # Relevant info might be extracted if needed for specific logging/saving
         }
-
-# Context specifically for executing a single tool/skill
-# Defined here for consistency
-class _ToolExecutionContext(NamedTuple):
-    logger: logging.Logger
-    workspace_root: Path
-    llm_url: str
-    tools_dict: 'ToolRegistry' # Forward reference
-    llm_interface: Any # Replace Any with specific LLM Interface type
-    fragment_registry: 'FragmentRegistry' # Forward reference
-    shared_task_context: SharedTaskContext
-    allowed_skills: Optional[List[str]]
-    memory_manager: 'MemoryManager' # <<< MOVED UP >>>
-    skill_instance: Optional[Any] = None # The instance whose method is being called
 
 # Ensure ToolRegistry and FragmentRegistry are imported if needed for type hints elsewhere,
 # or handle potential circular imports carefully.

@@ -61,7 +61,7 @@ def parse_llm_response(
                     agent_logger.debug(f"[Agent Parse DEBUG] Found Action Input marker. Content after marker: '{content_after_marker}'")
 
                     # Try to find the first JSON object ({...}) within this remaining content
-                    json_match = re.search(r"(\{.*?\})", content_after_marker, re.DOTALL)
+                    json_match = re.search(r"(\{.*\})", content_after_marker, re.DOTALL)
                     if json_match:
                         potential_json_str = json_match.group(1).strip()
                         # Clean potential markdown fences

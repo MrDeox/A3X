@@ -1,0 +1,33 @@
+# GBNF Grammar for A3X PlanStep List
+
+root   ::= wsp plan-list wsp
+value  ::= object | array | string | number | boolean | null
+
+# Main Plan List Structure
+plan-list ::= "[" wsp ( plan-step ( "," wsp plan-step )* )? wsp "]"
+plan-step ::= "{" wsp step-kv ( "," wsp step-kv )* wsp "}"
+
+# Key-Value pairs for PlanStep object
+step-kv ::= step-id-kv | description-kv | action-type-kv | target-name-kv | arguments-kv
+step-id-kv ::= "\"step_id\"" wsp ":" wsp number
+description-kv ::= "\"description\"" wsp ":" wsp string
+action-type-kv ::= "\"action_type\"" wsp ":" wsp action-type-value # Constrained value
+target-name-kv ::= "\"target_name\"" wsp ":" wsp string
+arguments-kv ::= "\"arguments\"" wsp ":" wsp object # Generic JSON object for args
+
+# Constrained action_type values
+action-type-value ::= "\"skill\"" | "\"fragment\""
+
+# Generic JSON Structures (Simplified)
+object ::= "{" wsp ( pair ( "," wsp pair )* )? wsp "}"
+pair   ::= string wsp ":" wsp value
+array  ::= "[" wsp ( value ( "," wsp value )* )? wsp "]"
+
+# Basic JSON Types
+string ::= "\"" ( [^\"\\] | "\\" ( [\"\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] ) )* "\""
+number ::= "-"? ([0-9] | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [-+]? [0-9]+)?
+boolean ::= "true" | "false"
+null ::= "null"
+
+# Whitespace definition
+wsp ::= ([ \t\n]*) 

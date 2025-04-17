@@ -2,13 +2,15 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import shutil
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import os
+from datetime import datetime
 
 # Corrected absolute import using alias
 from a3x.core.config import PROJECT_ROOT as WORKSPACE_ROOT
 
 # Importar usando paths relativos
+from a3x.core.skills_utils import create_skill_response
 from a3x.core.skills import skill
 from a3x.core.validators import validate_workspace_path
 from a3x.core.context import SharedTaskContext
@@ -319,13 +321,13 @@ class FileManagerSkill:
         name="write_file",
         description="Writes content to a specified file within the workspace.",
         parameters={
-            "filename": {"type": str, "description": "The relative path (filename) of the file."},
-            "content": {"type": str, "description": "The content to write to the file."},
-            "overwrite": {"type": bool, "default": False, "description": "Whether to overwrite the file if it exists (default: False)."},
-            "create_backup_flag": {"type": bool, "default": True, "description": "Whether to create a backup before writing (default: True)."},
-        },
+            "filename": {"type": str, "description": "The relative path to the file within the workspace.", "optional": False},
+            "content": {"type": str, "description": "The content to write to the file.", "optional": False},
+            "overwrite": {"type": bool, "description": "Whether to overwrite the file if it exists.", "default": False},
+            "create_backup_flag": {"type": bool, "description": "Whether to create a backup before overwriting.", "default": True}
+        }
     )
-    @validate_workspace_path(arg_name="filename", check_existence=False, target_type="file")
+    @validate_workspace_path(arg_name='filename', check_existence=False)
     async def write_file(
         self,
         ctx: _ToolExecutionContext,
@@ -333,117 +335,66 @@ class FileManagerSkill:
         content: str,
         overwrite: bool = False,
         create_backup_flag: bool = True,
-        resolved_path: Path = None,
-        original_path_str: str = None,
-    ) -> dict:
-        logger.debug(f"[DEBUG write_file] Entrou no método com argumentos: self={self}, ctx={ctx}, filename={filename}, content={content}, overwrite={overwrite}, create_backup_flag={create_backup_flag}, resolved_path={resolved_path}, original_path_str={original_path_str}")
-        print(f"[DEBUG write_file] self={self}, ctx={ctx}, filename={filename}, content={content}, overwrite={overwrite}, create_backup_flag={create_backup_flag}, resolved_path={resolved_path}, original_path_str={original_path_str}")
-        if resolved_path is None:
-            logger.error(f"[DEBUG write_file] resolved_path está None! original_path_str={original_path_str}")
-            print(f"[DEBUG write_file] resolved_path está None! original_path_str={original_path_str}")
-        else:
-            logger.debug(f"[DEBUG write_file] resolved_path={resolved_path}")
-            print(f"[DEBUG write_file] resolved_path={resolved_path}")
-        """
-        Writes content to a specified file within the workspace.
+        # <<< ADDED: Arguments injected by decorator >>>
+        resolved_path: Optional[Path] = None,
+        original_path_str: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Writes content to a specified file within the workspace."""
+        logger = ctx.logger
+        workspace_root = ctx.workspace_root
 
-        Args:
-            filename (str): The relative path (filename) of the file.
-            content (str): The content to write to the file.
-            overwrite (bool): Whether to overwrite the file if it exists.
-            create_backup_flag (bool): Whether to create a backup before writing.
-            resolved_path (Path): The resolved absolute path (injected by decorator).
-            original_path_str (str): The original path string passed (injected by decorator).
-
-        Returns:
-            dict: A dictionary indicating the result of the operation.
-        """
-        log_prefix = f"[write_file: '{original_path_str}']"
-        logger.info(f"[DEBUG TEST] write_file called with filename={filename}, resolved_path={resolved_path}, overwrite={overwrite}, create_backup_flag={create_backup_flag}")
-        # --- Log context if available ---
-        # Access task_id via the shared context
-        try:
-            # task_id_info = f"Task ID from context: {ctx.task_id}" # OLD: Incorrect access
-            task_id_info = f"Task ID from context: {ctx.shared_task_context.task_id}" # CORRECT: Access via shared_task_context
-            ctx.logger.info(f"Write operation for {filename}. {task_id_info}")
-        except AttributeError:
-            ctx.logger.warning(f"Could not retrieve task_id from context in write_file.")
-            task_id_info = "Task ID: Unknown"
-
-        # Use the resolved path injected by the decorator
+        # Use the path validated and resolved by the decorator
         target_path = resolved_path
 
-        # Check if file exists and handle overwrite logic
-        if target_path.exists() and not overwrite:
-            msg = f"File '{original_path_str}' already exists and overwrite is False."
-            logger.warning(f"{log_prefix} {msg}")
-            return {
-                "status": "error",
-                "action": "write_file_failed",
-                "data": {"message": msg},
-            }
+        if target_path is None:
+            logger.error(f"[write_file] Decorator failed to provide a resolved path for filename '{filename}'. Aborting.")
+            # Assuming create_skill_response exists and handles dict creation
+            return create_skill_response("error", "path_resolution_failed", {"message": "Internal error: Path resolution failed."})
 
-        # Attempt backup before writing if required and possible
-        backup_made = False
-        if (
-            create_backup_flag
-            and self._backup_enabled
-            and target_path.exists()
-        ):
-            try:
-                self._create_backup(target_path)
-                backup_made = True
-                logger.info(f"{log_prefix} Backup created for '{original_path_str}'")
-            except Exception as backup_err:
-                logger.error(
-                    f"{log_prefix} Backup failed for '{original_path_str}'. Write operation cancelled. Error: {backup_err}",
-                    exc_info=True,
-                )
-                return {
-                    "status": "error",
-                    "action": "write_file_failed_backup",
-                    "data": {
-                        "message": f"Backup failed for '{original_path_str}', write cancelled: {backup_err}"
-                    },
-                }
+        task_id = ctx.shared_task_context.task_id if ctx.shared_task_context else "unknown_task"
+        logger.info(f"Write operation for {target_path}. Task ID from context: {task_id}")
 
+        backup_path = None
         try:
+            # Check for existence and overwrite flag
+            if target_path.exists() and not overwrite:
+                logger.error(f"File already exists and overwrite is False: {target_path}")
+                return create_skill_response("error", "file_exists_no_overwrite", data={"message": f"File already exists at '{target_path}' and overwrite is set to False."})
+
+            # Create backup if overwriting and flag is set
+            if target_path.exists() and overwrite and create_backup_flag:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                base_name = original_path_str if original_path_str else target_path.name
+                backup_filename = f"{base_name}.{timestamp}.bak"
+                backup_path = target_path.parent / backup_filename
+                logger.info(f"Creating backup of {target_path} at {backup_path}")
+                shutil.copy2(target_path, backup_path) # copy2 preserves metadata
+
             # Ensure parent directory exists
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"{log_prefix} Ensured directory exists: {target_path.parent}")
 
-            # Write the content
+            # Write the file
             with open(target_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            logger.info(f"{log_prefix} Content successfully written.")
 
-            return {
-                "status": "success",
-                "action": "file_written",
-                "data": {
-                    "filename": original_path_str, # Report original name
-                    "message": f"File '{original_path_str}' written successfully.",
-                    "backup_created": backup_made,
-                },
-            }
-        except PermissionError:
-            logger.error(f"{log_prefix} Permission error writing to file.", exc_info=True)
-            return {
-                "status": "error",
-                "action": "write_file_failed",
-                "data": {
-                    "message": f"Permission denied writing to file: '{original_path_str}'"
-                },
-            }
+            logger.info(f"Successfully wrote content to {target_path}")
+            # Add to context for potential chaining
+            if ctx.shared_task_context:
+                 await ctx.shared_task_context.update_data("last_file_written_path", str(target_path))
+                 if original_path_str:
+                      await ctx.shared_task_context.update_data("last_file_written_relative_path", original_path_str)
+
+            result_data = {"message": f"File written successfully to {target_path}"}
+            if backup_path:
+                 result_data["backup_path"] = str(backup_path)
+
+            # Assuming create_skill_response exists and handles dict creation
+            return create_skill_response("success", "file_written", data=result_data)
+
         except Exception as e:
-            logger.exception(f"{log_prefix} Unexpected error writing file:")
-            return {
-                "status": "error",
-                "action": "write_file_failed",
-                "data": {
-                    "message": f"Unexpected error writing file '{original_path_str}': {e}"
-                },
-            }
+            logger.exception(f"Error writing file {target_path}: {e}")
+            # Assuming create_skill_response exists and handles dict creation
+            return create_skill_response("error", "file_write_error", data={"message": f"Error writing file: {e}"})
 
     @skill(
         name="append_to_file",

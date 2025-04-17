@@ -391,6 +391,16 @@ class FragmentRegistry:
          """
          return self._fragment_defs.copy()
 
+    # <<< ADDED: Method to get all instantiated fragments >>>
+    def get_all_fragments(self) -> Dict[str, BaseFragment]:
+        """Returns a dictionary of all currently instantiated fragment instances."""
+        # Ensure all defined fragments are loaded/instantiated first?
+        # For now, just return the current dictionary.
+        # Consider calling self.load_all_fragments() here if needed, but beware of re-instantiation.
+        self.logger.debug(f"Returning {len(self._fragments)} instantiated fragments: {list(self._fragments.keys())}")
+        return self._fragments.copy()
+    # <<< END ADDED >>>
+
     def get_available_fragments_description(self) -> str:
          """
          Formats the names, categories, descriptions, and managed skills

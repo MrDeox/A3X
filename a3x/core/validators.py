@@ -37,196 +37,137 @@ def validate_workspace_path(
     default_value: str | None = None,  # Default value if arg_name is missing
 ) -> Callable:
     """
-    Decorator to validate a path argument for a skill function.
+    Decorator for skill methods that validates a path argument.
 
-    Ensures the path is:
-    1. A string.
-    2. Resolvable within the skill instance's defined workspace_root.
-    3. Not pointing to hidden files/directories (unless allow_hidden=True).
-    4. Optionally checks for existence.
-    5. Optionally checks if it's a file or directory.
+    Ensures the path is within the agent's workspace, optionally checks
+    existence and type (file/dir), and prevents accessing hidden files/dirs
+    unless explicitly allowed. Resolves the path relative to the workspace root
+    obtained from the execution context (`ctx`).
 
-    Injects the resolved Path object as 'resolved_path' into the decorated function's kwargs.
-    Returns a standard error dictionary on failure.
-    Correctly handles decorating async functions.
+    Injects 'resolved_path' (Path object) and 'original_path_str' into the
+    decorated function's kwargs.
 
-    Args:
-        arg_name: The name of the keyword argument containing the path string.
-        check_existence: If True, checks if the resolved path exists.
-        target_type: 'file', 'dir', or 'any'. Checks the type if path exists.
-        allow_hidden: If False, rejects paths containing components starting with '.'.
-        action_name_on_error: The 'action' value for the error dict.
-        default_value: Default value if arg_name is missing
-
-    Returns:
-        The decorator function.
+    Assumes the decorated function is an async method of a class where the
+    first argument is the instance (`self`) and there's a `ctx` argument
+    of type `_ToolExecutionContext`.
     """
+    if not isinstance(arg_name, str) or not arg_name:
+        raise TypeError("`arg_name` must be a non-empty string")
 
     def decorator(func: Callable) -> Callable:
+        if not inspect.iscoroutinefunction(func):
+             raise TypeError(f"Function {func.__name__} must be an async function to be decorated by validate_workspace_path.")
+
+        # Get the signature of the decorated function once
+        sig = inspect.signature(func)
+        param_names = list(sig.parameters.keys())
+        # Heuristic: Assume 'self' or the first param is the instance
+        instance_param_name = param_names[0] if param_names else None
+        # Assume 'ctx' is the name for the context parameter
+        ctx_param_name = 'ctx'
+        if ctx_param_name not in sig.parameters:
+             logger.warning(f"Function {func.__name__} decorated by validate_workspace_path does not seem to have a '{ctx_param_name}' parameter. Path validation might fail.")
+             # Attempt to proceed, but it's likely to fail later if ctx is needed
+
         @functools.wraps(func)
         async def wrapper(*args, **kwargs) -> Any:  # Make wrapper async
-            logger = logging.getLogger(__name__)
-            logger.debug(f"[DEBUG validate_workspace_path] Entrou no wrapper do decorador para {func.__name__} com args={args}, kwargs={kwargs}")
-            print(f"[DEBUG validate_workspace_path] Entrou no wrapper do decorador para {func.__name__} com args={args}, kwargs={kwargs}")
-
-            instance = None
-            ctx = None
-
-            # --- Try to find instance and ctx ---
-            # Prioritize positional arguments based on common pattern (instance, ctx, ...)
-            if len(args) >= 1:
-                instance = args[0] # Assume first arg is the instance (e.g., 'self')
-                logger.debug(f"[DEBUG validate_workspace_path] Found potential instance in args[0]: {type(instance)}")
-                print(f"[DEBUG validate_workspace_path] Found potential instance in args[0]: {type(instance)}")
-            if len(args) >= 2:
-                 # Check if second arg could be the context object
-                 # A simple check could be duck typing for a known attribute like 'shared_context'
-                 potential_ctx = args[1]
-                 if hasattr(potential_ctx, 'shared_context'): # Simple check for ToolExecutionContext
-                    ctx = potential_ctx
-                    logger.debug(f"[DEBUG validate_workspace_path] Found potential ctx in args[1]: {type(ctx)}")
-                    print(f"[DEBUG validate_workspace_path] Found potential ctx in args[1]: {type(ctx)}")
-
-            # Fallback to keyword arguments if not found positionally
-            if instance is None and 'self' in kwargs: # Common kwarg name for instance
-                instance = kwargs['self']
-                logger.debug(f"[DEBUG validate_workspace_path] Found potential instance in kwargs['self']: {type(instance)}")
-                print(f"[DEBUG validate_workspace_path] Found potential instance in kwargs['self']: {type(instance)}")
-
-            if ctx is None and 'ctx' in kwargs:
-                ctx = kwargs['ctx']
-                logger.debug(f"[DEBUG validate_workspace_path] Found potential ctx in kwargs['ctx']: {type(ctx)}")
-                print(f"[DEBUG validate_workspace_path] Found potential ctx in kwargs['ctx']: {type(ctx)}")
-
-            # --- Get workspace_root from instance ---
-            instance_workspace_root = None
-            if instance and hasattr(instance, 'workspace_root') and instance.workspace_root:
-                instance_workspace_root = Path(instance.workspace_root).resolve()
-                logger.debug(f"[DEBUG validate_workspace_path] Validator using workspace from instance: {instance_workspace_root}")
-                print(f"[DEBUG validate_workspace_path] Validator using workspace from instance: {instance_workspace_root}")
-            elif instance:
-                 logger.error(f"[DEBUG validate_workspace_path] Validator found instance {type(instance)} but it lacks 'workspace_root'.")
-                 print(f"[DEBUG validate_workspace_path] Validator found instance {type(instance)} but it lacks 'workspace_root'.")
-                 # Decide if this is an error or if workspace comes only from ctx
-                 # For now, let's rely on ctx if instance lacks it.
-
-            # --- Get workspace_root from ctx if not found on instance or if instance is None ---
-            # This part might need adjustment based on where workspace_root SHOULD live.
-            # Currently, the logic relies *only* on the instance having it.
-            # Let's stick to the original logic: workspace MUST be on the instance.
-            if instance_workspace_root is None:
-                 logger.error(f"[DEBUG validate_workspace_path] Could not determine workspace_root from instance for {func.__name__}.")
-                 print(f"[DEBUG validate_workspace_path] Could not determine workspace_root from instance for {func.__name__}.")
-                 # Log details about instance and ctx for debugging
-                 if instance:
-                     logger.error(f"[DEBUG validate_workspace_path] Instance ({type(instance)}) found but missing 'workspace_root'. Attributes: {dir(instance)}")
-                     print(f"[DEBUG validate_workspace_path] Instance ({type(instance)}) found but missing 'workspace_root'. Attributes: {dir(instance)}")
-                 else:
-                     logger.error(f"[DEBUG validate_workspace_path] Instance not found.")
-                     print(f"[DEBUG validate_workspace_path] Instance not found.")
-                 if ctx:
-                     logger.error(f"[DEBUG validate_workspace_path] Context ({type(ctx)}) found. Attributes: {dir(ctx)}")
-                     print(f"[DEBUG validate_workspace_path] Context ({type(ctx)}) found. Attributes: {dir(ctx)}")
-                 else:
-                      logger.error(f"[DEBUG validate_workspace_path] Context not found.")
-                      print(f"[DEBUG validate_workspace_path] Context not found.")
-
-                 return {
-                    "status": "error",
-                    "action": "validator_error",
-                    "data": {"message": "Internal validator error: Could not determine workspace_root from skill instance."}
-                }
-
-            # --- Proceed with path validation using instance_workspace_root ---
-            # (Rest of the original logic, adjusted to use instance_workspace_root)
-
-            if instance is None: # Should be caught by workspace root check now, but belt-and-suspenders
-                 logger.critical(f"[DEBUG validate_workspace_path] Validator chegou na resolução de path mas instance está None para {func.__name__}. Abortando.")
-                 print(f"[DEBUG validate_workspace_path] Validator chegou na resolução de path mas instance está None para {func.__name__}. Abortando.")
-                 return {"status": "error", "action": "validator_error", "data": {"message": "Internal validator error: instance not found before path resolution."} }
-
-            passed_args_tuple = args
-            passed_kwargs = kwargs.copy()
-            sig = inspect.signature(func)
-            path_str = None
-            path_arg_found_in = None # Track where we found it
-
-            # Try to find the path argument (arg_name)
-            # 1. Check kwargs directly
-            if arg_name in passed_kwargs:
-                path_str = passed_kwargs[arg_name]
-                path_arg_found_in = "kwargs"
-            else:
-                # 2. Check bound positional/keyword arguments
-                try:
-                    # Bind *excluding* instance and ctx if they were positional,
-                    # as the original function signature won't have them listed explicitly usually.
-                    # Or better: bind all, then extract.
-                    bound_args = sig.bind_partial(*passed_args_tuple, **passed_kwargs).arguments
-                    if arg_name in bound_args:
-                        path_str = bound_args[arg_name]
-                        path_arg_found_in = "bound_args"
-                    else:
-                         # Check if arg_name is VAR_POSITIONAL or VAR_KEYWORD - less common for paths
-                         pass # Simplified for now
-
-                except TypeError as e: # Mismatched arguments
-                    logger.error(f"[DEBUG validate_workspace_path] TypeError binding args for {func.__name__} ({arg_name}): {e}. Args: {args}, Kwargs: {kwargs}")
-                    print(f"[DEBUG validate_workspace_path] TypeError binding args for {func.__name__} ({arg_name}): {e}. Args: {args}, Kwargs: {kwargs}")
-                    # This might indicate instance/ctx were incorrectly identified or passed
-                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Argument binding error for {func.__name__}: {e}"}}
-                except Exception as e:
-                    logger.error(f"[DEBUG validate_workspace_path] Erro ao tentar localizar argumento de caminho \'{arg_name}\' via bind_partial: {e}")
-                    print(f"[DEBUG validate_workspace_path] Erro ao tentar localizar argumento de caminho \'{arg_name}\' via bind_partial: {e}")
-                    # Fall through to check default value
-
-            if path_str is None:
-                if default_value is not None:
-                    path_str = default_value
-                    path_arg_found_in = "default"
-                    logger.warning(f"[DEBUG validate_workspace_path] Usando valor default para \'{arg_name}\': {default_value}")
-                    print(f"[DEBUG validate_workspace_path] Usando valor default para \'{arg_name}\': {default_value}")
-                else:
-                    logger.error(f"[DEBUG validate_workspace_path] Não foi possível encontrar argumento de caminho \'{arg_name}\' em {func.__name__}. args={args}, kwargs={kwargs}")
-                    print(f"[DEBUG validate_workspace_path] Não foi possível encontrar argumento de caminho \'{arg_name}\' em {func.__name__}. args={args}, kwargs={kwargs}")
-                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Missing required path argument \'{arg_name}\'."}}
-
-            # Ensure path_str is a string
-            if not isinstance(path_str, str):
-                 logger.error(f"[DEBUG validate_workspace_path] Argumento de caminho \'{arg_name}\' não é uma string: {type(path_str)} ({path_str}). Found in: {path_arg_found_in}")
-                 print(f"[DEBUG validate_workspace_path] Argumento de caminho \'{arg_name}\' não é uma string: {type(path_str)} ({path_str}). Found in: {path_arg_found_in}")
-                 return {"status": "error", "action": action_name_on_error, "data": {"message": f"Path argument \'{arg_name}\' must be a string, got {type(path_str).__name__}."}}
-
-
-            # Resolve path using the confirmed instance_workspace_root
+            bound_args = None
             try:
-                # Ensure path_str is treated as relative to the workspace root
-                # Avoid joining absolute paths
-                path_to_join = Path(path_str)
-                if path_to_join.is_absolute():
-                    logger.error(f"[DEBUG validate_workspace_path] Path must be relative, but got absolute path: {path_str}")
-                    print(f"[DEBUG validate_workspace_path] Path must be relative, but got absolute path: {path_str}")
-                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Path must be relative to the workspace, got absolute path: '{path_str}'"}}
+                # Bind arguments to handle both positional and keyword args correctly
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults() # Apply defaults if any args were missing
 
-                resolved_path = (instance_workspace_root / path_to_join).resolve()
-                logger.debug(f"[DEBUG validate_workspace_path] resolved_path calculado: {resolved_path} (from workspace {instance_workspace_root} and input {path_str})")
-                print(f"[DEBUG validate_workspace_path] resolved_path calculado: {resolved_path} (from workspace {instance_workspace_root} and input {path_str})")
+                arguments = bound_args.arguments
+                passed_args = bound_args.args
+                passed_kwargs = bound_args.kwargs
 
-                # Security check: Ensure resolved path is still within the workspace
-                if instance_workspace_root not in resolved_path.parents and resolved_path != instance_workspace_root:
-                     logger.error(f"[DEBUG validate_workspace_path] Path traversal detected! Resolved path '{resolved_path}' is outside workspace '{instance_workspace_root}'. Input: '{path_str}'")
-                     print(f"[DEBUG validate_workspace_path] Path traversal detected! Resolved path '{resolved_path}' is outside workspace '{instance_workspace_root}'. Input: '{path_str}'")
-                     return {"status": "error", "action": action_name_on_error, "data": {"message": f"Path resolution resulted in access outside the allowed workspace: '{path_str}'"}}
+                logger.debug(f"[DEBUG validate_workspace_path] Args recebidos: args={args}, kwargs={kwargs}")
+                logger.debug(f"[DEBUG validate_workspace_path] Args vinculados: {arguments}")
+                print(f"[DEBUG validate_workspace_path] Args recebidos: args={args}, kwargs={kwargs}")
+                print(f"[DEBUG validate_workspace_path] Args vinculados: {arguments}")
 
-                # Check for hidden files/dirs
-                relative_path_parts = resolved_path.relative_to(instance_workspace_root).parts
-                if not allow_hidden and any(part.startswith('.') for part in relative_path_parts):
-                    logger.error(f"[DEBUG validate_workspace_path] Caminho contém componentes ocultos: {resolved_path}")
-                    print(f"[DEBUG validate_workspace_path] Caminho contém componentes ocultos: {resolved_path}")
-                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Hidden files or directories are not allowed in path: '{path_str}'"}}
 
-                # Existence/type checks
+                # --- Find instance and context reliably ---
+                instance = arguments.get(instance_param_name) if instance_param_name else None
+                ctx: _ToolExecutionContext | None = arguments.get(ctx_param_name)
+
+                if not ctx or not hasattr(ctx, 'workspace_root') or not ctx.workspace_root:
+                    logger.error(f"[DEBUG validate_workspace_path] Contexto (`{ctx_param_name}`) inválido ou sem `workspace_root` para {func.__name__}.")
+                    print(f"[DEBUG validate_workspace_path] Contexto (`{ctx_param_name}`) inválido ou sem `workspace_root` para {func.__name__}.")
+
+                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Execution context with workspace_root is missing for path validation in {func.__name__}."}}
+
+                # --- Extract path string ---
+                path_str = arguments.get(arg_name)
+                path_arg_found_in = "arguments" # Since we use bound_args.arguments
+
+                if path_str is None:
+                    if default_value is not None:
+                        path_str = default_value
+                        logger.debug(f"[DEBUG validate_workspace_path] Usando valor default para '{arg_name}': '{default_value}'")
+                        print(f"[DEBUG validate_workspace_path] Usando valor default para '{arg_name}': '{default_value}'")
+
+                        # Add default value back into arguments if it wasn't present
+                        arguments[arg_name] = path_str
+                        # Also update passed_kwargs in case the function expects it there
+                        # This depends on how bind reorganizes args/kwargs, safer to update arguments dict
+                        # which will be used for the final call.
+                        passed_kwargs[arg_name] = path_str # Add/overwrite in kwargs for the call
+
+                    else:
+                        logger.error(f"[DEBUG validate_workspace_path] Argumento de path obrigatório '{arg_name}' não encontrado em {func.__name__}.")
+                        print(f"[DEBUG validate_workspace_path] Argumento de path obrigatório '{arg_name}' não encontrado em {func.__name__}.")
+                        return {"status": "error", "action": action_name_on_error, "data": {"message": f"Required path argument '{arg_name}' is missing."}}
+
+                if not isinstance(path_str, str) or not path_str:
+                    logger.error(f"[DEBUG validate_workspace_path] Argumento de path '{arg_name}' deve ser uma string não vazia, recebido: {path_str} ({type(path_str).__name__})")
+                    print(f"[DEBUG validate_workspace_path] Argumento de path '{arg_name}' deve ser uma string não vazia, recebido: {path_str} ({type(path_str).__name__})")
+                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Path argument '{arg_name}' must be a non-empty string."}}
+
+                # --- Validate and Resolve Path ---
+                workspace_root = Path(ctx.workspace_root).resolve()
+                target_path = Path(path_str)
+
+                # Prevent absolute paths or paths trying to escape the workspace
+                if target_path.is_absolute():
+                    logger.error(f"[DEBUG validate_workspace_path] Caminho absoluto não permitido: {target_path}")
+                    print(f"[DEBUG validate_workspace_path] Caminho absoluto não permitido: {target_path}")
+
+                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Absolute paths are not allowed: '{path_str}'."}}
+
+                # Resolve the path relative to the workspace root
+                # Use resolve() AFTER joining to correctly handle '..' sequences within the workspace context
+                resolved_path = (workspace_root / target_path).resolve()
+
+                logger.debug(f"[DEBUG validate_workspace_path] Validando: '{path_str}' -> '{resolved_path}' (Workspace: '{workspace_root}')")
+                print(f"[DEBUG validate_workspace_path] Validando: '{path_str}' -> '{resolved_path}' (Workspace: '{workspace_root}')")
+
+
+                # Security Check: Ensure the resolved path is still within the workspace
+                # This check prevents escaping via sequences like 'subdir/../../outside'
+                # Note: Path.is_relative_to is available in Python 3.9+
+                try:
+                    if not resolved_path.relative_to(workspace_root):
+                         # This case should theoretically not be reached if resolve() works correctly
+                         # after joining with an absolute workspace_root, but added for safety.
+                         raise ValueError("Path resolution resulted outside workspace.")
+                except ValueError: # Handles cases where relative_to fails (e.g., different drive on Windows)
+                    logger.error(f"[DEBUG validate_workspace_path] Path escapou do workspace: '{resolved_path}' (Workspace: '{workspace_root}')")
+                    print(f"[DEBUG validate_workspace_path] Path escapou do workspace: '{resolved_path}' (Workspace: '{workspace_root}')")
+                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Path '{path_str}' attempts to access outside the allowed workspace."}}
+
+
+                # Check for hidden files/directories (starting with '.')
+                # Check the original *relative* path components for hidden parts
+                if not allow_hidden and any(part.startswith('.') for part in target_path.parts):
+                    logger.error(f"[DEBUG validate_workspace_path] Acesso a path oculto não permitido: {target_path}")
+                    print(f"[DEBUG validate_workspace_path] Acesso a path oculto não permitido: {target_path}")
+
+                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Access to hidden path '{path_str}' is not allowed."}}
+
+                # --- Existence and Type Check ---
                 path_exists = resolved_path.exists()
+
                 if check_existence and not path_exists:
                     logger.warning(f"[DEBUG validate_workspace_path] Caminho não existe: {resolved_path} (checking existence for '{path_str}')")
                     print(f"[DEBUG validate_workspace_path] Caminho não existe: {resolved_path} (checking existence for '{path_str}')")
@@ -245,41 +186,54 @@ def validate_workspace_path(
                         return {"status": "error", "action": action_name_on_error, "data": {"message": f"Path '{path_str}' (resolved to '{resolved_path}') is not a directory."}}
 
                 # --- Inject paths into kwargs for the decorated function ---
-                # Remove original path arg if it was in kwargs to avoid duplication if name clashes
-                # with injected names, though unlikely.
-                # if path_arg_found_in == "kwargs" and arg_name in passed_kwargs:
-                #     del passed_kwargs[arg_name] # Be careful if func relies on it by name
+                # Use the bound arguments dictionary to pass modified/added args correctly
+                final_call_kwargs = arguments.copy() # Start with all bound arguments
+                # Inject the resolved path and original string path as separate arguments
+                final_call_kwargs['resolved_path'] = resolved_path
+                final_call_kwargs['original_path_str'] = path_str # path_str holds the original value
 
-                # Inject resolved Path object and original string path
-                passed_kwargs['resolved_path'] = resolved_path
-                passed_kwargs['original_path_str'] = path_str # Keep the original path string available if needed
+                # Remove original instance and ctx from final kwargs if they were passed positionally
+                # This is now implicitly handled by calling func(**final_call_kwargs)
 
-
-                # Adjust args tuple to remove instance/ctx if they were positional
-                # so they are not passed twice (once positionally, once via kwargs if bound)
-                final_args = args
-                if instance is args[0] and ctx is args[1] and len(args) >= 2:
-                    final_args = args[2:] # Pass only remaining positional args
-                elif instance is args[0] and len(args) >= 1:
-                    final_args = args[1:]
+                # Call the original async function with potentially modified args/kwargs
+                # Passing **final_call_kwargs should work if all params can be passed by keyword
+                logger.debug(f"[DEBUG validate_workspace_path] Chamando {func.__name__} com argumentos injetados: resolved_path='{resolved_path}', original_path_str='{path_str}'")
+                print(f"[DEBUG validate_workspace_path] Chamando {func.__name__} com argumentos injetados: resolved_path='{resolved_path}', original_path_str='{path_str}'")
+                result = await func(**final_call_kwargs)
 
 
-                logger.debug(f"[DEBUG validate_workspace_path] Chamando {func.__name__} com args={final_args} e kwargs={passed_kwargs}")
-                print(f"[DEBUG validate_workspace_path] Chamando {func.__name__} com args={final_args} e kwargs={passed_kwargs}")
+                # Alternative if positional args are strictly needed:
+                # final_args_tuple = tuple(final_call_kwargs[p] for p in sig.parameters if sig.parameters[p].kind == inspect.Parameter.POSITIONAL_OR_KEYWORD or sig.parameters[p].kind == inspect.Parameter.POSITIONAL_ONLY)
+                # final_kwargs_dict = {k: v for k, v in final_call_kwargs.items() if sig.parameters[k].kind == inspect.Parameter.KEYWORD_ONLY or sig.parameters[k].kind == inspect.Parameter.VAR_KEYWORD}
+                # logger.debug(f"[DEBUG validate_workspace_path] Chamando {func.__name__} com args={final_args_tuple} e kwargs={final_kwargs_dict}")
+                # print(f"[DEBUG validate_workspace_path] Chamando {func.__name__} com args={final_args_tuple} e kwargs={final_kwargs_dict}")
+                # result = await func(*final_args_tuple, **final_kwargs_dict)
 
-                # Call the original async function
-                result = await func(*final_args, **passed_kwargs)
 
                 logger.debug(f"[DEBUG validate_workspace_path] Saída do método {func.__name__}: {result}")
                 print(f"[DEBUG validate_workspace_path] Saída do método {func.__name__}: {result}")
                 return result
-            except ValueError as e: # Catches Path resolution errors like invalid chars
-                logger.error(f"[DEBUG validate_workspace_path] Erro ao resolver path \'{path_str}\': {e}", exc_info=True)
-                print(f"[DEBUG validate_workspace_path] Erro ao resolver path \'{path_str}\': {e}")
-                return {"status": "error", "action": action_name_on_error, "data": {"message": f"Invalid path format '{path_str}': {e}"}}
+            except TypeError as e: # Catch binding errors
+                 logger.error(f"[DEBUG validate_workspace_path] Erro ao vincular argumentos para {func.__name__}: {e}. Args: {args}, Kwargs: {kwargs}", exc_info=True)
+                 print(f"[DEBUG validate_workspace_path] Erro ao vincular argumentos para {func.__name__}: {e}. Args: {args}, Kwargs: {kwargs}")
+                 return {"status": "error", "action": action_name_on_error, "data": {"message": f"Type error during argument binding for {func.__name__}: {e}"}}
+            except ValueError as e: # Catches Path resolution errors like invalid chars OR binding errors
+                # Check if it's a binding error or path error
+                if bound_args is None: # Error happened during bind()
+                     logger.error(f"[DEBUG validate_workspace_path] Erro ao vincular argumentos para {func.__name__}: {e}. Args: {args}, Kwargs: {kwargs}", exc_info=True)
+                     print(f"[DEBUG validate_workspace_path] Erro ao vincular argumentos para {func.__name__}: {e}. Args: {args}, Kwargs: {kwargs}")
+                     return {"status": "error", "action": action_name_on_error, "data": {"message": f"Argument binding error for {func.__name__}: {e}"}}
+                else: # Error likely happened during path resolution/validation
+                    # path_str might not be defined if error happened before extraction
+                    current_path_str = arguments.get(arg_name, "<path not extracted>") if arguments else "<arguments not bound>"
+                    logger.error(f"[DEBUG validate_workspace_path] Erro de valor (possivelmente path inválido) para '{current_path_str}': {e}", exc_info=True)
+                    print(f"[DEBUG validate_workspace_path] Erro de valor (possivelmente path inválido) para '{current_path_str}': {e}")
+                    return {"status": "error", "action": action_name_on_error, "data": {"message": f"Invalid path format or value error for path '{current_path_str}': {e}"}}
             except Exception as e:
-                logger.error(f"[DEBUG validate_workspace_path] Exceção inesperada em {func.__name__} durante validação/execução: {e}", exc_info=True)
-                print(f"[DEBUG validate_workspace_path] Exceção inesperada em {func.__name__} durante validação/execução: {e}")
-                return {"status": "error", "action": action_name_on_error, "data": {"message": f"An unexpected error occurred while validating/executing with path '{path_str}' ({type(e).__name__})."}}
+                # path_str might not be defined if error happened before extraction
+                current_path_str = arguments.get(arg_name, "<path not extracted>") if arguments else "<arguments not bound>"
+                logger.error(f"[DEBUG validate_workspace_path] Exceção inesperada em {func.__name__} durante validação/execução com path '{current_path_str}': {e}", exc_info=True)
+                print(f"[DEBUG validate_workspace_path] Exceção inesperada em {func.__name__} durante validação/execução com path '{current_path_str}': {e}")
+                return {"status": "error", "action": action_name_on_error, "data": {"message": f"An unexpected error occurred while validating/executing with path '{current_path_str}' ({type(e).__name__})."}}
         return wrapper
     return decorator

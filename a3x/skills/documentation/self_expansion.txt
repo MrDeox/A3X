@@ -1,0 +1,5 @@
+Skill Definition: self_expansion
+Purpose: Generate a related prompt based on a given prompt, expanding on the original idea.
+Input Parameters: prompt (string)
+Output: expanded_prompt (string)
+Implementation: [Code Implementation]

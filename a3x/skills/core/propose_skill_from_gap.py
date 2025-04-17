@@ -3,6 +3,7 @@ import json
 import os
 import asyncio
 import re
+import ast
 from typing import Dict, Any, Optional, List
 
 # Core imports
@@ -167,29 +168,72 @@ async def nome_da_nova_skill(context: Context, param1: str, param_opcional: Opti
             return {"status": "error", "message": "LLM did not propose any skill code."}
 
         # Extract code from markdown block if present
+        proposed_code = proposed_code.strip()
         code_match = re.search(r"```(?:python)?\s*([\s\S]*?)\s*```", proposed_code, re.DOTALL)
         if code_match:
             proposed_code = code_match.group(1).strip()
             ctx.logger.info("Extracted skill code from markdown block.")
         else:
-            # Assume the whole response is code if no markdown block
-            proposed_code = proposed_code.strip()
             ctx.logger.debug("No markdown block found, assuming full response is code.")
 
+        # Clean common leading comments
+        lines = proposed_code.split('\n')
+        cleaned_lines = []
+        cleaned_something = False
+        for line in lines:
+            stripped_line = line.strip()
+            if stripped_line.startswith('# File:') or stripped_line.startswith('# -*- coding:'):
+                cleaned_something = True
+                continue # Skip this line
+            cleaned_lines.append(line)
+        
+        if cleaned_something:
+             proposed_code = '\n'.join(cleaned_lines).strip()
+             ctx.logger.info("Removed common leading comment lines from generated code.")
+
         if not proposed_code:
-            ctx.logger.error("Skill proposal resulted in empty code after potential extraction.")
-            return {"status": "error", "message": "LLM proposal resulted in empty code."}
+            ctx.logger.error("Skill proposal resulted in empty code after potential extraction and cleaning.")
+            return {"status": "error", "message": "LLM proposal resulted in empty code after cleaning."}
 
-        ctx.logger.info("Successfully received skill proposal from LLM.")
-        # Consider adding basic syntax validation here if needed
+        ctx.logger.info("Successfully received and cleaned skill proposal from LLM.")
+        
+        # Syntax Validation
+        try:
+            ast.parse(proposed_code)
+            ctx.logger.info("Generated code syntax check passed.")
+        except SyntaxError as syntax_err:
+            ctx.logger.error(f"Generated code has syntax errors: {syntax_err}")
+            ctx.logger.error(f"Problematic Code:\n-------\n{proposed_code}\n-------")
+            return {
+                "status": "error", 
+                "message": f"Generated code has syntax errors: {syntax_err}",
+                "generated_code": proposed_code # Return the bad code for debugging
+            }
 
-        return {
-            "status": "success",
-            "proposed_skill_code": proposed_code
-        }
+        # --- Step 3: Save the proposed skill code --- #
+        skill_filename = f"{skill_name_suggestion}.py"
+        output_dir = os.path.join(PROJECT_ROOT, AUTO_GENERATED_SKILLS_DIR)
+        os.makedirs(output_dir, exist_ok=True) # Ensure directory exists
+        file_path = os.path.join(output_dir, skill_filename)
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(proposed_code)
+            ctx.logger.info(f"Successfully saved proposed skill code to: {file_path}")
+            return {
+                "status": "success",
+                "data": {
+                    "file_path": file_path,
+                    "skill_name": skill_name_suggestion,
+                    "message": f"Skill '{skill_name_suggestion}' generated and saved."
+                }
+            }
+        except IOError as io_err:
+            ctx.logger.exception(f"Error writing proposed skill to file {file_path}:")
+            return {"status": "error", "message": f"IOError saving skill code: {io_err}"}
 
     except Exception as e:
-        ctx.logger.exception("Error during LLM call for skill proposal:")
+        ctx.logger.exception("Error during LLM call or processing for skill proposal:")
         return {"status": "error", "message": f"Failed to get skill proposal from LLM: {e}"}
 
     # --- Step 4: TODO - Generate Test Skeleton --- #

@@ -63,26 +63,41 @@ class CodeExecutionManager(ManagerFragment):
 
         # --- Tool Execution Logic (similar to FileOpsManager) ---
         try:
+            # Retrieve the tool function/callable from the registry
             tool_info = context.tool_registry.get_tool(tool_name)
-            if not tool_info or not tool_info.callable:
-                logger.error(f"Could not find callable for tool '{tool_name}' in registry.")
-                return {"status": "error", "message": f"Tool '{tool_name}' not found or not properly registered."}
+            
+            # Check if tool_info itself is callable and get instance safely
+            if not tool_info or not callable(tool_info):
+                raise ValueError(f"Skill '{tool_name}' not found or is not callable.")
+            
+            # <<< CORRECTED: tool_info *is* the callable, instance is separate >>>
+            tool_callable = tool_info # The function itself
+            # Attempt to get instance if it was registered (might be None)
+            instance_maybe, _ = context.tool_registry.get_instance_and_tool(tool_name)
+            skill_instance = instance_maybe 
+            # <<< END CORRECTION >>>
 
-            skill_instance = tool_info.instance
-            tool_callable = tool_info.callable
             logger.info(f"Found tool '{tool_name}'. Instance: {'Yes' if skill_instance else 'No'}.")
 
-            tool_ctx = _ToolExecutionContext(
-                logger=context.logger,
-                workspace_root=Path('.'), # Placeholder - TODO: Get actual workspace root
-                llm_url=context.llm_interface.api_url if context.llm_interface else None,
-                tools_dict=context.tool_registry,
-                llm_interface=context.llm_interface,
+            # 1. Retrieve Necessary Context
+            llm_interface = context.llm_interface
+            workspace_root = context.workspace_root
+            tool_registry = context.tools_dict # The ToolRegistry instance
+
+            # 2. Prepare Execution Context for the execute_code tool itself
+            #    The execute_code tool needs access to the *other* tools/skills.
+            # Ensure llm_url is accessed correctly from llm_interface
+            execute_code_context = _ToolExecutionContext(
+                logger=self.logger,
+                workspace_root=workspace_root,
+                llm_url=context.llm_interface.llm_url,  # Correct attribute
+                tools_dict=tool_registry,
+                llm_interface=llm_interface,
                 fragment_registry=context.fragment_registry,
                 shared_task_context=context.shared_task_context,
-                memory_manager=context.memory_manager,
-                allowed_skills=None,
-                skill_instance=skill_instance
+                allowed_skills=None, # execute_code should have access to all tools
+                memory_manager=context.memory_manager, # Pass memory manager
+                skill_instance=None # execute_code is likely a standalone function
             )
 
             tool_sig = inspect.signature(tool_callable)
@@ -93,12 +108,12 @@ class CodeExecutionManager(ManagerFragment):
             logger.debug(f"Filtered action input for {tool_name}: {filtered_action_input}")
 
             if skill_instance:
-                logger.debug(f"Calling method {tool_name} on instance {type(skill_instance)} with context {type(tool_ctx)}")
-                execution_result_payload = await tool_callable(skill_instance, tool_ctx, **filtered_action_input)
+                logger.debug(f"Calling method {tool_name} on instance {type(skill_instance)} with context {type(execute_code_context)}")
+                execution_result_payload = await tool_callable(skill_instance, execute_code_context, **filtered_action_input)
             else:
                 if 'ctx' in tool_sig.parameters:
-                    logger.debug(f"Calling standalone function {tool_name} with context {type(tool_ctx)}")
-                    execution_result_payload = await tool_callable(tool_ctx, **filtered_action_input)
+                    logger.debug(f"Calling standalone function {tool_name} with context {type(execute_code_context)}")
+                    execution_result_payload = await tool_callable(execute_code_context, **filtered_action_input)
                 else:
                     logger.debug(f"Calling standalone function {tool_name} without context")
                     execution_result_payload = await tool_callable(**filtered_action_input)
