@@ -92,6 +92,7 @@ dev = [
     "pytest-anyio>=0.0.0",
     "ruff>=0.6.2",
     "black>=24.4.2",
+    "pre-commit>=3.0.0",
 ]
 
 [project.scripts]
@@ -100,8 +101,7 @@ dev = [
 a3x = "a3x.assistant_cli:cli_entry" # Assuming main function exists
 
 [tool.pytest.ini_options]
-# Keep existing pytest settings if any
-# pythonpath = [".", "src"] # May need adjustment depending on structure
+pythonpath = ["."] # Add current directory to python path for imports
 testpaths = ["tests"]
 asyncio_mode = "auto"
 

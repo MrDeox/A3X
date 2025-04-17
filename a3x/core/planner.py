@@ -1,6 +1,5 @@
 import logging
 import json
-import asyncio  # Import asyncio
 import re  # Add re import, needed for json_find_gpt
 from typing import List, Optional
 
@@ -72,7 +71,7 @@ async def generate_plan(
     tool_descriptions: str,
     agent_logger: logging.Logger,
     llm_interface: LLMInterface,
-    heuristics_context: Optional[str] = None
+    heuristics_context: Optional[str] = None,
 ) -> Optional[List[str]]:
     """
     Generates a plan (list of steps) to achieve the objective using the LLM.
@@ -96,15 +95,14 @@ async def generate_plan(
         objective=objective,
         tool_descriptions=tool_descriptions,
         planner_system_prompt=PLANNER_SYSTEM_PROMPT,
-        heuristics_context=heuristics_context
+        heuristics_context=heuristics_context,
     )
 
     # 2. Call the LLM
     try:
         llm_response_raw = ""
         async for chunk in llm_interface.call_llm(
-            messages=planning_prompt_messages,
-            stream=False
+            messages=planning_prompt_messages, stream=False
         ):
             llm_response_raw += chunk
 
@@ -135,7 +133,7 @@ async def generate_plan(
                 )
                 return None
         else:
-            plan_str = json_match.group(1)
+            plan_str = json_match
             plan_str_for_logging = plan_str
             if plan_str is None:
                 agent_logger.error(
@@ -177,19 +175,44 @@ async def generate_plan(
         return None
 
 
-def json_find_gpt(input_str: str):
+def json_find_gpt(input_str: str) -> Optional[str]:
     """
-    Finds the first ```json ... ``` block in a string using regex.
+    Finds the first ```json ... ``` block or raw JSON object/list in a string.
     Handles optional language specifier (e.g., ```json). Non-greedy match.
-    Also handles JSON that isn't in a code block if it starts with { or [.
+    Raw JSON detection is basic and assumes the string starts/ends with {} or [].
     """
-    # Pattern to find ```json ... ``` or ``` ... ``` (non-greedy) or raw {..} or [..]
-    # Allows optional language specifier after ```
-    pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```|(?<!`)(\{.*?\}|\[.*?\])(?!`)    ", re.DOTALL)
+    # Pattern 1: Code block ```json ... ``` or ``` ... ``` (non-greedy)
+    # Group 1 captures the content inside the block.
+    # Pattern 2: Raw JSON object {.*} or list [.*] (non-greedy)
+    # Group 2 captures the raw object or list.
+    # We prioritize the code block match.
+    pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```|(\{.*?\}|\[.*?\])", re.DOTALL)
     match = pattern.search(input_str)
 
     if match:
-        # Return the first non-None group (either from ``` block or raw JSON)
-        return match.group(1) or match.group(2)
-    else:
-        return None
+        # If Group 1 matched (code block), return its content.
+        if match.group(1) is not None:
+            return match.group(1)
+        # If Group 2 matched (raw JSON), return its content.
+        elif match.group(2) is not None:
+            # Basic check: Does the *whole* match look like the start/end of the input?
+            # This avoids matching JSON snippets embedded in other text.
+            matched_raw = match.group(2)
+            if input_str.strip() == matched_raw:
+                return matched_raw
+            # else: Fall through, likely an embedded snippet not intended
+
+    # Fallback/Alternative: Check if the entire stripped string is a JSON object/list
+    # This covers cases where the regex might fail for complex raw JSON but the
+    # overall structure is simple.
+    stripped_input = input_str.strip()
+    if stripped_input.startswith("{") and stripped_input.endswith("}"):
+        return stripped_input
+    if stripped_input.startswith("[") and stripped_input.endswith("]"):
+        # Ensure this wasn't already caught and returned by the regex match for raw JSON
+        # to avoid returning twice or overriding a potentially better regex match.
+        # However, if regex didn't match, this is a valid fallback.
+        if not match or match.group(2) is None:
+            return stripped_input
+
+    return None  # No match found by regex or basic checks
