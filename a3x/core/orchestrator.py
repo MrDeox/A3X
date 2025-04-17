@@ -489,7 +489,7 @@ class TaskOrchestrator:
         try:
             # --- Main Orchestration Loop ---
             while current_step < max_orchestration_steps:
-            current_step += 1
+                current_step += 1
                 self.logger.info(f"{log_prefix} Orchestration step {current_step}/{max_orchestration_steps if max_orchestration_steps != float('inf') else 'N/A'}")
 
                 # Check if history needs trimming before adding the new assistant message
@@ -503,26 +503,26 @@ class TaskOrchestrator:
 
                 # 1. Determine Next Step (Fragment & Sub-task) via Orchestrator LLM
                 if self._next_forced_component and self._next_forced_sub_task:
-                        component_name = self._next_forced_component
-                        sub_task = self._next_forced_sub_task
+                    component_name = self._next_forced_component
+                    sub_task = self._next_forced_sub_task
                     self.logger.info(f"{log_prefix} Using forced next step: {component_name} -> {sub_task}")
-                        self._next_forced_component = None
-                        self._next_forced_sub_task = None
-                    else:
+                    self._next_forced_component = None
+                    self._next_forced_sub_task = None
+                else:
                     component_name, sub_task, routing_method = await self._get_next_step_delegation(
-                            objective=objective, 
+                        objective=objective,
                         history=orchestration_history,
-                            shared_task_context=shared_task_context
-                        )
+                        shared_task_context=shared_task_context
+                    )
 
-                    if not component_name or not sub_task:
+                if not component_name or not sub_task:
                     self.logger.error("[Orchestrator] Failed to determine next step. Ending task.")
                     final_status = STATUS_ERROR
                     final_reason = REASON_DELEGATION_FAILED
                     final_answer = "Could not determine next fragment/sub-task."
-                    await notify_task_error(shared_task_context.task_id, final_reason, final_answer)
-                        break # Exit loop
-            
+                    await notify_task_error(task_id, final_reason, {"details": final_answer})
+                    break # Exit loop
+
                 # Delegate to the chosen component (Fragment or Manager)
                 self.logger.info(f"{log_prefix} Delegating to Component: {component_name}, Sub-task: {sub_task}")
 
@@ -596,14 +596,13 @@ class TaskOrchestrator:
                             fragment_result = await fragment_instance.execute(
                                 task_description=sub_task, # Pass sub_task as task_description
                                 available_tools=available_tools_schema # Pass the tool schemas
-                                # Removed 'context=' as PlannerFragment doesn't expect it directly
                             )
                         elif component_name == "CodeExecutionManager":
                              # Assuming CodeExecutionManager still expects context and sub_task
                              # Verify this assumption if issues arise.
                              fragment_result = await fragment_instance.execute(
-                                 context=fragment_context, # Pass the created fragment context
-                                 sub_task=sub_task # Pass the sub_task objective
+                                 context=fragment_context,
+                                 sub_task=sub_task
                              )
                         else:
                             # Handle other potential direct executables if needed, or raise error
@@ -614,50 +613,47 @@ class TaskOrchestrator:
                         # Determine success based on the direct result
                         if isinstance(fragment_result, dict) and fragment_result.get("status") == STATUS_SUCCESS:
                             fragment_success = True
-                            # Planner result processing happens later
-                              else:
+                        else:
                             fragment_success = False
                             self.logger.error(f"{log_prefix} Fragment '{component_name}' direct execution failed or returned non-success status. Result: {fragment_result}")
-                    # <<< END MODIFIED Direct execution block >>>
-                         else:
+                    # <<< CORRECTED INDENTATION for else block >>>
+                    else:
                         # <<< Original logic: Use FragmentExecutor for other fragments >>>
                         self.logger.info(f"{log_prefix} Executing fragment '{component_name}' via FragmentExecutor (ReAct).")
                         # Determine allowed skills for this fragment
                         allowed_skills_names = self._get_allowed_skills(component_name, self.tool_registry, self.fragment_registry)
                         if not allowed_skills_names:
                              self.logger.warning(f"{log_prefix} No specific allowed skills determined for fragment '{component_name}'. Executor will use its default behavior (likely allowing all registered tools).")
-                             # Executor should handle this gracefully
 
                         fragment_result_dict = await self.fragment_executor.execute(
                             fragment_name=component_name,
                             sub_task_objective=sub_task,
                             overall_objective=objective,
-                            fragment_history=current_fragment_history, # Pass the initialized history
+                            fragment_history=current_fragment_history,
                             shared_task_context=shared_task_context,
-                            allowed_skills=allowed_skills_names, # Pass names
-                            logger=fragment_context.logger # Pass the specific child logger
+                            allowed_skills=allowed_skills_names,
+                            logger=fragment_context.logger
                         )
-                        # Executor returns dict with status, reason, message, data (which might include history)
+                        # Process executor result
                         if isinstance(fragment_result_dict, dict) and fragment_result_dict.get("status") == STATUS_SUCCESS:
                             fragment_success = True
-                            fragment_result = fragment_result_dict # Store the full executor result dict
+                            fragment_result = fragment_result_dict
                         else:
                             fragment_success = False
-                            fragment_result = fragment_result_dict # Store the full executor result dict even on failure
+                            fragment_result = fragment_result_dict
                             self.logger.error(f"{log_prefix} FragmentExecutor execution failed for '{component_name}'. Result Status: {fragment_result.get('status', 'N/A')}, Reason: {fragment_result.get('reason', 'N/A')}")
-
-                except FragmentExecutionError as fee: # Catch specific execution error
+                # <<< CORRECTED INDENTATION for except blocks >>>
+                except FragmentExecutionError as fee:
                     self.logger.error(f"{log_prefix} FragmentExecutionError for '{component_name}': {fee.message} (Status: {fee.status}, Reason: {fee.reason})")
                     fragment_success = False
                     fragment_result = {"status": fee.status, "reason": fee.reason, "message": fee.message}
                 except Exception as e:
                     self.logger.exception(f"{log_prefix} Unexpected error during fragment execution for '{component_name}':")
                     fragment_success = False
-                    # Provide a structured error result
                     fragment_result = {"status": STATUS_ERROR, "reason": REASON_ORCHESTRATION_CRITICAL_ERROR, "message": f"Unexpected orchestrator error: {e}"}
 
-                # --- Process Fragment Result ---
-                # <<< MODIFICATION: Adapt result processing >>>
+                # --- Process Fragment Result --- (This block and onwards are outside the try...except)
+                # <<< Ensure this block starts at the correct indentation level (same as the 'try' above) >>>
                 final_answer = None
                 plan_generated = False
                 request_replan = False
@@ -699,7 +695,7 @@ class TaskOrchestrator:
                                 if isinstance(entry, tuple) and len(entry) == 2:
                                     log_message = f"ReAct Step {entry_index + 1}:\\nThought/Action:\\n{entry[0]}\\nObservation:\\n{entry[1]}"
                                     await shared_task_context.add_history("Orchestrator", log_message)
-        else:
+                                else:
                                      await shared_task_context.add_history("Orchestrator", f"History Entry {entry_index + 1} (raw from {component_name}): {str(entry)[:500]}")
 
                 # --- Update Orchestration History ---
