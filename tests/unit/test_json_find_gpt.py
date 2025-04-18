@@ -111,9 +111,9 @@ def test_empty_string_input():
 
 def test_json_with_escaped_quotes_in_block():
     """Tests JSON with escaped quotes inside a block."""
-    # Using raw string literal r'' might be easier here
-    text = r"""Some text ```json
+    text = r'''Some text ```json
 {"quote": "this is a \"quote\" example"}
-``` More text"""
-    expected = '{"quote": "this is a "quote" example"}'
+``` More text'''
+    # Try without explicit backslashes in expected, relying on Python's string parsing
+    expected = '{"quote": "this is a \"quote\" example"}'
     assert json_find_gpt(text) == expected

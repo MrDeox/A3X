@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
 from a3x.core.llm_interface import LLMInterface
-from a3x.core.fragment_registry import FragmentRegistry
+from a3x.fragments.registry import FragmentRegistry
 from a3x.core.tool_registry import ToolRegistry
-from a3x.core.prompt_builder import build_orchestration_prompt
+from a3x.core.prompt_builder import build_orchestrator_messages
 from a3x.core.planner import json_find_gpt
 from a3x.core.chat_monitor import chat_monitor_task
 from a3x.core.executors.fragment_executor import (
@@ -101,7 +101,7 @@ class TaskOrchestrator:
         # 2. Build the prompt
         try:
             # Use prompt builder
-            orchestration_prompt_messages = build_orchestration_prompt(
+            orchestration_prompt_messages = build_orchestrator_messages(
                 objective=objective,
                 history=history,
                 available_fragments=fragment_descriptions,
