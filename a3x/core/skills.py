@@ -85,7 +85,16 @@ def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
         # Validate function signature against declared parameters
         sig = inspect.signature(func)
         func_params = sig.parameters
-        declared_param_names = set(parameters.keys())
+
+        # <<< CORRECTED AGAIN: Handle both direct param dict and JSON schema structure >>>
+        if "properties" in parameters and isinstance(parameters.get("properties"), dict):
+            # Assume JSON Schema structure
+            declared_param_names = set(parameters["properties"].keys())
+        else:
+            # Assume direct parameter dictionary structure
+            declared_param_names = set(parameters.keys())
+        # <<< END CORRECTION >>>
+
         func_param_names = set(func_params.keys())
 
         # Define parameters to ignore during signature validation
@@ -108,22 +117,42 @@ def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
 
         extra_in_func = func_params_to_validate - declared_param_names
         if extra_in_func:
-            # Allow extra function params if they have defaults (might be context injected later)
-            has_defaults = all(func_params[p].default != inspect.Parameter.empty for p in extra_in_func)
-            if not has_defaults:
-                 raise TypeError(
-                     f"Skill '{name}': Parameters {extra_in_func} found in function signature without default values but not declared in decorator (excluding {ignored_params})."
-                 )
-            else:
-                 logger.debug(f"Skill '{name}': Parameters {extra_in_func} found in function signature with defaults but not in decorator. Allowed.")
+            # Allow the first parameter (usually context) implicitly
+            first_param_name = next(iter(sig.parameters)) if sig.parameters else None
+            extra_in_func_filtered = {p for p in extra_in_func if p != first_param_name}
+
+            if extra_in_func_filtered: # Check if there are still unexpected params after excluding context
+                # Allow extra function params ONLY if they have defaults
+                has_defaults = all(func_params[p].default != inspect.Parameter.empty for p in extra_in_func_filtered)
+                if not has_defaults:
+                    params_without_defaults = {p for p in extra_in_func_filtered if func_params[p].default == inspect.Parameter.empty}
+                    raise TypeError(
+                        f"Skill '{name}': Parameters {params_without_defaults} found in function signature without default values but not declared in decorator (excluding {ignored_params} and first param '{first_param_name}')."
+                    )
+                else:
+                    logger.debug(f"Skill '{name}': Extra parameters {extra_in_func_filtered} found in function signature with defaults but not in decorator. Allowed.")
 
 
         # Create Pydantic schema dynamically
         pydantic_fields = {}
         param_details_for_registry = {} # Store details for SKILL_REGISTRY
 
-        # <<< REVISED SCHEMA GENERATION LOGIC >>>
-        for param_name, param_config in parameters.items():
+        # <<< REVISED SCHEMA GENERATION LOGIC (handle direct dict vs. schema object) >>>
+        params_to_process = {}
+        if "properties" in parameters and isinstance(parameters.get("properties"), dict):
+            # JSON Schema structure
+            params_to_process = parameters["properties"]
+        else:
+            # Direct parameter dictionary structure
+            params_to_process = parameters
+
+        for param_name, param_config in params_to_process.items(): # Iterate over actual params
+            # <<< ADD CHECK TO SKIP CONTEXT PARAMS >>>
+            if param_name in ['ctx', 'context']:
+                logger.debug(f"Skipping context parameter '{param_name}' for Pydantic model generation in skill '{name}'.")
+                continue
+            # <<< END CHECK >>>
+            
             if not isinstance(param_config, dict) or "type" not in param_config or "description" not in param_config:
                 raise TypeError(f"Skill '{name}': Invalid parameter config for '{param_name}'. Expected dict with 'type' and 'description'.")
 

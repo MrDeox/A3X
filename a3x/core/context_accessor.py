@@ -30,6 +30,15 @@ class ContextAccessor:
         else:
              logger.info("ContextAccessor context cleared.")
 
+    def get_context(self) -> Optional[SharedTaskContext]:
+        """
+        Retrieves the current SharedTaskContext instance.
+        
+        Returns:
+            The SharedTaskContext instance if available, otherwise None.
+        """
+        return self._context
+
     def get_last_read_file(self) -> Optional[str]:
         """
         Retrieves the path of the last read file from the context.

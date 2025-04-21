@@ -34,10 +34,11 @@ from a3x.core.constants import (
 
 # Type hint for MemoryManager to avoid circular import
 from typing import TYPE_CHECKING
+from a3x.core.context import FragmentContext
 
 if TYPE_CHECKING:
     from a3x.core.memory.memory_manager import MemoryManager
-    from a3x.core.task_context import SharedTaskContext
+    from a3x.core.context import SharedTaskContext
 
 
 # --- Helper Functions (Notifications) ---
@@ -62,17 +63,17 @@ class TaskOrchestrator:
     # --- Initialization ---
     def __init__(
         self,
-        llm_interface: LLMInterface,
         fragment_registry: FragmentRegistry,
         tool_registry: ToolRegistry,
         memory_manager: "MemoryManager",
+        llm_interface: LLMInterface,
         workspace_root: Path,
         agent_logger: logging.Logger,
     ):
-        self.llm_interface = llm_interface
         self.fragment_registry = fragment_registry
         self.tool_registry = tool_registry
         self.memory_manager = memory_manager
+        self.llm_interface = llm_interface
         self.workspace_root = workspace_root
         self.logger = agent_logger.getChild("Orchestrator")
         self.monitor_task: Optional[asyncio.Task] = None
@@ -83,115 +84,85 @@ class TaskOrchestrator:
         history: List[Tuple[str, str]],
         shared_task_context: "SharedTaskContext",
     ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """Uses LLM to decide the next component (Fragment or Tool) and sub-task."""
-        self.logger.info("[_get_next_step_delegation] Deciding next step...")
+        """Delegates the next step decision to the OrchestratorFragment."""
+        self.logger.info("[_get_next_step_delegation] Delegating decision to OrchestratorFragment...")
 
-        # 1. Prepare context for LLM
-        available_fragments = self.fragment_registry.list_fragments()
-        fragment_descriptions = "\n".join(
-            [
-                f"- {name}: {defn.description}"
-                for name, defn in available_fragments.items()
-            ]
-        )
-        # <<< MODIFIED: Get only allowed skills for the *current* state (if applicable)? >>>
-        # <<< For now, assume Planner needs all tool descriptions >>>
-        tool_descriptions = self.tool_registry.get_tool_descriptions()
-
-        # 2. Build the prompt
+        # Import the specific fragment class
         try:
-            # Use prompt builder
-            orchestration_prompt_messages = build_orchestrator_messages(
+            from a3x.a3net.core.orchestrator_fragment import OrchestratorFragment
+        except ImportError:
+            self.logger.exception("Failed to import OrchestratorFragment.")
+            return None, None, REASON_SETUP_ERROR
+
+        try:
+            # 1. Prepare context for the symbolic fragment
+            # Use methods that return IDs/Names instead of full descriptions
+            available_fragment_ids = list(self.fragment_registry.get_all_definitions().keys()) # Get list of registered fragment IDs
+            available_skill_names = list(self.tool_registry.list_tools().keys()) # Get list of skill names
+            task_context_dict = await shared_task_context.get_task_data_copy() # Use the new method
+
+            # Ensure history format is compatible (assuming OrchestratorFragment expects List[Dict])
+            # The current history is List[Tuple[str, str]] - adapt if needed
+            formatted_history = [{"thought_action": h[0], "observation": h[1]} for h in history]
+
+            # 2. Instantiate and execute the OrchestratorFragment
+            # Create a default FragmentDef for this instantiation
+            from a3x.fragments.base import FragmentDef # Local import
+            orchestrator_fragment_def = FragmentDef(
+                name="OrchestratorInternal", # Give it a distinct name
+                fragment_class=OrchestratorFragment, 
+                description="Internal fragment used by TaskOrchestrator for delegation decisions.",
+                category="Orchestration"
+                # Skills/ManagedSkills can be empty as it likely doesn't execute tools directly
+            )
+            orchestrator_fragment = OrchestratorFragment(fragment_def=orchestrator_fragment_def)
+
+            decision_result = await orchestrator_fragment.execute(
                 objective=objective,
-                history=history,
-                available_fragments=fragment_descriptions,
-                available_tools=tool_descriptions,
-            )
-            self.logger.debug(
-                f"[_get_next_step_delegation] Prompt: {orchestration_prompt_messages}"
-            )
-        except Exception:
-            self.logger.exception(
-                "[_get_next_step_delegation] Error building orchestration prompt:"
-            )
-            return None, None, REASON_PROMPT_BUILD_FAILED
-
-        # 3. Call LLM
-        try:
-            llm_response_raw = ""
-            async for chunk in self.llm_interface.call_llm(
-                messages=orchestration_prompt_messages, stream=False
-            ):
-                llm_response_raw += chunk
-
-            self.logger.debug(
-                f"[_get_next_step_delegation] Raw LLM response: {llm_response_raw}"
+                history=formatted_history, # Pass formatted history
+                available_fragments=available_fragment_ids,
+                available_skills=available_skill_names,
+                task_context=task_context_dict
             )
 
-            if not llm_response_raw:
+            self.logger.debug(f"[_get_next_step_delegation] OrchestratorFragment result: {decision_result}")
+
+            # 3. Parse and Validate the Fragment's Response
+            if not isinstance(decision_result, dict):
+                self.logger.error(f"OrchestratorFragment returned non-dict result: {decision_result}")
+                return None, None, REASON_DELEGATION_FAILED
+
+            component_name = decision_result.get("component_name")
+            sub_task = decision_result.get("sub_task")
+            decision_status = decision_result.get("status", "error") # Assume error if status missing
+
+            if decision_status != STATUS_SUCCESS:
+                message = decision_result.get("message", "OrchestratorFragment decision failed.")
+                self.logger.error(f"OrchestratorFragment decision failed: {message}")
+                return None, None, REASON_DELEGATION_FAILED # Use delegation failed reason
+
+            if not component_name or not sub_task:
                 self.logger.error(
-                    "[_get_next_step_delegation] LLM returned empty response."
+                    f"OrchestratorFragment response missing 'component_name' or 'sub_task': {decision_result}"
                 )
-                return None, None, REASON_LLM_ERROR
+                return None, None, REASON_DELEGATION_FAILED
 
-            # 4. Parse LLM response (assuming JSON format: {"component": "Name", "sub_task": "Do X"})
-            try:
-                # Attempt to find JSON block first
-                parsed_response = None
-                json_str = json_find_gpt(llm_response_raw)
-                if json_str:
-                    parsed_response = json.loads(json_str)
-                else:
-                    # Fallback: try parsing the whole response
-                    try:
-                        parsed_response = json.loads(llm_response_raw)
-                    except json.JSONDecodeError:
-                        self.logger.error(
-                            f"[_get_next_step_delegation] Failed to parse LLM response as JSON (no block found, raw parse failed): {llm_response_raw[:500]}"
-                        )
-                        return None, None, REASON_LLM_ERROR
-
-                component_name = parsed_response.get("component")
-                sub_task = parsed_response.get("sub_task")
-
-                if not component_name or not sub_task:
-                    self.logger.error(
-                        f"[_get_next_step_delegation] LLM response missing 'component' or 'sub_task': {parsed_response}"
-                    )
-                    return None, None, REASON_LLM_ERROR
-
-                # 5. Validate Component Name (ensure it exists in fragments or tools)
-                # <<< IMPROVEMENT: Check BOTH fragment and tool registry >>>
-                if (
-                    component_name != "PlannerFragment"
-                    and component_name not in self.fragment_registry.list_fragments()
-                ):
-                    # We only check fragments here now, assuming ToolExecutor handles tool names
-                    # PlannerFragment is a special case handled directly
-                    self.logger.error(
-                        f"[_get_next_step_delegation] LLM delegated to unknown fragment: '{component_name}'"
-                    )
-                    return None, None, REASON_DELEGATION_FAILED
-
-                self.logger.info(
-                    f"[_get_next_step_delegation] LLM decided: Delegate to '{component_name}' for sub-task '{sub_task[:100]}...'"
-                )
-                return component_name, sub_task, None
-
-            except json.JSONDecodeError as e:
+            # 4. Validate Component Name (ensure it exists in fragments registry)
+            # PlannerFragment might be handled specially later, but should still be in registry
+            if component_name not in self.fragment_registry.get_all_definitions():
                 self.logger.error(
-                    f"[_get_next_step_delegation] Failed to decode LLM JSON response: {e}. Response: {llm_response_raw[:500]}"
+                    f"OrchestratorFragment delegated to unknown fragment: '{component_name}'"
                 )
-                return None, None, REASON_LLM_ERROR
-            except Exception:
-                self.logger.exception(
-                    "[_get_next_step_delegation] Error parsing LLM response structure:"
-                )
-                return None, None, REASON_LLM_PROCESSING_ERROR
+                return None, None, REASON_DELEGATION_FAILED
 
-        except Exception:
-            self.logger.exception("[_get_next_step_delegation] Error calling LLM:")
-            return None, None, REASON_LLM_ERROR
+            self.logger.info(
+                f"[_get_next_step_delegation] OrchestratorFragment decided: Delegate to '{component_name}' for sub-task '{sub_task[:100]}...'"
+            )
+            return component_name, sub_task, None # Return None for the reason string on success
+
+        except Exception as e:
+            self.logger.exception("[_get_next_step_delegation] Error executing/processing OrchestratorFragment:")
+            return None, None, REASON_DELEGATION_FAILED # Treat internal fragment error as delegation failure
 
     async def _execute_fragment_task(
         self,
@@ -210,9 +181,8 @@ class TaskOrchestrator:
         fragment_executor = FragmentExecutor(
             fragment_registry=self.fragment_registry,
             tool_registry=self.tool_registry,
-            llm_interface=self.llm_interface,
             memory_manager=self.memory_manager,
-            logger=self.logger,
+            logger=self.logger.getChild("FragmentExecutor"),
         )
 
         try:
@@ -246,20 +216,30 @@ class TaskOrchestrator:
             return result_dict
 
         except FragmentExecutionError as fee:
+            # Use str(fee) to get the message passed during initialization
+            error_message = str(fee)
             self.logger.error(
-                f"{log_prefix} FragmentExecutionError caught in orchestrator for '{component_name}': {fee.message}"
+                f"{log_prefix} FragmentExecutionError for '{component_name}': {error_message} (Status: {fee.status}, Reason: {fee.reason})"
             )
-            return {"status": fee.status, "reason": fee.reason, "message": fee.message}
+            fragment_success = False
+            fragment_result = {
+                "status": fee.status,
+                "reason": fee.reason,
+                "message": error_message, # Use the extracted message
+            }
+            return fragment_result
 
         except Exception as e:
             self.logger.exception(
                 f"{log_prefix} Unexpected error calling FragmentExecutor for '{component_name}':"
             )
-            return {
+            fragment_success = False
+            fragment_result = {
                 "status": STATUS_ERROR,
                 "reason": REASON_EXECUTOR_CALL_FAILED,
                 "message": f"Orchestrator failed to execute fragment: {e}",
             }
+            return fragment_result
 
     async def _invoke_learning_cycle(
         self,
@@ -305,7 +285,7 @@ class TaskOrchestrator:
         )
 
         # --- Initialize Task State --- #
-        from a3x.core.task_context import SharedTaskContext
+        from a3x.core.context import SharedTaskContext
 
         shared_task_context = SharedTaskContext(task_id)
         await shared_task_context.update_data("objective", objective)
@@ -323,11 +303,19 @@ class TaskOrchestrator:
         # --- Start Chat Monitor --- #
         # <<< ADD Chat Monitor logic >>>
         monitor_queue = asyncio.Queue()
-        # Pass the queue to the monitor task
+        # Pass the queue and other required dependencies to the monitor task
         self.monitor_task = asyncio.create_task(
-            chat_monitor_task(task_id, monitor_queue)
+            chat_monitor_task(
+                task_id=task_id,
+                shared_task_context=shared_task_context, # Pass the context instance
+                llm_interface=self.llm_interface, # Pass orchestrator's LLM interface
+                tool_registry=self.tool_registry,
+                fragment_registry=self.fragment_registry,
+                memory_manager=self.memory_manager,
+                workspace_root=self.workspace_root
+            )
         )
-        await shared_task_context.set_monitor_queue(monitor_queue)
+        # await shared_task_context.set_monitor_queue(monitor_queue) # Queue is now part of shared_task_context init
         self.logger.info(f"{log_prefix} Chat monitor started.")
 
         # --- Resolve max_steps --- #
@@ -455,28 +443,29 @@ class TaskOrchestrator:
                                 status=STATUS_ERROR,
                                 reason=REASON_FRAGMENT_NOT_FOUND,
                             )
+                        # TODO: This assumes PlannerFragment takes tool_registry in constructor.
+                        #       If not, it needs to be passed via context or execute args.
                         planner_instance = planner_fragment_def.fragment_class(
-                            llm_interface=self.llm_interface,
-                            logger=self.logger.getChild("PlannerFragment"),
+                             # REMOVE: fragment_def=planner_fragment_def # Pass the def
+                             # Does it need tool_registry here? Check PlannerFragment.__init__
+                             # tool_registry=self.tool_registry 
                         )
-                        # Planner needs tool descriptions
-                        all_tool_desc = self.tool_registry.get_tool_descriptions()
-                        if not all_tool_desc:
-                            raise FragmentExecutionError(
-                                "Could not determine available tools for PlannerFragment.",
-                                status=STATUS_ERROR,
-                                reason=REASON_SETUP_ERROR,
-                            )
-                        # Prepare input for planner's execute method (adjust as needed)
-                        planner_input = {
-                            "objective": objective,
-                            "tool_descriptions": all_tool_desc,
-                            "history": orchestration_history,
-                            "sub_task": sub_task,
-                        }
-                        # Execute the planner's method directly
+                        
+                        # Create a FragmentContext for the direct execution
+                        planner_fragment_context = FragmentContext(
+                            logger=self.logger.getChild(f"PlannerDirect"), # Use a child logger
+                            llm_interface=self.llm_interface,
+                            tool_registry=self.tool_registry,
+                            fragment_registry=self.fragment_registry,
+                            shared_task_context=shared_task_context, # Pass the shared context
+                            workspace_root=self.workspace_root,
+                            memory_manager=self.memory_manager
+                        )
+
+                        # Execute the planner's method directly, passing objective and the FragmentContext
                         fragment_result = await planner_instance.execute(
-                            planner_input, shared_task_context
+                             objective=objective, 
+                             context=planner_fragment_context 
                         )
                         fragment_success = (
                             fragment_result.get("status") == STATUS_SUCCESS
@@ -518,14 +507,16 @@ class TaskOrchestrator:
                         raise Exception("Internal logic error in orchestrator loop.")
 
                 except FragmentExecutionError as fee:
+                    # Use str(fee) to get the message passed during initialization
+                    error_message = str(fee)
                     self.logger.error(
-                        f"{log_prefix} FragmentExecutionError for '{component_name}': {fee.message} (Status: {fee.status}, Reason: {fee.reason})"
+                        f"{log_prefix} FragmentExecutionError for '{component_name}': {error_message} (Status: {fee.status}, Reason: {fee.reason})"
                     )
                     fragment_success = False
                     fragment_result = {
                         "status": fee.status,
                         "reason": fee.reason,
-                        "message": fee.message,
+                        "message": error_message, # Use the extracted message
                     }
                 except Exception as e:
                     self.logger.exception(
@@ -695,8 +686,10 @@ class TaskOrchestrator:
             final_answer = f"Orchestration failed due to critical error: {e}"
             # Ensure notification even on critical error
             if "shared_task_context" in locals():
+                # Pass a dictionary with the error message instead of just the string representation
+                error_details = {"error_type": type(e).__name__, "error_message": str(e)}
                 await notify_task_error(
-                    shared_task_context.task_id, final_reason, str(e)
+                    shared_task_context.task_id, final_reason, error_details
                 )
             # Ensure history is preserved up to the error point
             if "orchestration_history" not in locals():

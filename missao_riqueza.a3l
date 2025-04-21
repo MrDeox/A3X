@@ -1,0 +1,47 @@
+# Objetivo: Iniciar ciclo de aprendizado autônomo para descobrir formas práticas de ganhar dinheiro com IA
+
+# 1. Perguntar ao professor por ideias
+ask_professor 'prof_geral' question "Quais são as formas mais práticas de ganhar dinheiro com inteligência artificial usando conhecimentos técnicos básicos?"
+
+# 2. Aprender com a resposta
+aprender com 'prof_geral' question "Como posso aplicar essas ideias para começar hoje mesmo a gerar renda com IA?"
+
+# 3. Refletir sobre fragmento 'prof_geral' após aprendizado
+refletir sobre fragmento 'prof_geral' como a3l
+
+# 4. Interpretar a resposta textual do professor
+interpretar texto 'Analisar a saída do professor e criar um plano com base nela.'
+
+# (O interpretador vai gerar comandos como: criar fragmento monetizador, treinar com contexto, executar plano...)
+
+# 5. Ciclo continua de forma autônoma a partir das diretivas geradas
+
+✅ O que esse script faz?
+
+    Pergunta ao ProfessorLLM sobre formas práticas de ganhar dinheiro com IA.
+
+    Aprende com a resposta, ativando o ciclo learn_from_professor + KnowledgeInterpreter.
+
+    Reflete sobre o fragmento do professor, ativando o PlannerFragment via refletir como a3l.
+
+    Interpreta texto livre que reforça a missão.
+
+    Gera diretivas novas (como criar fragmento, treinar, executar) que o ExecutorSupervisor executa de forma autônoma.
+
+🚀 Próximo passo
+
+Depois de criar esse script, rode:
+
+python a3x/a3net/run.py missao_riqueza.a3l
+
+Deixa rodando e observa os logs. O A³X vai:
+
+    Consultar o professor
+
+    Interpretar a resposta
+
+    Criar fragmentos ou planos
+
+    Tentar executar ideias de monetização
+
+    Evoluir com base nas falhas e sucessos 

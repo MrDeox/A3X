@@ -1,4 +1,5 @@
 # a3x/core/utils/argument_parser.py
+# LLM desativado. Esta utilidade não deve mais acessar modelos para inferir argumentos. Toda cognição é feita pelo A³Net.
 
 import logging
 import json
@@ -131,33 +132,35 @@ Output *only* a single valid JSON object where:
 
 JSON Output:"""
                     
-                    messages = [{"role": "user", "content": prompt}]
-                    response_str = ""
-                    # Assuming call_llm handles non-streaming correctly if stream=False
-                    async for chunk in context.llm_interface.call_llm(messages=messages, stream=False, temperature=0.0): # Low temp for structured output
-                         response_str += chunk
-                    
-                    logger.debug(f"ArgumentParser LLM raw response for {tool_name}: {response_str}") # Add debug log
-                    
-                    # Robust JSON extraction: Find first valid JSON object
-                    json_match = re.search(r'{\s*.*?\s*}', response_str, re.DOTALL | re.IGNORECASE)
-                    
-                    # REMOVED: markdown cleaning regex - replaced by search
-                    # response_str = re.sub(r\"```(?:json)?\\s*(.*?)\\s*```\", r\"\\1\", response_str.strip(), flags=re.DOTALL)
-
-                    # Basic validation: check if it looks like JSON
-                    # if response_str.startswith(\"{\") and response_str.endswith(\"}\"): # Check if JSON was found
-                    if json_match:
-                        json_str = json_match.group(0)
-                        try:
-                            parsed_args = json.loads(json_str)
-                            logger.info(f"LLM extracted args for {tool_name}: {parsed_args}")
-                        except json.JSONDecodeError as json_err:
-                             logger.error(f"LLM response for argument extraction looked like JSON but failed to parse: {json_err}. JSON string: {json_str}")
-                             #parsed_args remains empty
-                    else:
-                        logger.warning(f"Could not find valid JSON object {{...}} in LLM response for argument extraction: {response_str}")
-                        #parsed_args remains empty
+                    # messages = [{"role": "user", "content": prompt}]
+                    # response_str = ""
+                    # # Assuming call_llm handles non-streaming correctly if stream=False
+                    # async for chunk in context.llm_interface.call_llm(messages=messages, stream=False, temperature=0.0): # Low temp for structured output
+                    #      response_str += chunk
+                    # 
+                    # logger.debug(f"ArgumentParser LLM raw response for {tool_name}: {{response_str}}") # Add debug log
+                    # 
+                    # # Robust JSON extraction: Find first valid JSON object
+                    # json_match = re.search(r'{{\s*.*?\s*}}', response_str, re.DOTALL | re.IGNORECASE)
+                    # 
+                    # # REMOVED: markdown cleaning regex - replaced by search
+                    # # response_str = re.sub(r\"```(?:json)?\\s*(.*?)\\s*```\", r\"\\1\", response_str.strip(), flags=re.DOTALL)
+                    # 
+                    # # Basic validation: check if it looks like JSON
+                    # # if response_str.startswith(\"{\") and response_str.endswith(\"}\"): # Check if JSON was found
+                    # if json_match:
+                    #     json_str = json_match.group(0)
+                    #     try:
+                    #         parsed_args = json.loads(json_str)
+                    #         logger.info(f"LLM extracted args for {tool_name}: {{parsed_args}}")
+                    #     except json.JSONDecodeError as json_err:
+                    #          logger.error(f"LLM response for argument extraction looked like JSON but failed to parse: {{json_err}}. JSON string: {{json_str}}")
+                    #          #parsed_args remains empty
+                    # else:
+                    #     logger.warning(f"Could not find valid JSON object {{{{...}}}} in LLM response for argument extraction: {{response_str}}")
+                    #     #parsed_args remains empty
+                    logger.warning(f"LLM-based argument parsing is deprecated. Relying on fallbacks for tool '{tool_name}'.")
+                    parsed_args = {} # Ensure it's empty if LLM is disabled
 
                 else:
                     logger.warning(f"Could not get signature for tool '{tool_name}'. Cannot use LLM for parsing.")

@@ -51,19 +51,23 @@ class FragmentContext(namedtuple('FragmentContext', [
 class Context:
     """
     Context object passed to skills, providing access to shared resources.
+    Now includes direct access to LLMInterface.
     """
     def __init__(self,
                  logger: Optional[logging.Logger] = None,
                  workspace_root: Optional[Path] = None,
                  mem: Optional[Dict[str, Any]] = None, # Simple memory store
-                 llm_url: Optional[str] = None,
+                 llm_url: Optional[str] = None, # Can be derived from llm_interface if provided
+                 llm_interface: Optional['LLMInterface'] = None, # <<< ADDED >>>
                  tools: Optional[Dict[str, Any]] = None, # Available tools
                  # Add other necessary attributes as identified
                  ):
         self.logger = logger or logging.getLogger(__name__)
         self.workspace_root = workspace_root or Path('.')
         self.mem = mem if mem is not None else {}
-        self.llm_url = llm_url
+        self.llm_interface = llm_interface # <<< ADDED >>>
+        # Derive llm_url from interface if not provided directly
+        self.llm_url = llm_url or (llm_interface.llm_url if llm_interface else None)
         self.tools = tools if tools is not None else {}
         # Potentially add execute_tool method reference if needed by skills
 
@@ -128,6 +132,11 @@ class SharedTaskContext:
     async def get_data(self, key: str, default: Any = None) -> Any:
         async with self._context_lock:
             return self.task_data.get(key, default)
+
+    async def get_task_data_copy(self) -> Dict[str, Any]:
+        """Returns a copy of the entire task_data dictionary."""
+        async with self._context_lock:
+            return dict(self.task_data) # Return a copy
 
     async def add_history(self, fragment_name: str, result_summary: str):
         async with self._context_lock:
@@ -196,13 +205,15 @@ class SharedTaskContext:
         # <<< UPDATED __str__ for Queue and Active Fragments >>>
         qsize = self.internal_chat_queue.qsize() # Non-blocking size check
         active_names = list(self.active_fragments.keys()) # Get keys without lock (dict keys are atomic)
-        return f"SharedTaskContext(task_id={self.task_id}, objective='{self.initial_objective}', data_keys={list(self.task_data.keys())}, chat_qsize={qsize}, active={active_names})"
+        data_keys = list(self.task_data.keys()) # Get data keys
+        return f"SharedTaskContext(task_id={self.task_id}, objective='{self.initial_objective}', data_keys={data_keys}, chat_qsize={qsize}, active={active_names})"
 
     def __repr__(self) -> str:
         # <<< UPDATED __repr__ for Queue and Active Fragments >>>
         qsize = self.internal_chat_queue.qsize()
         active_names = list(self.active_fragments.keys())
-        return f"<SharedTaskContext task_id={self.task_id} data_keys={list(self.task_data.keys())} chat_qsize={qsize} active_count={len(active_names)}>" 
+        data_keys = list(self.task_data.keys())
+        return f"<SharedTaskContext task_id={self.task_id} data_keys={data_keys} chat_qsize={qsize} active_count={len(active_names)}>"
 
     def to_dict(self) -> Dict[str, Any]:
         """Returns a serializable dictionary representation of the context."""

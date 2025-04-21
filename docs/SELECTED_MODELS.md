@@ -47,3 +47,44 @@ Esta lista documenta os modelos e ferramentas open source escolhidos para as dif
 *   **Modelo:** **YOLOv8n** (Nano)
 *   **Justificativa:** Leve (~3M params), rápido em CPU, bom desempenho para detecção em tempo real em hardware modesto.
 *   **Repositório/Link:** [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics)
+
+## Llama.cpp with OpenCL/CLBlast (for AMD GPUs)
+
+For users with AMD GPUs or those preferring OpenCL, `llama.cpp` can be compiled with CLBlast support.
+
+### Requirements
+
+- A C/C++ compiler (GCC/Clang)
+- CMake
+- `clblast-dev` library. On Debian/Ubuntu based systems, install with:
+  ```bash
+  sudo apt-get update && sudo apt-get install -y clblast-dev
+  ```
+
+### Building
+
+A convenience script is provided to handle the build process:
+
+```bash
+./scripts/build_llama_cpp.sh
+```
+
+This script will:
+1. Clone the `llama.cpp` repository.
+2. Install `clblast-dev`.
+3. Configure the build using CMake with `LLAMA_CLBLAST=ON`.
+4. Compile the server binary to `llama.cpp/build/bin/server`.
+
+### Running the Server
+
+Use the `tools/start_llama_server.sh` script:
+
+```bash
+./tools/start_llama_server.sh
+```
+
+Before running, you might need to adjust parameters within the script:
+- `MODEL_PATH`: Ensure this points to your downloaded GGUF model file.
+- `GPU_LAYERS`: Adjust the number of layers offloaded to the GPU based on your VRAM.
+
+The script starts the server on `http://127.0.0.1:8000` by default.

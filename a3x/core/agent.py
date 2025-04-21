@@ -12,6 +12,7 @@ from a3x.core.config import (
     PROJECT_ROOT,
     MAX_TOKENS_FALLBACK,
     LLAMA_SERVER_MODEL_PATH,
+    LLAMA_SERVER_URL,
 )
 from a3x.core.skills import get_skill_descriptions, get_skill_registry
 from a3x.core.db_utils import save_agent_state, load_agent_state, add_episodic_record
@@ -133,13 +134,15 @@ class ReactAgent:
         temperature: float = 0.7,
         logger: Optional[logging.Logger] = None,
         agent_name: str = "A3X Agent",
-        agent_description: str = "An autonomous agent using the A³X framework."
+        agent_description: str = "An autonomous agent using the A³X framework.",
+        llm_url: Optional[str] = None
     ):
         """Initializes the React Agent container."""
         agent_logger.debug(f"[Agent INIT] Received llm_interface: {llm_interface}")
         # Ensure we have an LLMInterface instance. Create default if None.
         if llm_interface is None:
-            self.llm_interface = LLMInterface(llm_url=DEFAULT_LLM_URL)
+            effective_llm_url = llm_url or LLAMA_SERVER_URL or DEFAULT_LLM_URL
+            self.llm_interface = LLMInterface(llm_url=effective_llm_url)
             agent_logger.info(f"[Agent INIT] No LLMInterface provided, created default instance with URL: {self.llm_interface.llm_url}")
         else:
             self.llm_interface = llm_interface
@@ -163,10 +166,10 @@ class ReactAgent:
 
         # >>> ADDED: Instantiate TaskOrchestrator <<<
         self.orchestrator = TaskOrchestrator(
-            llm_interface=self.llm_interface, # Pass the initialized interface
             fragment_registry=self.fragment_registry,
             tool_registry=self.tool_registry, # NEW: Pass ToolRegistry instance
             memory_manager=self.memory_manager, # <<< ADDED: Pass memory_manager >>>
+            llm_interface=self.llm_interface, # <<< ADDED: Pass LLM interface >>>
             workspace_root=self.workspace_root,
             agent_logger=self.agent_logger,
             # Add other necessary dependencies if orchestrator needs them

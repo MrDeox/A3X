@@ -1,0 +1,72 @@
+{"input": "O céu está azul.", "label": "cor"}
+{"input": "O carro está rápido.", "label": "velocidade"}
+{"input": "O sol brilha forte.", "label": "intensidade"}
+{"input": "A água é molhada.", "label": "propriedade"}
+{"input": "O dia está quente.", "label": "temperatura"}
+{"input": "O livro é interessante.", "label": "interesse"}
+{"input": "A maçã é vermelha.", "label": "cor"}
+{"input": "O gato está dormindo.", "label": "estado"}
+{"input": "A flor é bonita.", "label": "beleza"}
+{"input": "A comida é deliciosa.", "label": "sabor"}
+{"input": "A temperatura é de 25 graus.", "label": "temperatura"}
+{"input": "O gato está dormindo.", "label": "estado"}
+{"input": "Eu gosto de comer pizza.", "label": "preferencia"}
+{"input": "A flor está bonita.", "label": "qualidade"}
+{"input": "Ele está feliz.", "label": "emocao"}
+{"input": "A maçã está na mesa.", "label": "localizacao"}
+{"input": "O livro está aberto.", "label": "estado"}
+{"input": "O céu está azul.", "label": "cor"}
+{"input": "Eu preciso ir para casa.", "label": "intencao"}
+{"input": "O carro está vermelho.", "label": "cor"}
+{"input": "A maçã é vermelha.", "label": "cor"}
+{"input": "O carro está rápido.", "label": "velocidade"}
+{"input": "A água é fria.", "label": "temperatura"}
+{"input": "O céu está azul.", "label": "cor"}
+{"input": "O gato está dormindo.", "label": "estado"}
+{"input": "A comida é deliciosa.", "label": "sabor"}
+{"input": "O vento está forte.", "label": "intensidade"}
+{"input": "O sol está brilhante.", "label": "brilho"}
+{"input": "A flor é bonita.", "label": "beleza"}
+{"input": "O livro é interessante.", "label": "qualidade"}
+{"input": "exemplo de entrada 2", "label": "rótulo B"}
+{"input": "exemplo de entrada 1", "label": "rótulo A"}
+{"input": "Eu gosto de comer pizza.", "label": "preferencia"}
+{"input": "Ele está feliz.", "label": "emocao"}
+{"input": "O sol brilha.", "label": "fenômeno"}
+{"input": "Ela está estudando.", "label": "acao"}
+{"input": "O carro é vermelho.", "label": "cor"}
+{"input": "O céu está azul.", "label": "cor"}
+{"input": "O livro é interessante.", "label": "qualidade"}
+{"input": "A maçã é vermelha.", "label": "cor"}
+{"input": "Eu preciso de um café.", "label": "necessidade"}
+{"input": "Eu moro em São Paulo.", "label": "localizacao"}
+{"input": "O gato está dormindo.", "label": "estado"}
+{"input": "O carro está rápido.", "label": "velocidade"}
+{"input": "A comida é deliciosa.", "label": "sabor"}
+{"input": "O vento está forte.", "label": "força"}
+{"input": "O céu está azul.", "label": "cor"}
+{"input": "A maçã é vermelha.", "label": "cor"}
+{"input": "A flor é bonita.", "label": "beleza"}
+{"input": "A água é fria.", "label": "temperatura"}
+{"input": "O sol está brilhante.", "label": "brilho"}
+{"input": "O livro é interessante.", "label": "qualidade"}
+{"input": "O céu está azul.", "label": "cor"}
+{"input": "A maçã é vermelha.", "label": "cor"}
+{"input": "A flor é bonita.", "label": "beleza"}
+{"input": "O livro é interessante.", "label": "qualidade"}
+{"input": "A comida é deliciosa.", "label": "sabor"}
+{"input": "O gato está dormindo.", "label": "estado"}
+{"input": "A água é fria.", "label": "temperatura"}
+{"input": "O vento está forte.", "label": "força"}
+{"input": "O sol está brilhante.", "label": "luz"}
+{"input": "O carro está rápido.", "label": "velocidade"}
+{"input": "O sol está brilhando.", "label": "luz"}
+{"input": "A flor é bonita.", "label": "beleza"}
+{"input": "O gato está dormindo.", "label": "estado"}
+{"input": "O carro está rápido.", "label": "velocidade"}
+{"input": "Eu gosto de comer pizza.", "label": "preferencia"}
+{"input": "Eu estou feliz.", "label": "emoção"}
+{"input": "O livro é interessante.", "label": "qualidade"}
+{"input": "A casa é grande.", "label": "tamanho"}
+{"input": "A água é fria.", "label": "temperatura"}
+{"input": "O céu está azul.", "label": "cor"}

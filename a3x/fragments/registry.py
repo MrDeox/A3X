@@ -438,29 +438,74 @@ class FragmentRegistry:
     # <<< ADDED Method >>>
     async def select_fragment_for_task(self, objective: str, context: Optional[Dict] = None) -> Optional[BaseFragment]:
         """
-        Selects the most appropriate Fragment based on the objective.
-        Currently uses simple keyword matching for file operations.
+        Selects the most appropriate fragment to handle a given task based on its objective.
+
+        Current Logic:
+        1. Check for creative keywords ("poem", "write", "story") in the objective.
+           If found, prioritize fragments with "llm", "text", or "creative" in their name.
+        2. Check if the objective matches file path patterns (e.g., "modify file /path/to/file.txt").
+           If so, select a fragment capable of file operations (e.g., one managing 'read_file', 'write_file').
+        3. If no specific fragment is selected, attempt to use a general-purpose LLM fragment if available.
+        4. Fallback to None if no suitable fragment is found.
+
+        Args:
+            objective: The description of the task to be performed.
+            context: Optional additional context for the selection.
+
+        Returns:
+            An instance of the selected BaseFragment, or None if no suitable fragment is found.
         """
-        self.logger.info(f"Attempting to select fragment for objective: '{objective[:100]}...'")
+        self.logger.info(f"Selecting fragment for objective: {objective}")
+        # Ensure all fragments are loaded before selection
+        self.load_all_fragments() # Make sure instances are ready
 
-        # Simple keyword matching for file operations
-        file_op_keywords = ['list', 'read', 'write', 'delete', 'file', 'directory', 'arquivo', 'diretorio', 'listar', 'ler', 'escrever', 'apagar', 'deletar']
+        # --- New Creative Task Logic ---
+        creative_keywords = ["poem", "write", "story", "creative", "text", "generate"]
         objective_lower = objective.lower()
-        if any(keyword in objective_lower for keyword in file_op_keywords):
-            self.logger.info("Objective seems related to file operations. Selecting FileOpsManager.")
-            # Return the *instance* of the FileOpsManager
-            file_ops_manager = self.get_fragment("FileOpsManager")
-            if file_ops_manager:
-                return file_ops_manager
-            else:
-                self.logger.error("FileOpsManager fragment is registered but failed to load/instantiate.")
-                return None
+        if any(keyword in objective_lower for keyword in creative_keywords):
+            self.logger.info("Objective keywords suggest a creative/text generation task.")
+            preferred_fragment_keywords = ["llm", "text", "creative", "generation", "writer"]
+            for name, fragment in self._fragments.items():
+                name_lower = name.lower()
+                if any(pref_keyword in name_lower for pref_keyword in preferred_fragment_keywords):
+                    self.logger.info(f"Selected fragment '{name}' based on creative keywords.")
+                    return fragment
+            self.logger.info("No fragment with creative keywords found, proceeding to other checks.")
 
-        # --- Default Fallback ---
-        # TODO: Implement more sophisticated selection (LLM call, semantic search, etc.)
-        # For now, if no specific match, return None
-        self.logger.warning(f"No specific fragment matched objective via keyword search: '{objective[:100]}...'")
-        return None
+        # --- Existing File Path Logic ---
+        # Regex to find file paths (simple version, might need refinement)
+        # Looks for patterns like "file /path/...", "edit /path/...", "read /path/...", etc.
+        file_path_match = re.search(r'(?:file|path|directory|edit|modify|read|write|create|delete)\\s+([\\/\\w\\.\\-_]+)', objective, re.IGNORECASE)
+
+        if file_path_match:
+            file_path = file_path_match.group(1)
+            self.logger.info(f"Objective seems related to file path: {file_path}")
+            # Look for fragments that manage file-related skills
+            file_op_skills = {"read_file", "write_file", "list_files", "create_file", "delete_file"}
+            for name, fragment in self._fragments.items():
+                fragment_def = self._fragment_defs.get(name)
+                if fragment_def:
+                    # Check if the fragment manages any file operation skills
+                    managed = set(fragment_def.managed_skills or []) # Ensure iterable even if None
+                    used = set(fragment_def.skills or [])           # Ensure iterable even if None
+                    if not file_op_skills.isdisjoint(managed.union(used)):
+                        self.logger.info(f"Selected fragment '{name}' based on file path pattern and managed/used skills.")
+                        return fragment
+            self.logger.warning(f"File path detected, but no fragment found managing file operations.")
+
+
+        # --- Fallback Logic ---
+        # If no specific fragment found, maybe default to a general LLM executor if one exists
+        # Example: Prioritize a fragment named 'LLMExecutionFragment' or similar
+        general_llm_fragment_names = ["LLMExecutionFragment", "GeneralLLMPromptFragment", "TextGenerationFragment"] # Add more as needed
+        for name in general_llm_fragment_names:
+            if name in self._fragments:
+                self.logger.info(f"Falling back to general purpose fragment: {name}")
+                return self._fragments[name]
+
+
+        self.logger.warning(f"No suitable fragment found for objective: {objective}")
+        return None # No suitable fragment found
     # <<< END ADDED Method >>>
 
 # --- Standalone functions are removed --- 

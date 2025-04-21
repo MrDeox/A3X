@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 from typing import List, Dict, Any
 from a3x.core.config import AUTO_EVAL_LOG, SELF_EVAL_LOG
 
@@ -40,6 +41,12 @@ def auto_evaluate_task(objective: str, plan: List[str], execution_results: List[
             "difficulties": "TODO: Detectar dificuldades recorrentes.",
         }
     }
+
+    # Ensure log directory exists
+    for log_path in [AUTO_EVAL_LOG, SELF_EVAL_LOG]:
+        log_dir = os.path.dirname(log_path)
+        os.makedirs(log_dir, exist_ok=True)
+
     # Salva em ambos os logs
     with open(AUTO_EVAL_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")

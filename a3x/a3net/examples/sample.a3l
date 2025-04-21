@@ -1,0 +1,66 @@
+# Sample A3L file for testing the interpreter
+
+# Export a previously trained fragment
+exportar fragmento 'frag_reflector'
+
+# Import a fragment package
+importar fragmento de 'a3x/a3net/a3x_repo/frag_reflector.a3xfrag'
+
+# Try exporting again to a specific path
+exportar fragmento 'frag_reflector' to 'exports/reflector_backup.a3xfrag' # Note: 'to' syntax not yet supported!
+
+# Invalid line
+ask something irrelevant 'test'
+
+# Import another one (will fail if frag_decisor not exported)
+importar fragmento de 'a3x/a3net/a3x_repo/frag_decisor.a3xfrag'
+
+# Ask a question to a fragment
+# NOTE: Input dimension mismatch for frag_reflector (expects 128), handle_directive will fail here.
+perguntar ao fragmento 'frag_reflector' com [0.1, 0.9, 0.5, 0.2]
+
+# Retrain an existing fragment
+treinar fragmento 'frag_reflector' por 5 épocas 
+
+# Reflect on a fragment
+refletir sobre fragmento 'frag_reflector' 
+
+# Reflect on a fragment using A3L format
+refletir sobre fragmento 'frag_reflector' como a3l 
+
+# --- Conditional Execution Tests ---
+# This should execute
+se fragmento 'frag_reflector' tiver input_dim 128 então refletir sobre fragmento 'frag_reflector' como a3l
+
+# This should be skipped (wrong value)
+se fragmento 'frag_reflector' tiver input_dim 100 então exportar fragmento 'frag_reflector'
+
+# This should be skipped (fragment not found)
+se fragmento 'frag_non_existent' tiver input_dim 128 então refletir sobre fragmento 'frag_reflector'
+
+# This should be skipped (attribute not found - assuming no 'output_dim' on reflector)
+# se fragmento 'frag_reflector' tiver output_dim 3 então exportar fragmento 'frag_reflector' 
+
+# --- Repetition Test ---
+repetir 2 vezes:
+  treinar fragmento 'frag_reflector' por 1 época
+
+# --- Confidence Check Test ---
+# Ask first to establish a confidence score (this input might give low confidence)
+perguntar ao fragmento 'frag_reflector' com [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+# Retrain if confidence was low
+se confiança for menor que 0.95 então treinar fragmento 'frag_reflector' por 3 épocas
+
+# This should likely be skipped as confidence should be high after training
+se confiança for menor que 0.5 então refletir sobre fragmento 'frag_reflector' como a3l 
+
+# --- Cumulative Epoch Check Test ---
+# This will run because total epochs (5 + 1 + 1 = 7) > 6
+se fragmento 'frag_reflector' foi treinado por mais de 6 épocas então exportar fragmento 'frag_reflector'
+
+# This will be skipped because total epochs (7) is not > 7
+se fragmento 'frag_reflector' foi treinado por mais de 7 épocas então importar fragmento de 'a3x/a3net/a3x_repo/frag_reflector.a3xfrag' 
+
+# --- Test Suggestion Generation ---
+perguntar ao fragmento 'frag_reflector' com [0.46,0.45,0.54,0.51,0.5,0.53,0.52,0.53,0.47,0.47,0.46,0.48,0.49,0.49,0.5,0.45,0.5,0.49,0.48,0.53,0.52,0.55,0.52,0.49,0.54,0.51,0.48,0.5,0.52,0.52,0.53,0.46,0.5,0.53,0.48,0.54,0.48,0.49,0.51,0.55,0.48,0.5,0.54,0.54,0.47,0.47,0.46,0.46,0.48,0.54,0.46,0.47,0.49,0.45,0.51,0.46,0.5,0.53,0.55,0.51,0.47,0.48,0.46,0.52,0.54,0.49,0.48,0.49,0.49,0.49,0.51,0.49,0.5,0.53,0.5,0.5,0.51,0.54,0.51,0.52,0.48,0.52,0.52,0.54,0.47,0.48,0.46,0.49,0.49,0.46,0.54,0.48,0.53,0.45,0.53,0.5,0.49,0.49,0.49,0.51,0.48,0.52,0.45,0.46,0.53,0.47,0.51,0.53,0.51,0.46,0.55,0.53,0.48,0.46,0.51,0.54,0.5,0.5,0.46,0.47,0.52,0.49,0.54,0.5,0.51,0.49,0.45,0.46] # Input Ambigua 

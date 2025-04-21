@@ -160,54 +160,70 @@ async def hierarchical_planner(
     # <<< END ADDED >>>
 
     # 1. Get Schemas for Available Tools/Fragments
-    # <<< MODIFICATION: Select ONLY relevant tools for this test >>>
+    # <<< REMOVE TEMPORARY FILTERING >>>
     logger.debug(f"{log_prefix} Full list of available tools/fragments for reference: {available_tools}") # Log original list
-    # <<< TEMPORARY FILTERING FOR get_public_ip TEST >>>
     # relevant_tool_names = available_tools # Use the full list provided
-    essential_tools = ["propose_skill_from_gap", "reload_generated_skills", "execute_code", "final_answer"]
-    relevant_tool_names = [tool for tool in available_tools if tool in essential_tools]
-    logger.info(f"{log_prefix} [TEMP TEST] Using filtered tool list for planning: {relevant_tool_names}")
-    # <<< END TEMPORARY FILTERING >>>
+    # essential_tools = ["propose_skill_from_gap", "reload_generated_skills", "execute_code", "final_answer"]
+    # relevant_tool_names = [tool for tool in available_tools if tool in essential_tools]
+    # logger.info(f"{log_prefix} [TEMP TEST] Using filtered tool list for planning: {relevant_tool_names}")
+    relevant_tool_names = available_tools # <<< USE FULL LIST >>>
+    # <<< END REMOVAL >>>
     
     skills_prompt_section = ""
-        for tool_name in relevant_tool_names:
-            schema = tool_registry.get_tool_details(tool_name)
-            if schema:
-                # Format the schema nicely for the prompt
-                skills_prompt_section += f"### Skill: {schema.get('name', tool_name)}\n"
-                skills_prompt_section += f"* Description: {schema.get('description', 'No description provided.')}\n"
-                
-                # Format parameters
-                schema_parameters_object = schema.get('parameters', {})
-                skill_defined_params = schema_parameters_object.get('properties', {})
-                required_params = set(schema_parameters_object.get('required', []))
-                llm_visible_params = {
-                    k: v for k, v in skill_defined_params.items()
-                    if k not in ('self', 'cls', 'ctx', 'context', 'resolved_path', 'original_path_str') # Exclude injected/internal params
-                    and k[0].islower()
-                }
-                
-                if llm_visible_params:
-                    params_str_parts = []
-                    for param_name, param_info in llm_visible_params.items():
-                        if isinstance(param_info, dict):
-                            param_type = param_info.get('type', 'any')
-                            param_desc = param_info.get('description', '')
-                            is_required = param_name in required_params
-                            required_indicator = " (required)" if is_required else ""
-                            params_str_parts.append(f"  - {param_name} ({param_type}){required_indicator}: {param_desc}")
-                        else:
-                            params_str_parts.append(f"  - {param_name}")
-                    if params_str_parts:
-                        skills_prompt_section += f"* Parameters:\n" + "\n".join(params_str_parts) + "\n"
+    fragments_prompt_section = ""
+    # <<< Use relevant_tool_names (which is now the full list) >>>
+    for tool_name in relevant_tool_names:
+        # Try getting fragment definition first
+        all_fragment_defs = fragment_registry.get_all_definitions()
+        fragment_def = all_fragment_defs.get(tool_name)
+        if fragment_def:
+            # Format fragment info
+            fragments_prompt_section += f"### Fragment: {fragment_def.name}\n"
+            fragments_prompt_section += f"* Description: {fragment_def.description}\n"
+            # List managed skills if any
+            if fragment_def.managed_skills:
+                 fragments_prompt_section += f"* Handles Skills: {', '.join(fragment_def.managed_skills)}\n"
+            fragments_prompt_section += "\n"
+            continue # Move to next tool name
+            
+        # If not a fragment, try getting skill schema
+        schema = tool_registry.get_tool_details(tool_name)
+        if schema:
+            # Format skill info
+            skills_prompt_section += f"### Skill: {schema.get('name', tool_name)}\n"
+            skills_prompt_section += f"* Description: {schema.get('description', 'No description provided.')}\n"
+            
+            # Format parameters
+            schema_parameters_object = schema.get('parameters', {})
+            skill_defined_params = schema_parameters_object.get('properties', {})
+            required_params = set(schema_parameters_object.get('required', []))
+            llm_visible_params = {
+                k: v for k, v in skill_defined_params.items()
+                if k not in ('self', 'cls', 'ctx', 'context', 'resolved_path', 'original_path_str') # Exclude injected/internal params
+                and k[0].islower()
+            }
+            
+            if llm_visible_params:
+                params_str_parts = []
+                for param_name, param_info in llm_visible_params.items():
+                    if isinstance(param_info, dict):
+                        param_type = param_info.get('type', 'any')
+                        param_desc = param_info.get('description', '')
+                        is_required = param_name in required_params
+                        required_indicator = " (required)" if is_required else ""
+                        params_str_parts.append(f"  - {param_name} ({param_type}){required_indicator}: {param_desc}")
                     else:
-                        skills_prompt_section += f"* Parameters: None\n"
+                        params_str_parts.append(f"  - {param_name}")
+                if params_str_parts:
+                    skills_prompt_section += f"* Parameters:\n" + "\n".join(params_str_parts) + "\n"
                 else:
                     skills_prompt_section += f"* Parameters: None\n"
-                skills_prompt_section += "\n"
             else:
-             logger.warning(f"{log_prefix} Schema not found for relevant tool: {tool_name}")
-        
+                skills_prompt_section += f"* Parameters: None\n"
+            skills_prompt_section += "\n"
+        else:
+         logger.warning(f"{log_prefix} Schema not found for relevant tool: {tool_name}")
+    
     # Skip fragments for this simplified test
     # <<< Log the simplified tools being sent >>>
     logger.debug(f"{log_prefix} Simplified tools/fragments sent to LLM for planning:\n-------\n{skills_prompt_section}\n-------")
@@ -256,7 +272,7 @@ Important Instructions & Constraints:
 High-Level Plan Consideration (Optional):
 Think step-by-step how to break down the task. What needs to happen first? What depends on previous steps?
 
-Generate the JSON plan (ONLY the JSON list, starting with '[' and ending with ']'):
+Generate the JSON plan as a list of steps. If the task cannot be achieved with the provided tools, return an empty list [].
 """
 
     # <<< ADDED: Log the prompt (or a summary) >>>
@@ -282,21 +298,37 @@ Generate the JSON plan (ONLY the JSON list, starting with '[' and ending with ']
         ):
             llm_response_raw += chunk
 
-        logger.debug(f"{log_prefix} Raw LLM response: {llm_response_raw}")
+        # <<< Log raw response at INFO level >>>
+        logger.info(f"{log_prefix} Raw LLM response received: {llm_response_raw}")
 
         if not llm_response_raw:
             logger.error(f"{log_prefix} LLM returned an empty response.")
+            # <<< Ensure consistent error format >>>
             return {"status": "failure", "error": "LLM returned empty response"}
 
         # 4. Parse the Response
-        # Try to find JSON list within potential markdown fences
-        json_match = re.search(r'\s*(\[.*?])\s*', llm_response_raw, re.DOTALL)
-        if not json_match:
-            logger.error(f"{log_prefix} Could not find JSON list `[...]` in LLM response. Response: {llm_response_raw}")
-            return {"status": "failure", "error": "LLM response did not contain a JSON list."}
+        # <<< Improve JSON extraction: Look for list within optional markdown fences >>>
+        json_str = None
+        # Try finding ```json ... ``` block first
+        # Using raw strings r"..." to simplify escaping
+        json_block_match = re.search(r"```json\\s*(\\[.*?]\\s*)```", llm_response_raw, re.DOTALL)
+        if json_block_match:
+            json_str = json_block_match.group(1)
+        else:
+            # Fallback to finding any list `[...]`
+            # Using raw string r"..."
+            list_match = re.search(r"(\\[.*?]\s*)", llm_response_raw, re.DOTALL)
+            if list_match:
+                json_str = list_match.group(1)
+        # <<< END improved extraction >>>
+
+        if not json_str:
+            logger.error(f"{log_prefix} Could not extract JSON list `[...]` from LLM response. Response: {llm_response_raw}")
+            # <<< Include raw response in error message >>>
+            return {"status": "failure", "error": f"LLM response did not contain a JSON list. Raw Response: {llm_response_raw[:1000]}..."} # Limit length
         
-        json_str = json_match.group(1)
-        
+        logger.debug(f"{log_prefix} Extracted JSON string: {json_str}") # Keep this debug
+
         try:
             plan = json.loads(json_str)
             if not isinstance(plan, list):
@@ -310,11 +342,14 @@ Generate the JSON plan (ONLY the JSON list, starting with '[' and ending with ']
             return {"status": "success", "data": {"plan": plan}}
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"{log_prefix} Failed to parse LLM response as valid plan JSON list: {e}. Response: {json_str}")
-            return {"status": "failure", "error": f"Failed to parse LLM plan response: {e}"}
+            # <<< Include raw response and extracted string in error message >>>
+            return {"status": "failure", "error": f"Failed to parse LLM plan response: {e}. Extracted: {json_str[:500]}... Raw: {llm_response_raw[:500]}..."} # Limit length
 
     except Exception as e:
         logger.exception(f"{log_prefix} Exception during planning LLM call: {e}")
-        return {"status": "failure", "error": f"Exception during LLM call: {e}"}
+        # <<< Include raw response in error message if available >>>
+        raw_resp_snippet = llm_response_raw[:500] + "..." if 'llm_response_raw' in locals() and llm_response_raw else "(Raw response not available)"
+        return {"status": "failure", "error": f"Exception during LLM call: {e}. Raw Response: {raw_resp_snippet}"}
 
 # Example of how to potentially register this skill's methods if not done automatically
 # Needs access to the ToolRegistry instance

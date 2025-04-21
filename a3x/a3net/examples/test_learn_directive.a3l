@@ -1,0 +1,30 @@
+# test_learn_directive.a3l
+# Test the consolidated `learn_from_professor` cycle using the new directive.
+
+# 1. Create the Knowledge Interpreter (needed implicitly)
+# (Assuming ki_default is available)
+
+# 2. Create the Professor LLM Fragment
+# (Error expected if it already exists from previous runs)
+criar fragmento 'prof_learn_test' tipo 'professor_llm' description 'Professor for Learn Directive Test'
+
+# 3. Create a dummy fragment to be the context/target of the learning
+# (Needed for the heuristic in KI and potential execution)
+criar fragmento 'learner_ctx' tipo 'neural' input_dim 5 hidden_dim 3 num_classes 2 id_to_label {0:'A', 1:'B'} description 'Context for learn test'
+
+# 4. Use the new learn directive, providing context
+# Ask a question that maps to a mock response containing commands about 'learner_ctx'
+aprender com 'prof_learn_test' sobre 'learner_ctx' question "Qual o status do fragmento 'learner_ctx'?"
+# Change the mock response in ProfessorLLMFragment if needed to mention learner_ctx
+# The default mock uses dummy_reflector, let's assume we add one for learner_ctx:
+# "status do fragmento 'learner_ctx'": "O fragmento 'learner_ctx' precisa ser treinado por 2 épocas."
+
+# 5. Implicitly, the executor should:
+#    - Parse the 'aprender com' directive.
+#    - Call `learn_from_professor` with professor_id='prof_learn_test', question=..., fragmento_referido='learner_ctx'.
+#    - `learn_from_professor` calls the professor, gets text.
+#    - `learn_from_professor` calls KI.interpret_knowledge, passing 'learner_ctx' as context.
+#    - KI extracts command(s) (e.g., "treinar fragmento 'learner_ctx' por 2 épocas").
+#    - `learn_from_professor` calls `_execute_extracted_commands`.
+#    - The command is executed.
+#    - Check logs for the execution of the command related to 'learner_ctx'. 

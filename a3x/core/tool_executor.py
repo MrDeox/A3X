@@ -13,7 +13,7 @@ import asyncio
 import re
 import uuid
 from a3x.fragments.registry import FragmentRegistry
-from .context import SharedTaskContext, _ToolExecutionContext, FragmentContext
+from .context import SharedTaskContext, FragmentContext, _ToolExecutionContext
 
 # Import SKILL_REGISTRY and PROJECT_ROOT for instantiation and context
 from a3x.core.skill_management import SKILL_REGISTRY
@@ -194,7 +194,10 @@ async def execute_tool(
             # Process result
             if isinstance(result, dict) and 'status' in result:
                 skill_status = result.get('status', 'unknown')
-                skill_message = result.get('message', 'No message provided.')
+                if skill_status != "success":
+                    skill_message = result.get('error', result.get('message', f"Tool reported {skill_status} status with no message/error key."))
+                else:
+                    skill_message = result.get('message', 'Execution reported success with no message.')
                 result_payload = result
             else:
                 ctx_logger.warning(f"{log_prefix} Tool '{tool_name}' executed but returned an unexpected format: {type(result)}. Wrapping as success.")

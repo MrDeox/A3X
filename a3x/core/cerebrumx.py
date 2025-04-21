@@ -18,8 +18,8 @@ from a3x.core.tool_executor import execute_tool, _ToolExecutionContext
 
 # Centralized config and memory manager
 from a3x.core import config as a3x_config
+from a3x.core.config import HEURISTIC_LOG_FILE, MAX_REACT_ITERATIONS # <<< Import MAX_REACT_ITERATIONS
 from a3x.core.memory.memory_manager import MemoryManager
-from a3x.core.config import HEURISTIC_LOG_FILE # Import the centralized path
 
 # Potentially import memory, reflection components later
 
@@ -43,43 +43,73 @@ from .agent import _is_simple_list_files_task, ReactAgent # <<< ADD ReactAgent i
 # Helper to create context for direct execution calls
 # _ToolExecutionContext = namedtuple("_ToolExecutionContext", ["logger", "workspace_root", "llm_url", "tools_dict"])
 
+# <<< ADDED Imports for Path and Registries/Manager >>>
+from a3x.core.tool_registry import ToolRegistry
+from a3x.fragments.registry import FragmentRegistry
+from a3x.core.memory.memory_manager import MemoryManager
+# <<< END ADDED Imports >>>
+
+from a3x.core.auto_evaluation import auto_evaluate_task
+from a3x.core.db_utils import add_episodic_record # <<< EXISTING - Check if this needs to be moved higher or duplicated
+
+# <<< Import config and interface >>>
+from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
+from a3x.core.config import LLAMA_SERVER_URL
+
 class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
     """
     Agente Autônomo Adaptável Experimental com ciclo cognitivo unificado.
     Incorpora percepção, planejamento, execução ReAct, reflexão e aprendizado em um único fluxo.
+    AGORA DELEGA A EXECUÇÃO PRINCIPAL AO TASKORCHESTRATOR.
     """
 
-    def __init__(self, system_prompt: str, llm_url: Optional[str] = None, tools_dict: Optional[Dict[str, Dict[str, Any]]] = None, exception_policy=None, agent_config: Optional[Dict] = None):
+    def __init__(
+        self,
+        agent_id: str, # <<< ADDED
+        system_prompt: str,
+        tool_registry: ToolRegistry, # <<< ADDED
+        fragment_registry: FragmentRegistry, # <<< ADDED
+        memory_manager: MemoryManager, # <<< ADDED
+        workspace_root: Path, # <<< ADDED
+        llm_url: Optional[str] = None,
+        # tools_dict is now passed via tool_registry
+        # tools_dict: Optional[Dict[str, Any]]] = None, # Removed, use tool_registry
+        exception_policy=None,
+        agent_config: Optional[Dict] = None,
+        max_iterations: int = MAX_REACT_ITERATIONS, # <<< ADDED max_iterations
+    ):
         """Inicializa o Agente CerebrumX."""
         # Initialize ReactAgent first
-        # Pass llm_interface (which ReactAgent expects) and map tools_dict to skill_registry
-        # ReactAgent uses get_skill_registry() if skill_registry is None, so passing tools_dict directly seems correct.
-        # Assuming llm_url can be handled by creating an LLMInterface or passed if ReactAgent accepts it.
-        # Let's create a minimal LLMInterface if llm_url is provided.
         llm_interface_instance = None
-        if llm_url:
-            from a3x.core.llm_interface import LLMInterface # Local import
+        if llm_url: # If URL is explicitly passed to CerebrumX
             llm_interface_instance = LLMInterface(llm_url=llm_url)
-        
+        else: # Create default using correct priority: config -> default
+            effective_llm_url = LLAMA_SERVER_URL or DEFAULT_LLM_URL 
+            llm_interface_instance = LLMInterface(llm_url=effective_llm_url)
+
+        # <<< CORRECTED super().__init__ call >>>
         super().__init__(
-            llm_interface=llm_interface_instance, # Pass the interface object
-            skill_registry=tools_dict # Map tools_dict to skill_registry
-            # system_prompt is handled by CerebrumXAgent, not passed to ReactAgent super?
-            # Need to verify if ReactAgent __init__ uses system_prompt
+            agent_id=agent_id,
+            llm_interface=llm_interface_instance,
+            # ReactAgent expects skill_registry (dict mapping name -> schema)
+            skill_registry=tool_registry.list_tools(), # <<< Use list_tools()
+            tool_registry=tool_registry,
+            fragment_registry=fragment_registry,
+            memory_manager=memory_manager,
+            workspace_root=workspace_root,
+            max_iterations=max_iterations, # Pass max_iterations
+            logger=cerebrumx_logger # Pass specific logger if desired
         )
-        # Store system_prompt locally if not handled by super
-        self.system_prompt = system_prompt 
-        
-        self.agent_logger.info("[CerebrumX INIT] Agente CerebrumX inicializado (Ciclo Unificado).")
+        # <<< END CORRECTION >>>
+
+        # Store system_prompt locally as ReactAgent's init doesn't seem to take it
+        self.system_prompt = system_prompt
+
+        self.agent_logger.info(f"[CerebrumX INIT] Agente CerebrumX inicializado (ID: {agent_id}).")
         self.config = agent_config or {}
 
-        # Configuração centralizada para MemoryManager
-        memory_config = {
-            "SEMANTIC_INDEX_PATH": a3x_config.SEMANTIC_INDEX_PATH,
-            "SEMANTIC_SEARCH_TOP_K": a3x_config.SEMANTIC_SEARCH_TOP_K,
-            "EPISODIC_RETRIEVAL_LIMIT": a3x_config.EPISODIC_RETRIEVAL_LIMIT,
-        }
-        self.memory_manager = MemoryManager(memory_config)
+        # MemoryManager is now initialized in ReactAgent via super().__init__
+        # self.memory_manager = memory_manager
 
         # ExceptionPolicy configurável
         if exception_policy is None:
@@ -88,103 +118,91 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         else:
             self.exception_policy = exception_policy
 
-        # <<< ADDED Fragment Registry Initialization >>>
-        # Pass shared dependencies (LLM, skills) and config to the registry
-        # Using self.tools as a simplified skill registry for now
-        # TODO: Implement a proper SkillRegistry class if needed
-        self.fragment_registry = FragmentRegistry(
-            llm_interface=self.llm_interface, # <<< CORRECTED: Use self.llm_interface >>>
-            skill_registry=get_skill_registry(), # Pass the actual skill registry
-            config=self.config # Pass the main agent config
-        )
-        self.agent_logger.info(f"[CerebrumX INIT] Fragment Registry inicializado. {len(self.fragment_registry.get_all_definitions())} fragments carregados.")
-        # <<< END ADDED Section >>>
+        # FragmentRegistry is now initialized in ReactAgent via super().__init__
+        # self.fragment_registry = fragment_registry
 
-    # --- Novo Ciclo Cognitivo Unificado ---
-    async def run(self, objective: str) -> Dict[str, Any]: # Now returns final result dict
+        # Agent logger is also set in super
+        # self.agent_logger = logging.getLogger(__name__) # Use logger passed to ReactAgent
+
+    # --- Novo Ciclo Cognitivo Unificado (Delegado ao Orchestrator) ---
+    async def run(self, objective: str, max_steps: Optional[int] = None) -> Dict[str, Any]: # Pass max_steps
         """
-        Executa o ciclo cognitivo completo unificado do A³X.
-        Perceber -> Planejar -> Executar -> Refletir & Aprender.
-        Retorna um dicionário com o resultado final ou o status da execução.
+        Inicia a execução de uma tarefa delegando ao TaskOrchestrator.
+        Retorna o resultado final fornecido pelo orquestrador.
         """
         start_time = time.time()
-        from a3x.core.auto_evaluation import auto_evaluate_task
-        from a3x.core.db_utils import add_episodic_record
+        self.agent_logger.info(f"--- Iniciando Tarefa (via CerebrumX) --- Objetivo: {objective[:100]}..." )
+        add_episodic_record(f"Iniciando tarefa: {objective}", "task_start", "iniciada", {"objective": objective})
 
-        self.agent_logger.info(f"--- Iniciando Ciclo Cognitivo Unificado --- Objetivo: {objective[:100]}..." )
-
-        # 1. Percepção (Simplificado)
+        # 1. Percepção (Simplificado - Adiciona ao histórico do agente base)
         perception = self._perceive(objective)
-        self.agent_logger.info(f"Percepção processada: {perception}")
+        self.add_history_entry(role="user", content=perception["processed"]) # Use method from ReactAgent
+        self.agent_logger.info(f"Percepção processada e adicionada ao histórico: {perception}")
 
-        # 2. Recuperação de Contexto
-        context = None
+        # 2. Recuperação de Contexto (Opcional - Pode ser feito pelo Orchestrator/Fragment se necessário)
+        # context = await self._retrieve_context(perception)
+        # self.agent_logger.info(f"Contexto recuperado: {str(context)[:100]}...")
+
+        # --- REMOVED Fragment Selection --- 
+        # selected_fragment = await self._select_fragment(perception, context)
+
+        # 3. Delegação para o TaskOrchestrator
+        final_result = {}
         try:
-            context = await self._retrieve_context(perception)
-            self.agent_logger.info(f"Contexto recuperado: {str(context)[:100]}...")
+            self.agent_logger.info(f"Delegando execução para TaskOrchestrator...")
+            # self.orchestrator foi inicializado no __init__ do ReactAgent
+            final_result = await self.orchestrator.orchestrate(objective, max_steps=max_steps)
+            self.agent_logger.info(f"TaskOrchestrator finalizou. Status: {final_result.get('status')}")
+
         except Exception as e:
-            self.exception_policy.handle(e, context="Erro durante recuperação de contexto")
-            context = {"combined_summary": "Erro ao recuperar contexto.", "semantic_results": [], "episodic_results": [], "query": perception.get("processed", "")}
+            self.exception_policy.handle(e, context="Erro crítico durante a orquestração")
+            self.agent_logger.exception("Erro crítico capturado pelo CerebrumX durante a orquestração:")
+            final_result = {
+                "status": "error",
+                "message": f"Erro crítico na orquestração: {e}",
+                "fragment_used": "N/A",
+                "results": []
+            }
 
-        # 3. Seleção de Fragment (Roteamento da Tarefa)
-        selected_fragment = await self._select_fragment(perception, context)
+        # --- REMOVED Direct Fragment Execution --- 
+        # if selected_fragment: ...
+        # else: ...
 
-        # 4. Execução via Fragment Selecionado
-        final_status = "error"
-        final_message = "Nenhum fragment apropriado foi selecionado para a tarefa."
-        execution_trace = [] # Trace da execução do fragment
-        selected_fragment_name = "N/A"
+        # 4. Reflexão e Aprendizado (COMENTADO - A ser movido para TaskOrchestrator ou chamado por ele)
+        # final_status = final_result.get("status", "error")
+        # execution_trace = final_result.get("history", []) # Use history from orchestrator result
+        # selected_fragment_name = final_result.get("fragment_used", "N/A") # Requires orchestrator to maybe return this
+        # await self._reflect_and_learn(perception, selected_fragment_name, execution_trace, final_status)
 
-        if selected_fragment:
-            selected_fragment_name = selected_fragment.get_name()
-            self.agent_logger.info(f"Fragment '{selected_fragment_name}' selecionado. Iniciando execução...")
-            final_fragment_result, execution_trace = await self._execute_fragment(selected_fragment, perception["processed"], context)
-            final_status = final_fragment_result.get("status", "error")
-            # Get message from final_answer or observation or default message
-            final_message = final_fragment_result.get("final_answer") or final_fragment_result.get("observation") or final_fragment_result.get("message", "Fragment execution finished with no message.")
-            self.agent_logger.info(f"Execução do Fragment '{selected_fragment_name}' finalizada. Status: {final_status}")
-        else:
-            self.agent_logger.error(f"Falha ao selecionar fragment para o objetivo: {objective[:100]}...")
-            # Optionally, try a default fragment or report error
-            # Update metrics for routing failure?
-
-        # 5. Reflexão e Aprendizado Pós-Execução
-        await self._reflect_and_learn(perception, selected_fragment_name, execution_trace, final_status)
-
-        # 6. Autoavaliação Cognitiva
+        # 5. Autoavaliação Cognitiva (COMENTADO - Depende de como o histórico é estruturado no orchestrator)
         end_time = time.time()
-        heuristics_used = []
-        # for res in execution_trace:
-        #     if "heuristic" in res.get("data", {}):
-        #         heuristics_used.append(res["data"]["heuristic"])
+        # from a3x.core.auto_evaluation import auto_evaluate_task
+        # auto_evaluate_task(...)
 
-        # The concept of a linear "plan" changes. We use the selected fragment name.
-        auto_evaluate_task(
-            objective=objective,
-            plan=[f"Route to: {selected_fragment_name}"], # Represent plan as routing decision
-            execution_results=execution_trace,
-            heuristics_used=heuristics_used,
-            start_time=start_time,
-            end_time=end_time
+        # 6. Salvar estado final do agente (incluindo histórico acumulado)
+        # O histórico é gerenciado pela classe base ReactAgent (self._history)
+        # O orchestrator pode adicionar ao contexto, mas o histórico final deve estar em self._history?
+        # Precisamos garantir que o histórico do orchestrator seja integrado em self._history
+        # TODO: Revisar como o histórico é passado entre orchestrator e agente.
+        # Por enquanto, o orchestrator retorna o histórico, mas não o integramos aqui.
+        
+        # Tenta adicionar a resposta final ao histórico do agente, se houver
+        final_content = final_result.get("final_answer") or final_result.get("message")
+        if final_content:
+            self.add_history_entry(role="assistant", content=str(final_content))
+
+        self._save_state() # Save state including history additions
+
+        # 7. Retornar Resultado Final do Orchestrator
+        final_status_str = str(final_result.get('status', 'unknown')) # Ensure outcome is a string
+        self.agent_logger.info(f"--- Tarefa Finalizada (via CerebrumX) --- Status: {final_status_str}")
+        add_episodic_record(
+            f"Tarefa finalizada: {objective}",
+            "task_end",
+            final_result.get("status", "unknown"), # Pass status string as outcome
+            {"status": final_result.get("status"), "final_message": final_content} # Pass dict as metadata
         )
-
-        # 7. Validação de heurísticas (Se aplicável ao nível do orquestrador)
-        # This might be more relevant within fragments or based on consolidated learning
-        # try:
-        #     from a3x.core.heuristics_validator import validate_heuristics
-        #     task_info = {
-        #         "objective": objective,
-        #         "selected_fragment": selected_fragment_name,
-        #         "execution_results": execution_trace
-        #     }
-        #     # validate_heuristics([task_info]) # Needs adaptation for fragment context
-        #     self.agent_logger.info("[HeuristicsValidator] Validação de heurísticas executada ao final do ciclo (adaptar para fragments).")
-        # except Exception as e:
-        #     self.agent_logger.warning(f"[HeuristicsValidator] Falha ao validar heurísticas: {e}")
-
-        # 8. Retornar Resultado Final
-        self.agent_logger.info("--- Ciclo Cognitivo Unificado Concluído --- Fragment: {selected_fragment_name}")
-        return {"status": final_status, "message": final_message, "fragment_used": selected_fragment_name, "results": execution_trace} # Return trace
+        return final_result
 
     # --- Métodos Internos do Ciclo ---
 
@@ -229,191 +247,94 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
                         for i, res in enumerate(search_results):
                             content = res.get("metadata", {}).get("content", "<Conteúdo indisponível>")
                             distance = res.get("distance", -1.0)
-                            semantic_summary += f"- [Dist: {distance:.3f}] {content}\n"
-                        semantic_summary = semantic_summary.strip()
+                            semantic_summary += f"- [Dist: {distance:.3f}] {content[:150]}...\n"
 
-                        try:
-                            record_metadata = {
-                                "query": query,
-                                "top_k": SEMANTIC_SEARCH_TOP_K,
-                                "num_results": len(search_results),
-                                "results_preview": [{ "dist": r.get("distance",-1), "content_preview": r.get("metadata",{}).get("content","")[:50]} for r in search_results]
-                            }
-                            add_episodic_record(
-                                context="context_retrieval",
-                                action="semantic_search",
-                                outcome="results_found",
-                                metadata=record_metadata
-                            )
-                            self.agent_logger.info("Consulta de memória semântica registrada na memória episódica.")
-                        except Exception as db_err:
-                            self.agent_logger.error(f"Erro ao registrar consulta semântica na memória episódica: {db_err}")
+                        # Adiciona registro episódico da consulta semântica
+                        add_episodic_record(
+                            f"Consulta à memória semântica para: '{query[:50]}...'",
+                            "semantic_memory_query",
+                            {"query": query, "results_summary": [r.get("metadata",{}).get("content","")[:50]+"..." for r in search_results]},
+                            metadata={"num_results": len(search_results)}
+                        )
                     else:
-                        self.agent_logger.info("Nenhum resultado encontrado na memória semântica.")
-                else:
-                    self.agent_logger.error("Falha ao gerar embedding para a busca semântica.")
-                    semantic_summary = "Erro ao gerar embedding para busca semântica."
-
-            except ImportError as imp_err:
-                self.agent_logger.error(f"Erro de importação necessário para busca semântica: {imp_err}")
-                semantic_summary = "Erro: Dependência de busca semântica não encontrada."
+                         self.agent_logger.info("Nenhum resultado encontrado na busca semântica.")
+            except ImportError:
+                self.agent_logger.warning("Módulo de embeddings ou FAISS não encontrado. Pulando busca semântica.")
+                semantic_summary = "Busca semântica desabilitada (dependência ausente)."
             except Exception as e:
-                self.agent_logger.exception("Erro inesperado durante a busca de contexto semântico:")
-                semantic_summary = f"Erro inesperado na busca semântica: {e}"
-        else:
-             semantic_summary = "N/A (Query vazia)"
+                self.exception_policy.handle(e, context="Erro durante busca semântica")
+                semantic_summary = f"Erro ao consultar memória semântica: {e}"
 
-        # --- Busca Episódica (Recente) --- #
+        # --- Memória Episódica (Recente) --- #
         episodic_matches = []
         episodic_summary = "Nenhuma memória episódica recente encontrada."
         try:
-            from a3x.core.db_utils import retrieve_recent_episodes
-            from a3x.core.config import EPISODIC_RETRIEVAL_LIMIT
-
-            self.agent_logger.info(f"Buscando os {EPISODIC_RETRIEVAL_LIMIT} episódios mais recentes...")
-            recent_episodes = retrieve_recent_episodes(limit=EPISODIC_RETRIEVAL_LIMIT)
-
+            from a3x.core.db_utils import get_recent_episodes
+            recent_episodes = get_recent_episodes(limit=10) # Pega os 10 últimos episódios
             if recent_episodes:
-                 self.agent_logger.info(f"Encontrados {len(recent_episodes)} episódios recentes.")
-                 episodic_matches = [dict(row) for row in recent_episodes]
-                 episodic_summary = "\nContexto Episódico Recente:\n"
-                 for i, episode in enumerate(episodic_matches):
-                      ctx = episode.get("context", "?")
-                      act = episode.get("action", "?")
-                      out = episode.get("outcome", "?")
-                      episodic_summary += f"- Ep.{i+1}: Ctx: '{ctx[:30]}...' Act: '{act[:40]}...' Out: '{out[:30]}...'\n"
-                 episodic_summary = episodic_summary.strip()
+                self.agent_logger.info(f"Encontrados {len(recent_episodes)} episódios recentes.")
+                episodic_matches = recent_episodes
+                episodic_summary = "\nMemória Episódica Recente:\n"
+                for ep in recent_episodes:
+                    timestamp_str = ep['timestamp'].split('.')[0] # Remove microseconds
+                    episodic_summary += f"- [{timestamp_str}] {ep['event_type']}: {ep['description'][:100]}...\n"
             else:
-                 self.agent_logger.info("Nenhum episódio recente encontrado na memória.")
+                 self.agent_logger.info("Nenhum episódio recente encontrado.")
 
-        except ImportError as imp_err:
-            self.agent_logger.error(f"Erro de importação necessário para busca episódica: {imp_err}")
-            episodic_summary = "Erro: Dependência de busca episódica não encontrada."
         except Exception as e:
-            self.agent_logger.exception("Erro inesperado durante a busca de contexto episódico:")
-            episodic_summary = f"Erro inesperado na busca episódica: {e}"
+            self.exception_policy.handle(e, context="Erro durante busca episódica")
+            episodic_summary = f"Erro ao consultar memória episódica: {e}"
 
-        # --- Montar Contexto Final --- #
-        combined_summary = f"{semantic_summary}\n\n{episodic_summary}".strip()
-        final_context = {
+        # --- Combina Contextos --- #
+        combined_summary = semantic_summary + "\n" + episodic_summary
+        return {
             "combined_summary": combined_summary,
             "semantic_results": semantic_matches,
             "episodic_results": episodic_matches,
             "query": query
         }
-        return final_context
 
-    async def _select_fragment(self, perception: Dict[str, Any], context: Dict[str, Any]) -> Optional[BaseFragment]:
-        """
-        Seleciona o Fragment mais apropriado para a tarefa usando o FragmentRegistry.
-        """
-        objective = perception.get("processed", "")
-        self.agent_logger.info(f"Roteando tarefa: '{objective[:100]}...' para um Fragment adequado.")
+    # --- REMOVED _select_fragment --- 
+    # async def _select_fragment(self, perception: Dict[str, Any], context: Dict[str, Any]) -> Optional[BaseFragment]:
+    #    ...
 
-        if not objective:
-             self.agent_logger.error("Objetivo vazio, impossível selecionar fragment.")
-             return None
+    # --- REMOVED _execute_fragment --- 
+    # async def _execute_fragment(self, fragment: BaseFragment, objective: str, context: Optional[Dict]) -> Tuple[Dict, List[Dict]]:
+    #    ...
 
-        try:
-            selected_fragment = await self.fragment_registry.select_fragment_for_task(objective, context)
-            if selected_fragment:
-                 self.agent_logger.info(f"Fragment '{selected_fragment.get_name()}' selecionado pelo registry.")
-                 return selected_fragment
-            else:
-                 self.agent_logger.warning("Nenhum fragment específico foi selecionado pelo registry.")
-                 # TODO: Implementar fallback ou estratégia de erro
-                 # Could try a 'GeneralPurposeFragment' or return None
-                 return None
-        except Exception as e:
-             self.agent_logger.error(f"Erro durante a seleção de fragment: {e}", exc_info=True)
-             return None
-
-    async def _execute_fragment(self, fragment: BaseFragment, objective: str, context: Optional[Dict]) -> Tuple[Dict, List[Dict]]:
-        """
-        Executa o método run_and_optimize do Fragment selecionado.
-        """
-        self.agent_logger.info(f"Executando Fragment '{fragment.get_name()}' para objetivo: {objective[:100]}...")
-        final_result = {"status": "error", "message": "Fragment execution failed to start.", "type": "error"}
-        execution_trace = []
-
-        try:
-            # Chama o método wrapper do fragment que lida com execução, métricas e otimização
-            final_result, execution_trace = await fragment.run_and_optimize(objective, context)
-            self.agent_logger.info(f"Fragment '{fragment.get_name()}' terminou. Status final: {final_result.get('status')}")
-
-        except Exception as e:
-            self.agent_logger.exception(f"Erro não capturado durante a execução do Fragment '{fragment.get_name()}':")
-            error_message = f"Unhandled exception during fragment execution: {e}"
-            final_result = {"status": "error", "type": "error", "message": error_message}
-            # Append error to trace if possible
-            execution_trace.append(final_result)
-
-        return final_result, execution_trace
-
-    # --- Reflexão e Aprendizado Pós-Execução --- #
+    # --- COMENTADO _reflect_and_learn (a ser movido/chamado pelo Orchestrator) ---
     async def _reflect_and_learn(self, perception: Dict[str, Any], fragment_name: str, execution_trace: List[Dict[str, Any]], final_status: str):
-        """
-        Analisa os resultados da execução do Fragment e aplica estratégias de aprendizado.
-        """
+        """Aciona mecanismos de reflexão e aprendizado com base no resultado da execução."""
         self.agent_logger.info(f"Iniciando Reflexão e Aprendizado para Fragment '{fragment_name}' (Status: {final_status})...")
 
-        # <<< Create the full execution context using the imported definition >>>
-        # Note: Passing placeholders (None) for fields likely not needed by reflection skills.
-        # We pass the actual llm_interface now.
-        exec_context = _ToolExecutionContext(
-            logger=self.agent_logger,
-            workspace_root=self.workspace_root,
-            llm_url=self.llm_url, # Keep llm_url for potential direct use
-            tools_dict=self.tools, # Reflection skills might call other tools
-            llm_interface=self.llm_interface, # <<< Pass the full interface >>>
-            fragment_registry=None, # Likely not needed by reflection skills
-            shared_task_context=None, # Reflection happens after task context is potentially finalized
-            allowed_skills=list(self.tools.keys()) # Allow reflection skills to call any known tool? Or restrict?
-        )
+        # TODO: Passar mais contexto para as skills de reflexão (objetivo, contexto inicial, etc.)
+        log_entry = {
+            "timestamp": datetime.datetime.now(timezone.utc).isoformat(),
+            "objective": perception.get("processed", "N/A"),
+            "fragment_used": fragment_name,
+            "final_status": final_status,
+            "execution_trace": execution_trace # Lista de dicionários (passos ReAct ou resultado do fragment.execute)
+        }
 
-        try:
-            objective = perception.get("processed", "")
-            if final_status == "success":
-                # --- Learn from Success ---
-                self.agent_logger.info(f"Refletindo sobre o sucesso do Fragment '{fragment_name}'...")
-                reflection_params = {
-                    "objective": objective,
-                    "plan": [f"Executed by: {fragment_name}"], # Simplified plan
-                    "execution_trace": execution_trace,
-                    "ctx": exec_context # Pass context
-                }
-                # Call success reflection skill (ensure it exists and is appropriate)
-                # success_reflection = await reflect_on_success(**reflection_params)
-                # ... process reflection results ...
-                self.agent_logger.info("(Placeholder) Success reflection completed.")
+        if final_status == "success":
+            self.agent_logger.info(f"Refletindo sobre o sucesso do Fragment '{fragment_name}'...")
+            try:
+                await reflect_on_success(context={}, log_entry=log_entry) # Contexto pode ser necessário
+            except Exception as e:
+                 self.agent_logger.error(f"Erro durante reflect_on_success: {e}", exc_info=True)
 
-            else: # Handle 'error' or other non-success statuses
-                # --- Learn from Failure ---
-                self.agent_logger.warning(f"Refletindo sobre a falha do Fragment '{fragment_name}'...")
-                # Find the last error message in the trace
-                last_error_msg = "Unknown error during fragment execution"
-                for step in reversed(execution_trace):
-                    if step.get("status") == "error" or step.get("type") == "error":
-                        last_error_msg = step.get("message", last_error_msg)
-                        break
-                    # Check nested data if applicable (depends on trace structure)
-                    if isinstance(step.get("data"), dict) and step["data"].get("status") == "error":
-                         last_error_msg = step["data"].get("message", last_error_msg)
-                         break
+        else: # error, max_iterations, timeout, etc.
+            self.agent_logger.warning(f"Refletindo sobre a falha do Fragment '{fragment_name}'...")
+            try:
+                 # Chama reflect_on_failure primeiro
+                 await reflect_on_failure(context={}, log_entry=log_entry)
+                 # Depois tenta aprender com o log de falha
+                 await learn_from_failure_log(context={}, log_entry=log_entry)
+            except Exception as e:
+                 self.agent_logger.error(f"Erro durante reflect_on_failure ou learn_from_failure_log: {e}", exc_info=True)
 
-                failure_params = {
-                    "objective": objective,
-                    "plan": [f"Executed by: {fragment_name}"], # Simplified plan
-                    "execution_trace": execution_trace,
-                    "error_message": last_error_msg,
-                    "ctx": exec_context
-                }
-                # Call failure reflection skill
-                # failure_reflection = await reflect_on_failure(**failure_params)
-                # ... process reflection results ...
-                self.agent_logger.warning(f"(Placeholder) Failure reflection completed. Error: {last_error_msg[:100]}...")
-
-        except Exception as reflect_err:
-            self.agent_logger.error(f"Erro durante a fase de Reflexão e Aprendizado: {reflect_err}", exc_info=True)
+        # TODO: Adicionar chamadas periódicas ou condicionais para generalização/consolidação?
+        # Ex: await consolidate_heuristics(context={})
+        # Ex: await generalize_heuristics(context={})
 
         self.agent_logger.info("Fase de Reflexão e Aprendizado concluída.")

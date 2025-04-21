@@ -81,6 +81,9 @@ dependencies = [
     "pytest",
     "pytest-asyncio",
     "pytest-mock",
+    "markdown2",
+    "bitsandbytes",
+    "xhtml2pdf",
 ]
 
 [project.optional-dependencies]
@@ -99,7 +102,7 @@ dev = [
 [project.scripts]
 # If you want to make assistant_cli.py runnable from anywhere after installation
 # assistant-cli = "a3x.cli.main:app" # Example path, adjust based on actual file/function
-a3x = "a3x.assistant_cli:cli_entry" # Assuming main function exists
+a3x = "a3x.cli.main:run_cli" # Pointing to the correct entry function run_cli
 
 [tool.pytest.ini_options]
 pythonpath = ["."] # Add current directory to python path for imports

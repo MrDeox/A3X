@@ -1,0 +1,23 @@
+# test_professor_llm.a3l
+# Test the ProfessorLLMFragment -> KnowledgeInterpreterFragment cycle.
+
+# 1. Create the Knowledge Interpreter (needed to interpret the professor's response)
+# Assuming KnowledgeInterpreterFragment creation is handled by default or another mechanism.
+# If not, we would need: criar fragmento 'ki_default' tipo 'knowledge_interpreter' description 'Default KI'
+
+# 2. Create the Professor LLM Fragment instance
+# Note: The bridge needs to support 'create_fragment' with type 'professor_llm'
+criar fragmento 'prof_mock' tipo 'professor_llm' description 'Mock Professor for testing'
+
+# 3. Ask the professor a question designed to elicit an interpretable response
+# The mock response for "status do fragmento 'dummy_reflector'" contains suggestions
+ask_professor 'prof_mock' question "Qual o status do fragmento 'dummy_reflector'?"
+
+# 4. Implicitly, the executor should:
+#    - Get the text response from 'prof_mock'.
+#    - Pass the text to 'ki_default'.
+#    - 'ki_default' should extract commands: 
+#        - treinar fragmento 'dummy_reflector' por 3 épocas
+#        - criar fragmento 'dummy_reflector_v2' com base em 'dummy_reflector'
+#    - The executor should attempt to execute these extracted commands.
+#    - Check the logs for the execution attempts of the extracted commands. 

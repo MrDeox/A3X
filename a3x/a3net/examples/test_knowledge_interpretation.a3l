@@ -1,0 +1,16 @@
+# test_knowledge_interpretation.a3l
+# This file tests the full cycle: reflect -> interpret -> execute extracted command.
+
+# 1. Create a dummy fragment to reflect upon.
+# Using simple parameters as the fragment itself isn't the focus.
+criar fragmento 'dummy_reflector' tipo 'neural' input_dim 10 hidden_dim 5 num_classes 2 id_to_label {0:'off', 1:'on'} description 'Dummy fragment for reflection test'
+
+# 2. Reflect on the fragment.
+# The bridge will be temporarily modified to intercept this call
+# and return a specific natural language text for the KnowledgeInterpreterFragment.
+reflect_fragment 'dummy_reflector' como a3l
+
+# 3. (Implicit) The interpreter should catch the reflection result,
+#    interpret it using KnowledgeInterpreterFragment, extract commands,
+#    and execute them. We expect to see logs for 'treinar' and 'criar'
+#    being executed based on the mocked reflection text. 

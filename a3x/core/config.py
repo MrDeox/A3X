@@ -65,19 +65,22 @@ SD_SERVER_MODULE = os.getenv("SD_SERVER_MODULE", "a3x.servers.sd_api_server")
 # TODO: Adicionar mais configs de servidor (paths, args) aqui
 LLAMA_CPP_DIR = os.getenv("LLAMA_CPP_DIR", str(PROJECT_ROOT / "llama.cpp"))
 # <<< CORRECTED: Use absolute path for default model in args >>>
-default_model_path = str(PROJECT_ROOT / "models" / "google_gemma-3-4b-it-Q4_K_S.gguf")
+default_model_path = str(PROJECT_ROOT / "models" / "google_gemma-3-4b-it-Q4_K_S(1).gguf")
 LLAMA_SERVER_ARGS = os.getenv(
     "LLAMA_SERVER_ARGS",
-    f"-m {default_model_path} -c 4096 -ngl 24 --host 0.0.0.0 --port 8080 --log-disable" # Use f-string for absolute path, increased default context
+    f"-m {default_model_path} -c 4096 -ngl 24 --host 0.0.0.0 --port 8000 --log-disable" # Changed port to 8000
 ).split()
-LLAMA_HEALTH_ENDPOINT = os.getenv("LLAMA_HEALTH_ENDPOINT", "http://127.0.0.1:8080/health")
+LLAMA_HEALTH_ENDPOINT = os.getenv("LLAMA_HEALTH_ENDPOINT", "http://127.0.0.1:8000/health")
 # <<< ADDED: Explicit server URL for API calls >>>
-LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080")
-LLAMA_SERVER_STARTUP_TIMEOUT = int(os.getenv("LLAMA_SERVER_STARTUP_TIMEOUT", 240))
+LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8000")
+LLAMA_SERVER_STARTUP_TIMEOUT = int(os.getenv("LLAMA_SERVER_STARTUP_TIMEOUT", 15))
 SD_API_CHECK_ENDPOINT = os.getenv("SD_API_CHECK_ENDPOINT", "http://127.0.0.1:7861/sdapi/v1/progress")
 SD_SERVER_STARTUP_TIMEOUT = int(os.getenv("SD_SERVER_STARTUP_TIMEOUT", 180))
 SD_WEBUI_DEFAULT_PATH_CONFIG = os.getenv("SD_WEBUI_DEFAULT_PATH_CONFIG", str(PROJECT_ROOT / "stable-diffusion-webui"))
 SERVER_CHECK_INTERVAL = int(os.getenv("SERVER_CHECK_INTERVAL", 2))
+
+# <<< ADDED Placeholder for Llava API URL >>>
+LLAVA_API_URL = os.getenv("LLAVA_API_URL", "http://127.0.0.1:8081/llava") # Placeholder URL
 
 # <<< ADDED Training Configs >>>
 # QLoRA parameters

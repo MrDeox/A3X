@@ -63,11 +63,31 @@ def get_db_connection(db_path: Optional[str] = None):
     # Não fechar a conexão aqui, quem chama é responsável por fechar
 
 
-async def close_db_connection(conn):
-    """Fecha a conexão com o banco de dados de forma assíncrona."""
-    if conn:
-        await asyncio.to_thread(conn.close) # Use to_thread for blocking IO
-        logger.debug("Database connection closed.")
+# <<< MODIFIED: Close ALL managed connections >>>
+async def close_db_connection():
+    """Fecha TODAS as conexões gerenciadas com o banco de dados de forma assíncrona."""
+    closed_count = 0
+    paths_to_remove = []
+    for path, conn in list(_db_connections.items()): # Iterate over a copy of items
+        if conn:
+            try:
+                await asyncio.to_thread(conn.close) # Use to_thread for blocking IO
+                logger.debug(f"Database connection for '{path}' closed.")
+                closed_count += 1
+            except Exception as e:
+                 logger.error(f"Error closing database connection for '{path}': {e}")
+            # Mark for removal regardless of close success/failure
+            paths_to_remove.append(path)
+            
+    # Clean up the dictionary
+    for path in paths_to_remove:
+        if path in _db_connections:
+            del _db_connections[path]
+            
+    if closed_count > 0:
+        logger.info(f"Closed {closed_count} database connection(s).")
+    else:
+         logger.debug("No active database connections found to close.")
 
 
 # <<< ADICIONADA: Função para inicializar o DB >>>

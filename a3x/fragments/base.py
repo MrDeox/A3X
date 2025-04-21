@@ -62,6 +62,11 @@ class BaseFragment(ABC):
         self._internal_state_lock = asyncio.Lock()
         self._logger.info(f"Fragment '{self.state.name}' initialized with {len(self.state.current_skills)} skills.")
 
+    @property
+    def fragment_id(self) -> str:
+        """Convenience property to access the fragment name (ID)."""
+        return self.metadata.name
+
     def _create_optimizer(self):
         """Instantiates the optimizer for this fragment."""
         pass # Implementado por subclasses
@@ -101,7 +106,7 @@ class BaseFragment(ABC):
         # Use provided tools if any, otherwise fetch from registry based on skills
         if tools is None:
             tools = []
-            for skill in self.state.skills:
+            for skill in self.state.current_skills:
                 try:
                     tool = self._tool_registry.get_tool(skill)
                     tools.append(tool)
@@ -130,7 +135,7 @@ class BaseFragment(ABC):
             self.set_context(shared_task_context)
         if tools is None:
             tools = []
-            for skill in self.state.skills:
+            for skill in self.state.current_skills:
                 try:
                     tool = self._tool_registry.get_tool(skill)
                     tools.append(tool)
@@ -576,33 +581,35 @@ class BaseFragment(ABC):
     # <<< ADDED Chat Helper Methods >>>
     async def post_chat_message(
         self,
-        context: FragmentContext, 
-        message_type: str, 
-        content: Dict, 
+        message_type: str,
+        content: Dict,
         target_fragment: Optional[str] = None
     ):
-        """Posts a message to the internal chat log via SharedTaskContext."""
-        if not context or not context.shared_task_context:
-            self._logger.error(f"[{self.get_name()}] Cannot post chat message: SharedTaskContext not available.")
+        """Posts a message to the shared internal chat queue via the ContextAccessor."""
+        # Get the shared context via the accessor
+        shared_context = self._context_accessor.get_context()
+        
+        if not shared_context:
+            self._logger.error(f"Cannot post chat message: SharedTaskContext not available via accessor for {self.get_name()}. Please set context first.")
+            return
+            
+        if not shared_context.internal_chat_queue:
+            self._logger.error(f"Cannot post chat message: Internal chat queue not available in SharedTaskContext for {self.get_name()}. Please set context first.")
             return
 
-        # Prepare the content payload, adding target if specified
-        message_payload = content.copy() # Avoid modifying original dict
-        if target_fragment:
-            message_payload['target_fragment'] = target_fragment
-            log_target = f" to {target_fragment}" 
-        else:
-            log_target = " (broadcast)" 
-            
+        message = {
+            "type": message_type.upper(), # Standardize type to uppercase
+            "sender": self.get_name(),
+            "content": content,
+            "timestamp": time.time(),
+            "target_fragment": target_fragment
+        }
         try:
-            context.shared_task_context.add_chat_message(
-                fragment_name=self.get_name(),
-                message_type=message_type,
-                message_content=message_payload
-            )
-            self._logger.info(f"[{self.get_name()}] Posted chat message type '{message_type}'{log_target}. Subject: {content.get('subject', 'N/A')}")
+            await shared_context.internal_chat_queue.put(message)
+            target_info = f"to {target_fragment}" if target_fragment else "(broadcast)"
+            self._logger.info(f"[{self.get_name()}] Posted chat message type '{message_type.upper()}' {target_info}. Subject: {content.get('subject', 'N/A')}")
         except Exception as e:
-            self._logger.exception(f"[{self.get_name()}] Error posting chat message:")
+            self._logger.error(f"Error posting message to internal queue: {e}", exc_info=True)
 
     async def read_chat_messages(
         self,
@@ -738,30 +745,63 @@ class ManagerFragment(BaseFragment):
         shared_task_context: Optional[SharedTaskContext] = None  # Kept for backward compatibility
     ) -> str:
         """
-        Coordena a execução de sub-fragments para atingir o objetivo.
-        Este método encapsula a lógica de delegação, mantendo o desacoplamento
-        entre os Fragments e promovendo a modularidade.
+        Core logic for Manager Fragments. Selects appropriate sub-fragments or managed skills.
         """
-        if context is None:
-            context = {}
+        # Use context accessor if available
         if shared_task_context and not self._context_accessor._context:
             self.set_context(shared_task_context)
-        if tools is None:
-            tools = []
-            for skill in self.state.skills:
-                try:
-                    tool = self._tool_registry.get_tool(skill)
-                    tools.append(tool)
-                except KeyError:
-                    self._logger.warning(f"Tool for skill '{skill}' not found in registry.")
-        self._logger.info(f"Coordinating execution for objective: {objective} with {len(self._sub_fragments)} sub-fragments")
+            
+        self._logger.info(f"Coordinating execution for objective: {objective} with {len(self.sub_fragments)} sub-fragments")
+        
+        # Access sub_fragments with underscore
+        if not self.sub_fragments:
+            # If no sub-fragments, try to select a managed skill directly
+            return await self.select_and_execute_managed_skill(objective, context, shared_task_context)
+
+        # Logic for selecting and running sub-fragments...
+        # (simplified example)
         results = []
-        for fragment in self._sub_fragments:
-            self._logger.info(f"Executing sub-fragment: {fragment.__class__.__name__}")
-            result = await fragment.run_and_optimize(objective, tools, max_iterations=3, context=context)
+        # Access sub_fragments with underscore
+        for fragment in self.sub_fragments.values(): # Iterate through values (fragment instances)
+            # Maybe filter fragments based on objective?
+            # Pass context, not tools directly
+            result = await fragment.run_and_optimize(objective, context=context, shared_task_context=shared_task_context)
             results.append(result)
-            self._logger.info(f"Sub-fragment {fragment.__class__.__name__} result: {result}")
-        return self.synthesize_results(objective, results, context)
+
+        # Synthesize results from sub-fragments
+        return await self.synthesize_results(objective, results, context)
+
+    async def select_and_execute_managed_skill(
+        self,
+        objective: str,
+        context: Dict,
+        shared_task_context: Optional[SharedTaskContext] = None  # Kept for backward compatibility
+    ) -> str:
+        """
+        Selects and executes a managed skill directly based on the objective.
+        This method is called when no sub-fragments are available.
+        """
+        # Use context accessor if available
+        if shared_task_context and not self._context_accessor._context:
+            self.set_context(shared_task_context)
+            
+        # Example: Select a skill based on the objective
+        # This is a placeholder logic and should be replaced with actual skill selection
+        selected_skill = self.metadata.managed_skills[0] if self.metadata.managed_skills else None
+        if not selected_skill:
+            self._logger.warning(f"No managed skills available to execute objective: {objective}")
+            return f"No managed skills available to execute objective: {objective}"
+        
+        # Example: Execute the selected skill
+        # This is a placeholder logic and should be replaced with actual skill execution
+        try:
+            tool = self._tool_registry.get_tool(selected_skill)
+            result = await tool(objective, context)
+            self._logger.info(f"Managed skill '{selected_skill}' executed with result: {result}")
+            return result
+        except KeyError:
+            self._logger.warning(f"Tool for managed skill '{selected_skill}' not found in registry.")
+            return f"Tool for managed skill '{selected_skill}' not found in registry."
 
     async def synthesize_results(
         self,
@@ -785,7 +825,7 @@ class ManagerFragment(BaseFragment):
             self.set_context(shared_task_context)
         if tools is None:
             tools = []
-            for skill in self.state.skills:
+            for skill in self.state.current_skills:
                 try:
                     tool = self._tool_registry.get_tool(skill)
                     tools.append(tool)
