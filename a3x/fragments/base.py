@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Dict, Any, List, Optional, AsyncGenerator, Tuple, Type, Callable, Awaitable, NamedTuple, TYPE_CHECKING, Union
+from typing import Dict, Any, List, Optional, AsyncGenerator, Tuple, Type, Callable, Awaitable, NamedTuple, TYPE_CHECKING, Union, Coroutine
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import asyncio
@@ -61,6 +61,9 @@ class BaseFragment(ABC):
         # <<< ADDED Lock for internal state protection >>>
         self._internal_state_lock = asyncio.Lock()
         self._logger.info(f"Fragment '{self.state.name}' initialized with {len(self.state.current_skills)} skills.")
+        self._message_handler: Optional[Callable[[str, Dict[str, Any], str], Coroutine[Any, Any, None]]] = None
+        self._is_running = asyncio.Event() # Event to signal if the fragment's task is running
+        self._background_task: Optional[asyncio.Task] = None # To hold the main execution task
 
     @property
     def fragment_id(self) -> str:
@@ -688,6 +691,85 @@ class BaseFragment(ABC):
         # Subclasses override this to react to specific messages in real-time.
         pass
     # <<< END ADDED Real-time Chat Handler >>>
+
+    # <<< ADDED Real-time Chat Handler >>>
+    async def handle_message(self, message: Dict[str, Any]) -> None:
+        """Handles an incoming message directed at this fragment.
+        
+        Subclasses should override this method to process specific message types.
+        The base implementation simply logs the received message.
+        """
+        msg_type = message.get("message_type", "unknown")
+        sender = message.get("content", {}).get("sender", "unknown_sender") # Assuming sender is in content
+        logger.debug(f"[{self.get_name()}] Received message (Type: '{msg_type}', Sender: '{sender}') - Base handler, doing nothing.")
+        # Subclasses implement specific logic here based on msg_type
+        # Example:
+        # if msg_type == "some_action":
+        #    await self.do_some_action(message.get("content"))
+    # <<< END ADDED Real-time Chat Handler >>>
+
+    # <<< ADDED Lifecycle Methods >>>
+    async def start(self):
+        """Starts the fragment's main loop or background task."""
+        if not self._is_running.is_set():
+            logger.info(f"Starting {self.metadata.name}...")
+            self._is_running.set()
+            self._background_task = asyncio.create_task(self.execute(), name=f"{self.metadata.name}_execute")
+            logger.info(f"{self.metadata.name} started.")
+        else:
+            logger.warning(f"{self.metadata.name} already started.")
+
+    async def stop(self):
+        """Stops the fragment's background task gracefully."""
+        if self._is_running.is_set():
+            logger.info(f"Stopping {self.metadata.name}...")
+            self._is_running.clear()
+            if self._background_task and not self._background_task.done():
+                self._background_task.cancel()
+                try:
+                    await self._background_task
+                    logger.info(f"{self.metadata.name} background task cancelled successfully.")
+                except asyncio.CancelledError:
+                    logger.info(f"{self.metadata.name} background task cancellation confirmed.")
+                except Exception as e:
+                    logger.error(f"Error during {self.metadata.name} background task cancellation: {e}", exc_info=True)
+            self._background_task = None
+            logger.info(f"{self.metadata.name} stopped.")
+        else:
+            logger.info(f"{self.metadata.name} was not running.")
+
+    async def execute(self):
+        """The main execution logic for the fragment. 
+        Subclasses implement their primary behavior here (e.g., a loop).
+        Base implementation does nothing.
+        """
+        logger.debug(f"[{self.metadata.name}] Base execute() called. No action defined.")
+        pass # Default implementation does nothing
+
+    # <<< END ADDED Lifecycle Methods >>>
+
+    # <<< ADDED Reflection Methods >>>
+    def generate_reflection_a3l(self) -> str:
+        """Generates a basic A3L description of the fragment."""
+        return f"fragmento '{self.metadata.name}' ({self.__class__.__name__}), {self.metadata.description}"
+
+    # <<< END ADDED Reflection Methods >>>
+
+    # <<< ADDED Context Management Methods >>>
+    def set_context_store(self, context_store):
+        """Allows injecting a ContextStore instance if needed."""
+        # Example: self._context_store = context_store
+        logger.warning(f"[{self.metadata.name}] set_context_store called but not implemented.")
+        pass
+
+    # <<< END ADDED Context Management Methods >>>
+
+    # <<< ADDED Lifecycle Check Methods >>>
+    def is_running(self) -> bool:
+        """Returns True if the fragment's main task is considered running."""
+        return self._is_running.is_set()
+
+    # <<< END ADDED Lifecycle Check Methods >>>
 
 # <<< NEW: Manager Fragment Base Class >>>
 class ManagerFragment(BaseFragment):

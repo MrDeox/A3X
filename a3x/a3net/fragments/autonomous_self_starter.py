@@ -1,7 +1,7 @@
 from a3x.fragments.base import BaseFragment, FragmentDef
 from a3x.a3net.integration.a3lang_interpreter import interpret_a3l_line
-# Import a3x_bridge directly for synchronous calls
-from a3x.a3net.integration import a3x_bridge 
+# <<< REMOVED direct import of a3x_bridge >>>
+# from a3x.a3net.integration import a3x_bridge 
 import asyncio
 # Removed Any from here as it's used later
 from typing import Optional, Dict, List, Callable, Awaitable, Any 
@@ -14,8 +14,8 @@ from a3x.a3net.core.knowledge_interpreter_fragment import KnowledgeInterpreterFr
 from a3x.a3net.core.professor_llm_fragment import ProfessorLLMFragment
 from a3x.a3net.core.context_store import ContextStore
 
-# Type alias for the message handler - REMOVED
-# MessageHandler = Callable[[str, Any, str], Awaitable[None]]
+# Type alias for the message handler
+MessageHandler = Callable[[str, Dict[str, Any], str], Awaitable[None]]
 
 class AutonomousSelfStarterFragment(BaseFragment):
     """
@@ -31,6 +31,7 @@ class AutonomousSelfStarterFragment(BaseFragment):
                  ki_fragment: KnowledgeInterpreterFragment,
                  professor_fragment: Optional[ProfessorLLMFragment],
                  context_store: ContextStore,
+                 post_message_handler: MessageHandler,
                  description: str = "Autonomous Cognitive Self-Starter"):
         """
         Inicializa o Fragmento Autônomo.
@@ -40,6 +41,7 @@ class AutonomousSelfStarterFragment(BaseFragment):
             ki_fragment: Instância do Knowledge Interpreter Fragment.
             professor_fragment: Instância do Professor LLM Fragment (pode ser None).
             context_store: Instância do Context Store.
+            post_message_handler: Instância do Post Message Handler.
             description: Descrição do fragmento.
         """
         fragment_def = FragmentDef(
@@ -61,6 +63,7 @@ class AutonomousSelfStarterFragment(BaseFragment):
         self._ki = ki_fragment
         self._professor = professor_fragment
         self._context_store = context_store
+        self._post_message_handler = post_message_handler
         # ------------------------->
 
         # --- Initialize State ---
@@ -74,6 +77,8 @@ class AutonomousSelfStarterFragment(BaseFragment):
              self._logger.warning(f"Professor Fragment dependency not provided or disabled for {self.metadata.name}.")
         if not self._context_store:
              self._logger.warning(f"Context Store dependency not provided to {self.metadata.name}.")
+        if not self._post_message_handler:
+             self._logger.warning(f"Post Message Handler not provided to {self.metadata.name}.")
 
         # Load persistent state at the end of initialization
         # Running this async method synchronously here is tricky.
@@ -172,58 +177,85 @@ class AutonomousSelfStarterFragment(BaseFragment):
         else:
              self._logger.error("Could not generate a correction goal.")
 
-    # Modified to call handle_directive synchronously and handle errors
+    # --- NEW METHOD ---
+    def _simplify_error_message(self, error_message: str) -> str:
+        """Simplifies known complex error messages for the Professor."""
+        self._logger.debug(f"Simplifying error: {error_message[:150]}...")
+        if "Fragment" in error_message and "not found" in error_message:
+            # Try to extract fragment name if possible
+            match = re.search(r"Fragment \'([^\']+)\'", error_message)
+            fragment_name = match.group(1) if match else "unknown"
+            simplified = f"Fragmento \'{fragment_name}\' não encontrado"
+            self._logger.info(f"Simplified to: {simplified}")
+            return simplified
+        if "Unknown execution error" in error_message: # Handle generic bridge error
+            simplified = "Erro ao executar comando: fragmento ausente ou mal definido"
+            self._logger.info(f"Simplified to: {simplified}")
+            return simplified
+        if "is not ProfessorLLMFragment" in error_message:
+            simplified = "Tentativa de aprender com um fragmento que não é um Professor"
+            self._logger.info(f"Simplified to: {simplified}")
+            return simplified
+        # Add more rules here based on common errors
+        
+        # Default Fallback if no specific rule matches
+        # Consider if a generic message is better than the full original error for the LLM
+        generic_fallback = "Erro genérico durante execução simbólica"
+        self._logger.info(f"Error not specifically simplified, using generic fallback: {generic_fallback}")
+        # return error_message # Option 1: Return original if not simplified
+        return generic_fallback # Option 2: Return generic fallback
+    # --- END NEW METHOD ---
+
+    # Modified to post command to queue instead of direct synchronous call
     async def _handle_a3l_command(self, command_str: str):
-        self._logger.info(f"Handling A3L command synchronously: {command_str}")
+        self._logger.info(f"Handling A3L command asynchronously: {command_str}")
         directive_dict = None
         try:
             directive_dict = interpret_a3l_line(command_str)
             if directive_dict:
-                 # Add origin info (though less critical now it's synchronous)
                  directive_dict["_origin"] = f"Autonomous Starter ({self.metadata.name})"
 
-                 # --- Execute Synchronously ---
-                 self._logger.debug(f"Executing directive via a3x_bridge: {directive_dict}")
-                 result = await a3x_bridge.handle_directive(directive_dict, fragment_instances=None, context_store=self._context_store)
-                 self._logger.debug(f"Result from handle_directive: {result}")
-                 # -----------------------------
-
-                 if result and result.get("status") == "error":
-                     error_msg = result.get("message", "Unknown execution error")
-                     self._logger.error(f"Execution failed for '{command_str}': {error_msg}")
-                     # Keep the failed command on the ladder for now? Or pop it?
-                     # Let's pop it first, then push correction. Prevents re-running the fail immediately.
-                     if self.goal_ladder and self.goal_ladder[-1] == command_str:
-                          self.goal_ladder.pop()
-                          self._logger.debug("Popped failed command from ladder before generating correction.")
-                     # Generate and push a correction goal
-                     self._generate_and_push_correction_goal(directive_dict, error_msg)
-                 elif result and result.get("status") == "success":
-                     self._logger.info(f"Successfully executed command: {command_str}")
-                     # Pop AFTER successful execution
+                 # --- Check for special handling (e.g., skip learn_from_professor) ---
+                 if directive_dict.get("type") == "learn_from_professor":
+                     self._logger.info(f"Intercepted 'learn_from_professor'. Skipping execution, popping from ladder.")
                      if self.goal_ladder and self.goal_ladder[-1] == command_str:
                          self.goal_ladder.pop()
-                         self._logger.debug("Popped successful command from ladder.")
+                     # Return early, do not post to queue
+                     return 
                  else:
-                     # Command executed but no clear success/error status? Treat as success for now.
-                     self._logger.warning(f"Command '{command_str}' executed with unclear status: {result}. Assuming success for ladder.")
-                     if self.goal_ladder and self.goal_ladder[-1] == command_str:
-                         self.goal_ladder.pop()
-                         self._logger.debug("Popped command with unclear status from ladder.")
+                     # --- Post other directives to the message queue for Executor ---
+                     if self._post_message_handler:
+                         self._logger.debug(f"Posting directive to queue for Executor: {directive_dict}")
+                         await self._post_message_handler(
+                             message_type="a3l_command",
+                             content=directive_dict,
+                             target_fragment="Executor"
+                         )
+                         # Command is now sent, pop it from ladder. 
+                         # Error handling/correction will happen based on Executor feedback or monitoring.
+                         if self.goal_ladder and self.goal_ladder[-1] == command_str:
+                             self.goal_ladder.pop()
+                             self._logger.debug("Popped command from ladder after posting to queue.")
+                     else:
+                         self._logger.error("Cannot execute command: post_message_handler not set.")
+                         # Optionally pop or leave on ladder if handler missing?
+                         # Leaving it for now, might cause loop if handler never appears.
 
             else:
                 self._logger.warning(f"Failed to parse A3L command: {command_str}. Skipping and popping.")
-                # Pop invalid command from ladder
+                # Pop unparseable command from ladder
                 if self.goal_ladder and self.goal_ladder[-1] == command_str:
                     self.goal_ladder.pop()
+                    self._logger.debug("Popped unparseable command from ladder.")
 
         except Exception as e:
-            self._logger.error(f"Critical error handling A3L command '{command_str}': {e}", exc_info=True)
-            # Pop command even if error occurred during handling to avoid infinite loops
+            self._logger.error(f"Error interpreting or posting A3L command '{command_str}': {e}", exc_info=True)
+            # Pop the command that caused an error during this handling phase
             if self.goal_ladder and self.goal_ladder[-1] == command_str:
-                self.goal_ladder.pop()
-            # Optionally push a generic reflection on the handling error itself
-            # self._generate_and_push_correction_goal(directive_dict or {}, f"Error in _handle_a3l_command: {e}")
+                 self.goal_ladder.pop()
+                 self._logger.debug("Popped command from ladder due to interpretation/posting error.")
+            # We might still want to generate a correction goal here?
+            # self._generate_and_push_correction_goal(directive_dict or {}, f"Error handling command: {e}")
 
     async def _attempt_ki_decomposition(self, goal: str) -> Optional[List[str]]:
         self._logger.debug(f"Attempting KI decomposition for goal: '{goal}'")
@@ -252,24 +284,34 @@ class AutonomousSelfStarterFragment(BaseFragment):
             return None
 
     async def _consult_professor(self, goal: str) -> Optional[str]:
-         self._logger.debug(f"Attempting Professor consultation for goal: '{goal}'")
-         if not self._professor or not self._professor.is_active:
-             self._logger.warning(f"Professor not available or inactive. Cannot consult for goal: {goal}")
+        """Consulta o Professor para obter orientação sobre um objetivo/erro."""
+        if not self._professor:
+            self._logger.warning("Professor fragment not available for consultation.")
+            return None
+        if not hasattr(self._professor, 'ask_for_guidance'):
+             self._logger.error("Professor fragment lacks 'ask_for_guidance' method.")
              return None
-         try:
-             # Formulate question for the Professor
-             prompt = f"Eu sou um agente autônomo tentando alcançar o objetivo: '{goal}'. Não sei como proceder. Como devo decompor este objetivo em passos mais simples ou quais comandos A3L devo executar primeiro?"
-             self._logger.info(f"Asking Professor ({self._professor.fragment_id}) for help with: '{goal}'")
-             response = await self._professor.ask_llm(prompt)
-             if response and not response.startswith("<"): # Basic check for error messages
-                 self._logger.info(f"Professor responded: {response[:200]}...")
-                 return response
-             else:
-                 self._logger.warning(f"Professor did not provide a usable response: {response}")
-                 return None
-         except Exception as e:
-             self._logger.error(f"Error consulting Professor for '{goal}': {e}", exc_info=True)
+        if not self._professor.is_active: # Check if Professor itself is active
+             self._logger.warning("Professor fragment is not active, skipping consultation.")
              return None
+
+        self._logger.info(f"Consulting Professor about goal/error: '{goal[:100]}...'")
+        try:
+            # Simplify the message before sending it to the professor
+            simplified_goal = self._simplify_error_message(goal)
+            self._logger.debug(f"Sending simplified goal/error to professor: '{simplified_goal}'")
+            # Call professor with the simplified message
+            response = await self._professor.ask_for_guidance(simplified_goal)
+
+            if response:
+                self._logger.info(f"Professor provided guidance (length: {len(response)}). First 100 chars: {response[:100]}")
+                return response
+            else:
+                self._logger.warning("Professor returned empty guidance.")
+                return None
+        except Exception as e:
+            self._logger.error(f"Error during professor consultation: {e}", exc_info=True)
+            return None
 
     async def _interpret_professor_response(self, response_text: str) -> Optional[List[str]]:
         self._logger.debug("Attempting KI interpretation of Professor's response.")
@@ -307,17 +349,29 @@ class AutonomousSelfStarterFragment(BaseFragment):
         # 2. If KI fails, consult Professor
         if not decomposition_steps:
             self._logger.info(f"KI failed to decompose '{goal}', consulting Professor...")
-            professor_response = await self._consult_professor(goal)
+            # --- Simplify error message before sending to professor ---
+            professor_query = goal
+            if "erro" in goal.lower(): # Basic check if goal is about an error
+                professor_query = self._simplify_error_message(goal)
+                self._logger.info(f"Using simplified query for Professor: {professor_query[:100]}...")
+            # ------------------------------------------------------->
+            professor_response = await self._consult_professor(professor_query)
             if professor_response:
                 # 3. Interpret Professor's response using KI
                 decomposition_steps = await self._interpret_professor_response(professor_response)
 
         # 4. If decomposition steps were found (from KI or Professor->KI)
         if decomposition_steps:
-            self._logger.info(f"Adding {len(decomposition_steps)} new steps to ladder for goal '{goal}'.")
+            self._logger.info(f"Adding {len(decomposition_steps)} new steps to ladder for goal '{goal}'. Steps: {decomposition_steps}") # Log the actual steps
             # Add steps in reverse order so the first step is at the top of the stack
             for step in reversed(decomposition_steps):
-                self.goal_ladder.append(step.strip()) # Add stripped steps
+                # Ensure step is a string and strip whitespace
+                if isinstance(step, str):
+                     self.goal_ladder.append(step.strip())
+                else:
+                     # Log if a step isn't a string (shouldn't happen with current KI)
+                     self._logger.warning(f"Encountered non-string step in decomposition result: {step}. Skipping.")
+                     
             self._logger.debug(f"Ladder top is now: {self.goal_ladder[-1] if self.goal_ladder else 'Empty'}")
         else:
             self._logger.warning(f"Failed to decompose abstract goal '{goal}' using KI and Professor. Goal discarded.")
@@ -355,10 +409,26 @@ class AutonomousSelfStarterFragment(BaseFragment):
                 current_goal = self.goal_ladder[-1] # Peek at the top
                 self._logger.info(f"Processing top goal: '{current_goal}'")
 
-                # Explicitly check for default goal OR use the heuristic
-                if current_goal == self.DEFAULT_GOAL or not self._is_a3l_command(current_goal):
+                # --- Refined Goal Handling ---
+                # Check if it's an error reflection goal generated internally
+                is_error_reflection = current_goal.strip().lower().startswith("refletir sobre erro")
+                
+                # Check if it's a standard A3L command (heuristic)
+                is_command = self._is_a3l_command(current_goal)
+                
+                # Determine if it should be treated as abstract
+                # Treat as abstract if: it's the default goal, OR it's an error reflection, OR it's not recognized as a command.
+                is_abstract = (current_goal == self.DEFAULT_GOAL or 
+                               is_error_reflection or 
+                               not is_command)
+                # ------------------------------
+                
+                if is_abstract:
+                    self._logger.debug(f"Goal '{current_goal[:50]}...' identified as abstract/reflective. Handling via _handle_abstract_goal.")
                     await self._handle_abstract_goal(current_goal)
                 else:
+                    # Assume it's an executable command
+                    self._logger.debug(f"Goal '{current_goal[:50]}...' identified as executable command. Handling via _handle_a3l_command.")
                     await self._handle_a3l_command(current_goal)
 
                 # Save state after potential modification

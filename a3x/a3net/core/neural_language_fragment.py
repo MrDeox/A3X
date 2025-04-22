@@ -6,6 +6,10 @@ import logging
 import random # For shuffling dataset
 import math # For splitting dataset
 import asyncio # For async evaluate method
+import collections # <<< Add collections for deque
+from ..core.context_store import ContextStore # <<< Import ContextStore for type hint
+import time # For logging timestamp
+import functools # <<< Add functools for partial >>>
 
 # Corrected relative import path to trainer directory
 from ..trainer.train_loop import train_fragment_cell
@@ -72,6 +76,10 @@ class NeuralLanguageFragment(nn.Module):
         if self.associated_task_name:
             print(f"[NeuralLangFrag '{self.fragment_id}'] Associated Task: {self.associated_task_name}")
 
+        # --- State for dynamic stopping ---
+        self.recent_val_accuracies = collections.deque(maxlen=3) # Stores last 3 val accuracies
+        self.min_accuracy_gain = 0.001 # Threshold to stop training
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Passes the input tensor through the network and returns raw logits."""
         if x.shape[-1] != self.input_dim:
@@ -104,143 +112,270 @@ class NeuralLanguageFragment(nn.Module):
             
         return prediction_result # Return dict {output: str, confidence: float}
 
-    async def train_on_task(self, task_name: str, epochs: int = 10, learning_rate: float = 0.001) -> bool:
-        """Loads dataset for a task and trains the fragment using train_on.
+    # --- Helper for dynamic stopping ---
+    def _should_stop_training(self, current_val_accuracy: Optional[float]) -> Tuple[bool, str]:
+        """Checks if training should stop based on validation accuracy trend."""
+        if current_val_accuracy is None:
+            return False, "No validation accuracy available."
 
-        Returns:
-            bool: True if training was initiated and reported success, False otherwise.
-        """
-        logger.info(f"[{self.fragment_id}] Received request to train on task '{task_name}' for {epochs} epochs.")
-        try:
-            # Load/build dataset (synchronous, run in executor)
-            loop = asyncio.get_running_loop()
-            dataset = await loop.run_in_executor(
-                None, 
-                build_dataset_from_context, 
-                task_name, 
-                self.num_classes 
-            )
+        should_stop = False
+        reason = ""
+        
+        # Store current accuracy
+        self.recent_val_accuracies.append(current_val_accuracy)
 
-            if not dataset:
-                logger.error(f"[{self.fragment_id}] Could not load or build dataset for task '{task_name}'. Training aborted.")
-                return False
-
-            # Initiate training (synchronous, run in executor)
-            success = await loop.run_in_executor(
-                None, 
-                self.train_on, 
-                dataset, 
-                epochs, 
-                learning_rate
-            )
+        # Check only if we have enough history
+        if len(self.recent_val_accuracies) == self.recent_val_accuracies.maxlen:
+            # Calculate average gain
+            # Example: [0.80, 0.81, 0.815] -> Gains: [0.01, 0.005] -> Avg Gain: 0.0075
+            gains = []
+            acc_list = list(self.recent_val_accuracies)
+            for i in range(len(acc_list) - 1):
+                gains.append(acc_list[i+1] - acc_list[i])
             
-            logger.info(f"[{self.fragment_id}] Training on task '{task_name}' completed. Reported success: {success}")
-            return success
+            if gains: # Ensure we have at least one gain calculation
+                avg_gain = sum(gains) / len(gains)
+                logger.debug(f"[{self.fragment_id}] Recent Accuracies: {acc_list}, Gains: {gains}, Avg Gain: {avg_gain:.5f}")
+                if avg_gain < self.min_accuracy_gain:
+                    should_stop = True
+                    reason = f"Validation accuracy plateaued (Avg gain {avg_gain:.5f} < {self.min_accuracy_gain:.5f})"
+                    logger.info(f"[{self.fragment_id}] {reason}. Suggesting stop.")
+            else:
+                 logger.debug(f"[{self.fragment_id}] Not enough data points for gain calculation yet ({len(acc_list)} accuracies)." )
+
+        # TODO: Implement optional LLM examiner check here if needed
+        # if use_llm_as_examiner and not should_stop:
+        #    # ... ask professor ...
+        #    if professor_says_stop:
+        #        should_stop = True
+        #        reason = "LLM examiner indicates mastery."
+
+        if not reason and not should_stop:
+             reason = f"Accuracy gain sufficient or insufficient history ({len(self.recent_val_accuracies)}/{self.recent_val_accuracies.maxlen})."
+
+        return should_stop, reason
+    # --------------------------------
+
+    async def train_on_task(self, 
+                            task_name: str, 
+                            #epochs: int = 10, # <<< Replaced by max_epochs
+                            max_epochs: int = 50, # <<< Max epochs to run
+                            learning_rate: float = 0.001,
+                            target_accuracy: Optional[float] = None, 
+                            validation_split: float = 0.2,
+                            context_store: Optional[ContextStore] = None) -> Dict[str, Any]: # <<< Added context_store
+        """Loads dataset, splits, trains with validation and dynamic stopping.
+           Logs intermediate validation results to ContextStore.
+        """
+        # <<< Updated log message >>>
+        logger.info(f"[{self.fragment_id}] Train request task='{task_name}', max_epochs={max_epochs}, lr={learning_rate}, target_acc={target_accuracy}, val_split={validation_split}")
+        results = {
+            "fragment_id": self.fragment_id,
+            "task_name": task_name,
+            "status": "error", 
+            "message": "Training did not start",
+            "epochs_run": 0,
+            "final_train_loss": None,
+            "final_val_loss": None,
+            "final_val_accuracy": None,
+            "target_met": False
+        }
+
+        try:
+            # --- 1. Load Full Dataset --- 
+            loop = asyncio.get_running_loop()
+            logger.info(f"[{self.fragment_id}] Loading full dataset for task '{task_name}'...")
+            # <<< Corrected async call using functools.partial (Attempt 3 - Removing split) >>>
+            # Create partial function binding only positional arguments for build_dataset_from_context
+            build_fn = functools.partial(
+                build_dataset_from_context, 
+                task_name,         # Positional arg 1
+                self.num_classes  # Positional arg 2
+                # split='full'      # <<< REMOVED - Not an argument of build_dataset_from_context >>>
+            )
+            # Run the partial function (which now takes no extra args) in the executor
+            full_dataset = await loop.run_in_executor(None, build_fn)
+            # <<< End corrected call >>>
+
+            if not full_dataset:
+                logger.error(f"[{self.fragment_id}] Could not load or build dataset for task '{task_name}'.")
+                results["message"] = "Failed to load dataset"
+                return results
+            
+            # Ensure targets are torch.long and scalar
+            try:
+                processed_dataset = []
+                for i, (inp, tar) in enumerate(full_dataset):
+                    if not isinstance(tar, torch.Tensor): tar = torch.tensor(tar)
+                    if tar.dtype != torch.long: tar = tar.long()
+                    if tar.dim() > 0: tar = tar.squeeze() # Ensure scalar target
+                    if tar.dim() != 0: raise ValueError(f"Target at index {i} is not scalar after processing: shape {tar.shape}")
+                    processed_dataset.append((inp, tar))
+                full_dataset = processed_dataset
+                logger.info(f"[{self.fragment_id}] Processed {len(full_dataset)} dataset entries (checked target types).")
+            except Exception as proc_err:
+                 logger.error(f"[{self.fragment_id}] Error processing dataset targets for task '{task_name}': {proc_err}", exc_info=True)
+                 results["message"] = f"Dataset target processing error: {proc_err}"
+                 return results
+
+            # --- 2. Split Dataset --- 
+            if validation_split <= 0 or validation_split >= 1:
+                logger.warning(f"[{self.fragment_id}] Invalid validation_split ({validation_split}). Using full dataset for training, validation disabled.")
+                train_dataset = full_dataset
+                val_dataset = []
+                target_accuracy = None # Disable target accuracy if no validation set
+            else:
+                # Simple shuffle and split
+                random.shuffle(full_dataset)
+                split_idx = math.ceil(len(full_dataset) * (1 - validation_split))
+                train_dataset = full_dataset[:split_idx]
+                val_dataset = full_dataset[split_idx:]
+                logger.info(f"[{self.fragment_id}] Split dataset: {len(train_dataset)} train, {len(val_dataset)} validation.")
+                
+                if not val_dataset and target_accuracy is not None:
+                    logger.warning(f"[{self.fragment_id}] Validation set is empty after split. Disabling target_accuracy check.")
+                    target_accuracy = None
+
+            if not train_dataset:
+                logger.error(f"[{self.fragment_id}] Training dataset is empty after split. Aborting.")
+                results["message"] = "Training dataset empty after split"
+                return results
+
+            # --- 3. Create Dataloaders --- 
+            # Adjust batch size as needed
+            batch_size = 16 
+            train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+            val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size) if val_dataset else None
+
+            # --- 4. Setup Training --- 
+            optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+            loss_fn = nn.CrossEntropyLoss()
+            device = next(self.parameters()).device # Get model device
+            logger.info(f"[{self.fragment_id}] Starting training on device: {device}")
+
+            # --- 5. Training Loop --- 
+            for epoch in range(max_epochs):
+                results["epochs_run"] = epoch + 1
+                self.train() # Set model to training mode
+                running_train_loss = 0.0
+                train_batches = 0
+                for inputs, targets in train_loader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    
+                    optimizer.zero_grad()
+                    outputs = self(inputs) # Forward pass (logits)
+                    loss = loss_fn(outputs, targets)
+                    loss.backward() # Backward pass
+                    optimizer.step() # Update weights
+                    
+                    running_train_loss += loss.item()
+                    train_batches += 1
+                
+                avg_train_loss = running_train_loss / train_batches if train_batches > 0 else 0
+                results["final_train_loss"] = avg_train_loss
+                log_msg = f"Epoch [{epoch+1}/{max_epochs}] Train Loss: {avg_train_loss:.4f}"
+
+                # --- Validation Step --- 
+                current_val_accuracy = None
+                current_val_loss = None # Initialize val loss
+                if val_loader:
+                    self.eval() # Set model to evaluation mode
+                    running_val_loss = 0.0
+                    correct_preds = 0
+                    total_preds = 0
+                    val_batches = 0
+                    with torch.no_grad():
+                        for val_inputs, val_targets in val_loader:
+                            val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                            val_outputs = self(val_inputs)
+                            val_loss = loss_fn(val_outputs, val_targets)
+                            running_val_loss += val_loss.item()
+                            
+                            _, predicted_indices = torch.max(val_outputs, 1)
+                            total_preds += val_targets.size(0)
+                            correct_preds += (predicted_indices == val_targets).sum().item()
+                            val_batches += 1
+                    
+                    avg_val_loss = running_val_loss / val_batches if val_batches > 0 else 0
+                    current_val_accuracy = correct_preds / total_preds if total_preds > 0 else 0.0
+                    current_val_loss = avg_val_loss # Assign to variable
+                    results["final_val_loss"] = current_val_loss
+                    results["final_val_accuracy"] = current_val_accuracy
+                    log_msg += f" | Val Loss: {current_val_loss:.4f}, Val Acc: {current_val_accuracy:.4f}"
+
+                    # <<< Log intermediate validation results to ContextStore >>>
+                    if context_store:
+                        try:
+                            log_key = f"training_log:{self.fragment_id}:{task_name}:epoch_{epoch+1}"
+                            log_data = {
+                                "epoch": epoch + 1,
+                                "validation_accuracy": current_val_accuracy,
+                                "validation_loss": current_val_loss,
+                                "train_loss": avg_train_loss,
+                                "timestamp": time.time() # Use time directly
+                            }
+                            await context_store.set(log_key, log_data)
+                            logger.debug(f"[{self.fragment_id}] Logged intermediate results to ContextStore key '{log_key}'")
+                        except Exception as cs_log_err:
+                            logger.warning(f"[{self.fragment_id}] Failed to log intermediate results to ContextStore: {cs_log_err}", exc_info=True)
+                    # <<< End ContextStore logging >>>
+
+                logger.info(f"[{self.fragment_id}] {log_msg}")
+                print(f"[{self.fragment_id}] {log_msg}") # Print for visibility
+
+                # --- Combined Stopping Checks --- 
+                stop_reason = ""
+                # 1. Check Target Accuracy (Explicit Goal)
+                if target_accuracy is not None and current_val_accuracy is not None:
+                    if current_val_accuracy >= target_accuracy:
+                        stop_reason = f"Target accuracy ({target_accuracy:.4f}) reached at epoch {epoch+1}."
+                        results["target_met"] = True
+                
+                # 2. Check Dynamic Stopping (Plateau/Diminishing Returns)
+                if not stop_reason:
+                     should_stop_dynamic, dynamic_reason = self._should_stop_training(current_val_accuracy)
+                     if should_stop_dynamic:
+                         stop_reason = dynamic_reason # Use the reason from the helper
+
+                # 3. Break loop if any stop reason is found
+                if stop_reason:
+                    logger.info(f"[{self.fragment_id}] Stopping training: {stop_reason}")
+                    results["status"] = "success"
+                    results["message"] = f"Training stopped early at epoch {epoch+1}: {stop_reason}" # Use the specific reason
+                    # Ensure final metrics are set before returning
+                    results["final_train_loss"] = avg_train_loss 
+                    results["final_val_loss"] = current_val_loss
+                    results["final_val_accuracy"] = current_val_accuracy
+                    break # Exit the training loop
+            # --- End Training Loop ---
+            
+            # <<< Update final status message if loop finished normally >>>
+            if results["status"] != "success": # If loop finished without early stopping
+                results["status"] = "success"
+                results["message"] = f"Training finished after reaching max_epochs ({max_epochs})."
+                if target_accuracy is not None and not results.get("target_met", False):
+                     # Check if target accuracy was met on the *last* epoch if loop completed
+                     if current_val_accuracy is not None and current_val_accuracy >= target_accuracy:
+                         results["target_met"] = True
+                         results["message"] += f" Target accuracy ({target_accuracy:.4f}) was met on the final epoch."
+                     else:
+                         results["message"] += f" Target accuracy ({target_accuracy:.4f}) was not met."
+                # Ensure final metrics are stored even if loop completes normally
+                # results["final_train_loss"] is already updated each epoch
+                results["final_val_loss"] = current_val_loss
+                results["final_val_accuracy"] = current_val_accuracy
+
+            return results
 
         except Exception as e:
             logger.error(f"[{self.fragment_id}] Error during train_on_task for '{task_name}': {e}", exc_info=True)
-            return False
+            results["status"] = "error"
+            results["message"] = f"Training loop failed: {e}"
+            return results
 
-    def train_on(self, 
-                 dataset: List[Tuple[torch.Tensor, torch.Tensor]], 
-                 epochs: int = 10, 
-                 learning_rate: float = 0.001):
-        """Trains this specific fragment using the provided data.
-
-        Uses CrossEntropyLoss suitable for classification.
-
-        Args:
-            dataset: A list of (input_tensor, target_class_index_tensor) tuples.
-                     Target tensors should contain class indices (long integers).
-            epochs: The number of training epochs.
-            learning_rate: The learning rate for the Adam optimizer.
-        """
-        print(f"[NeuralLangFrag '{self.fragment_id}'] Starting training...")
-        logger.info(f"Starting training for NeuralLanguageFragment '{self.fragment_id}'")
-        
-        # --- Validation for Classification Data ---
-        if not dataset:
-            print("[NeuralLangFrag] Error: Training dataset is empty.")
-            logger.error(f"Training dataset for {self.fragment_id} is empty.")
-            return False
-            
-        # Check target tensor type in the first sample (assuming consistency)
-        _, first_target = dataset[0]
-        if first_target.dtype != torch.long:
-             # Attempt conversion or raise error - CrossEntropyLoss expects Long targets
-             try:
-                 # Create a new dataset list with converted targets
-                 converted_dataset = []
-                 for i, (inp, tar) in enumerate(dataset):
-                     if tar.dtype != torch.long:
-                         # Ensure target is scalar or single element before converting
-                         if tar.numel() == 1:
-                            converted_dataset.append((inp, tar.long().squeeze())) # Squeeze to make it scalar if needed
-                         else:
-                             raise TypeError(f"Target tensor at index {i} has multiple elements ({tar.numel()}) and cannot be automatically converted to a class index.")
-                     else:
-                         converted_dataset.append((inp, tar.squeeze())) # Ensure it's scalar like if already long
-                 dataset = converted_dataset # Replace original dataset
-                 logger.warning(f"Converted target tensors to torch.long for fragment {self.fragment_id}.")
-                 print("[NeuralLangFrag] Warning: Converted target tensors to torch.long.")
-             except Exception as e:
-                 print(f"[NeuralLangFrag] Error: Target tensors must be torch.long (class indices) for CrossEntropyLoss. Conversion failed: {e}")
-                 logger.error(f"Target tensor type mismatch for {self.fragment_id}: {first_target.dtype}. Conversion failed.", exc_info=True)
-                 return False
-        else:
-            # Ensure targets are scalar-like if they are already long
-             dataset = [(inp, tar.squeeze()) for inp, tar in dataset]
-
-        # --- Setup Optimizer and Loss ---
-        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
-        # Use CrossEntropyLoss for multi-class classification (expects raw logits)
-        loss_fn = nn.CrossEntropyLoss()
-        
-        # --- Call Generic Trainer (if suitable) ---
-        # Note: train_fragment_cell needs adjustment if it only uses MSELoss.
-        # If train_fragment_cell can accept loss_fn, we can use it:
-        try:
-            print(f"[NeuralLangFrag '{self.fragment_id}'] Using CrossEntropyLoss.")
-            # We pass the specific loss function for classification
-            train_fragment_cell(
-                cell=self, 
-                dataset=dataset, 
-                epochs=epochs, 
-                optimizer=optimizer,
-                loss_fn=loss_fn # Pass CrossEntropyLoss
-            )
-            print(f"[NeuralLangFrag '{self.fragment_id}'] Training finished.")
-            logger.info(f"Training completed for NeuralLanguageFragment '{self.fragment_id}'")
-            return True # Indicate success
-        except Exception as e:
-            print(f"[NeuralLangFrag '{self.fragment_id}'] Error during training: {e}")
-            logger.exception(f"Error during training for {self.fragment_id}")
-            return False # Indicate failure
-
-        # --- Alternative: Internal Training Loop (if train_fragment_cell is unsuitable) ---
-        # Uncomment and adapt this section if train_fragment_cell cannot handle CrossEntropyLoss
-        # self.train() # Set model to training mode
-        # for epoch in range(epochs):
-        #     epoch_loss = 0.0
-        #     num_batches = 0
-        #     for inputs, targets in dataset:
-        #         optimizer.zero_grad()
-        #         outputs = self(inputs) # Get logits
-        #         # Ensure targets are the correct shape for CrossEntropyLoss (usually [N])
-        #         # and outputs are [N, C]
-        #         if len(inputs.shape) == 1: # If single sample, add batch dim
-        #             inputs = inputs.unsqueeze(0)
-        #             outputs = outputs.unsqueeze(0)
-        #             targets = targets.unsqueeze(0)
-        #         
-        #         loss = loss_fn(outputs, targets)
-        #         loss.backward()
-        #         optimizer.step()
-        #         epoch_loss += loss.item()
-        #         num_batches += 1
-        #     avg_epoch_loss = epoch_loss / num_batches if num_batches > 0 else 0
-        #     print(f"Epoch [{epoch+1}/{epochs}], Average Loss: {avg_epoch_loss:.4f}")
-        # print(f"[NeuralLangFrag '{self.fragment_id}'] Training finished.") 
+    # Remove or deprecate the old train_on method as logic is moved to train_on_task
+    # def train_on(self, ...):
+    #    pass 
 
     # <<< NEW EVALUATION METHOD >>>
     async def evaluate(self, task_name: str, test_split_ratio: float = 0.2) -> Dict[str, Any]:

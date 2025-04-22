@@ -1,0 +1,10 @@
+{"input": "Este filme é incrível!", "label": "positivo"}
+{"input": "Este filme é horrível.", "label": "negativo"}
+{"input": "Eu adorei o filme!", "label": "positivo"}
+{"input": "O filme é medíocre.", "label": "neutro"}
+{"input": "Eu detesto este filme.", "label": "negativo"}
+{"input": "Eu amei o filme!", "label": "positivo"}
+{"input": "Este filme é terrível.", "label": "negativo"}
+{"input": "Eu odeio este filme.", "label": "negativo"}
+{"input": "O filme é ok.", "label": "neutro"}
+{"input": "O filme é interessante.", "label": "neutro"}

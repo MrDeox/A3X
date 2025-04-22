@@ -43,7 +43,7 @@ Gere APENAS a heurística extraída, sem nenhum texto adicional antes ou depois.
 """
 
 # <<< REMOVED DEFAULT_FAILURE_LOG_PATH >>>
-# DEFAULT_FAILURE_LOG_PATH = "memory/failure_logs/learned_failures.jsonl"
+# DEFAULT_FAILURE_LOG_PATH = "data/memory/failure_logs/learned_failures.jsonl" # Updated path comment
 
 @skill(
     name="learn_from_failure_log",

@@ -26,6 +26,7 @@ AUTO_EVAL_LOG = LEARNING_LOGS_DIR / "auto_evaluation.jsonl"
 BATERIA_AUTOAVALIACAO_LOG = LEARNING_LOGS_DIR / "bateria_autoavaliacao.log"
 LLM_DECISION_REFLECTIONS_LOG = LLM_LOGS_DIR / "decision_reflections.jsonl"
 AUTO_PROMPT_EVOLUTION_LOG = LEARNING_HISTORY_DIR / "auto_prompt_evolution.jsonl"
+ERROR_LOG_FILE = LEARNING_LOGS_DIR / "error_log.jsonl"
 
 # <<< ADDED Logging Format >>>
 LOG_FORMAT = os.getenv("LOG_FORMAT", "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s")
@@ -116,3 +117,13 @@ if skill_packages_env:
 else:
     # Default é uma lista Python
     SKILL_PACKAGES = ["a3x.skills"]
+
+# <<< ADDED: Flag to control Firejail usage >>>
+# Set to False to disable firejail sandboxing (e.g., if not installed or causing issues)
+# Can be overridden by environment variable A3X_USE_FIREJAIL=0 or A3X_USE_FIREJAIL=1
+default_use_firejail = True # Default to using firejail if available
+use_firejail_env = os.getenv("A3X_USE_FIREJAIL")
+if use_firejail_env is not None:
+    USE_FIREJAIL_SANDBOX = use_firejail_env.lower() in ['1', 'true', 'yes', 'on']
+else:
+    USE_FIREJAIL_SANDBOX = default_use_firejail

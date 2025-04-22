@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 GOAL_INJECTION_INTERVAL_SECONDS = 20
-DIRECTIVE_TARGET_PREFIX = "a3x/generated" # Directory for generated targets
+# Updated path for generated goal targets (now in data/runtime)
+DIRECTIVE_TARGET_PREFIX = "data/runtime/generated/goals" # Directory for generated targets
 
 # --- Predefined Goal Templates ---
 GOAL_TEMPLATES = [

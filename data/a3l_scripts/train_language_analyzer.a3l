@@ -1,0 +1,16 @@
+# Train the language analyzer fragment
+
+# Define the fragment with 5 classes and label mapping
+# Using default input_dim (will be determined by embedding model)
+criar fragmento 'language_analyzer' tipo 'neural' num_classes 5 description "Classifica tipo de input textual (pergunta, intencao, falha, saudacao, feedback)" id_to_label {0: "pergunta", 1: "intencao", 2: "falha", 3: "saudacao", 4: "feedback"}
+
+# Train using the dataset (task name matches filename)
+treinar fragmento 'language_analyzer' tarefa 'language_analyzer' por 20 épocas
+
+# Evaluate performance on the test split (default 20%)
+avaliar fragmento 'language_analyzer' com dados de teste 'language_analyzer'
+
+# Compare performance against previous evaluations (if any)
+comparar desempenho do fragmento 'language_analyzer' após treino em 'language_analyzer'
+
+refletir sobre fragmento 'language_analyzer' 

@@ -2,12 +2,16 @@
 import subprocess
 import logging
 from typing import Dict, Any, Optional, Tuple
+import shutil # Added for shutil.which
+import tempfile # Added for temporary files
+import os # Added for path manipulation
 from a3x.core.skills import skill  # <<< Update import
 from a3x.core.db_utils import add_episodic_record # <<< Corrected import name
 from a3x.core.context import Context # Added import
 from a3x.core.context import SharedTaskContext
 from a3x.core.context_accessor import ContextAccessor
 from a3x.core.code_safety import is_safe_ast
+import a3x.core.config as config # <<< Added import for config flag
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -20,11 +24,10 @@ _context_accessor = ContextAccessor()
     name="execute_code",
     description="Executes a given code snippet in a specified language within a sandboxed environment.",
     parameters={
-        "context": {"type": Context, "description": "The execution context provided by the agent."},
         "code": {"type": str, "description": "The code snippet to execute."},
         "language": {"type": Optional[str], "default": "python", "description": "The programming language of the snippet (default: python)."},
         "timeout": {"type": Optional[int], "default": 60, "description": "Maximum execution time in seconds (default: 60)."},
-        "shared_task_context": {"type": "SharedTaskContext", "description": "The shared context for accessing task-related data.", "optional": True}
+        "shared_task_context": {"type": "Optional[a3x.core.context.SharedTaskContext]", "description": "The shared context for accessing task-related data.", "optional": True}
     }
 )
 def execute_code(
@@ -141,142 +144,203 @@ def execute_code(
         }
     logger.debug(f"AST analysis result: {safety_message}")
 
-    # --- Execute in Firejail ---
+    # --- Execute Code ---
     stdout_result = ""
     stderr_result = ""
     exit_code = -1
+    execution_method = "unknown" # To track how it was run
 
-    try:
-        # Construir comando Firejail
-        firejail_command = [
-            "firejail",
-            "--quiet",
-            "--noprofile",  # Sandbox básico sem perfil específico
-            "--net=none",  # Desabilitar rede
-            "--private",  # Diretório home privado, tmpfs /tmp
-            "--seccomp",  # Habilitar filtro seccomp padrão
-            "--nonewprivs", # Impedir ganho de novos privilégios
-            "--noroot",     # Impedir ganho de privilégios root no sandbox
-            "python3",  # Interpretador
-            "-c",  # Executar código da string
-            code_to_execute,  # O código em si
-        ]
+    firejail_path = shutil.which("firejail")
+    use_firejail = config.USE_FIREJAIL_SANDBOX and firejail_path
 
-        logger.debug(
-            f"Executando comando: {' '.join(firejail_command[:8])} python3 -c '...'" # Ajustar log
-        )  # Log truncado
+    if use_firejail:
+        execution_method = "firejail"
+        logger.info("Firejail found and enabled. Executing code in sandboxed environment.")
+        try:
+            # Construir comando Firejail
+            firejail_command = [
+                firejail_path, # Use found path
+                "--quiet",
+                "--noprofile",
+                "--net=none",
+                "--private",
+                "--seccomp",
+                "--nonewprivs",
+                "--noroot",
+                "python3",
+                "-c",
+                code_to_execute,
+            ]
 
-        # Executar com subprocess.run
-        process = subprocess.run(
-            firejail_command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,  # Não lança exceção em erro, verificamos o exit_code
-        )
+            logger.debug(
+                f"Executando comando via Firejail: {' '.join(firejail_command[:8])} python3 -c '...'"
+            )
 
-        stdout_result = process.stdout.strip()
-        stderr_result = process.stderr.strip()
-        exit_code = process.returncode
+            process = subprocess.run(
+                firejail_command,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                check=False,
+            )
+            stdout_result = process.stdout.strip()
+            stderr_result = process.stderr.strip()
+            exit_code = process.returncode
 
-        logger.info(f"Execução concluída. Exit Code: {exit_code}")
-        if stdout_result:
-            logger.debug(f"Stdout: {stdout_result}")
-        if stderr_result:
-            logger.debug(f"Stderr: {stderr_result}")
-
-        # --- Return Result ---
-        if exit_code == 0:
-            outcome = "success"
-            metadata = {"returncode": exit_code, "stdout_len": len(stdout_result), "stderr_len": len(stderr_result)}
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout ({timeout_sec}s) atingido durante a execução com Firejail.")
+            outcome = f"failure: timeout ({timeout_sec}s)"
+            metadata = {"timeout_value": timeout_sec, "method": execution_method}
             # <<< Registrar Experiência >>>
             try:
                 add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
             except Exception as db_err:
-                logger.error(f"Failed to record success experience: {db_err}")
-            return {
-                "status": "success",
-                "action": "code_executed",
-                "data": {
-                    "stdout": stdout_result,
-                    "stderr": stderr_result,  # Incluir stderr mesmo em sucesso (para warnings)
-                    "returncode": exit_code,
-                    "message": "Código executado com sucesso.",
-                },
-            }
-        else:
-            error_cause = f"erro durante a execução (exit code: {exit_code})"
-            if "SyntaxError:" in stderr_result:
-                error_cause = "erro de sintaxe"
-            elif "Traceback (most recent call last):" in stderr_result:
-                error_cause = "erro de runtime"
-
-            outcome = f"failure: {error_cause}"
-            metadata = {"returncode": exit_code, "error_cause": error_cause, "stderr_preview": stderr_result[:200]}
-            # <<< Registrar Experiência >>>
-            try:
-                add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
-            except Exception as db_err:
-                logger.error(f"Failed to record failure experience: {db_err}")
+                logger.error(f"Failed to record timeout experience: {db_err}")
             return {
                 "status": "error",
                 "action": "execution_failed",
                 "data": {
-                    "stdout": stdout_result,
-                    "stderr": stderr_result,
-                    "returncode": exit_code,
-                    "message": f"Falha na execução do código: {error_cause}. Stderr: {stderr_result[:200]}...",  # Limita stderr na msg
+                    "message": f"Execução do código (via Firejail) excedeu o limite de tempo ({timeout_sec}s)."
                 },
             }
+        except Exception as e:
+             logger.exception(f"Erro inesperado durante execução com Firejail: {e}")
+             outcome = f"failure: unexpected error ({type(e).__name__})"
+             metadata = {"error": str(e), "method": execution_method}
+             # <<< Registrar Experiência >>>
+             try:
+                 add_episodic_record(context="execute_code skill", action=code_to_execute if 'code_to_execute' in locals() else "N/A - Early Error", outcome=outcome, metadata=metadata)
+             except Exception as db_err:
+                 logger.error(f"Failed to record unexpected error experience: {db_err}")
+             return {
+                 "status": "error",
+                 "action": "execution_failed",
+                 "data": {"message": f"Erro inesperado durante execução com Firejail: {e}"},
+             }
 
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Timeout ({timeout_sec}s) atingido durante a execução.")
-        outcome = f"failure: timeout ({timeout_sec}s)"
-        metadata = {"timeout_value": timeout_sec}
+    else: # Firejail not found OR disabled by config
+        execution_method = "direct_python"
+        if not config.USE_FIREJAIL_SANDBOX:
+            logger.warning("Firejail usage is disabled by configuration (USE_FIREJAIL_SANDBOX=False). Falling back to direct Python execution (less secure).")
+        elif not firejail_path:
+            logger.warning("Firejail executable not found in PATH. Falling back to direct Python execution (less secure).")
+        else:
+             # Should not happen given the logic, but include for completeness
+             logger.warning("Firejail disabled for unknown reason. Falling back to direct Python execution (less secure).")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                script_path = os.path.join(tmpdir, "temp_script.py")
+                with open(script_path, "w", encoding="utf-8") as f:
+                    f.write(code_to_execute)
+
+                logger.debug(f"Executing script directly: python3 {script_path}")
+
+                process = subprocess.run(
+                    ["python3", script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                    check=False,
+                    cwd=tmpdir # Run script from its own directory
+                )
+                stdout_result = process.stdout.strip()
+                stderr_result = process.stderr.strip()
+                exit_code = process.returncode
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout ({timeout_sec}s) atingido durante a execução direta.")
+            outcome = f"failure: timeout ({timeout_sec}s)"
+            metadata = {"timeout_value": timeout_sec, "method": execution_method}
+            # <<< Registrar Experiência >>>
+            try:
+                add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+            except Exception as db_err:
+                logger.error(f"Failed to record timeout experience: {db_err}")
+            return {
+                "status": "error",
+                "action": "execution_failed",
+                "data": {
+                    "message": f"Execução do código (via direct python) excedeu o limite de tempo ({timeout_sec}s)."
+                },
+            }
+        except FileNotFoundError:
+             # This would likely mean 'python3' is not found
+             logger.error("Comando 'python3' não encontrado. Verifique a instalação e o PATH.", exc_info=True)
+             outcome = "failure: python3 not found"
+             metadata = {"method": execution_method}
+             # <<< Registrar Experiência >>>
+             try:
+                 add_episodic_record(context="execute_code skill", action="N/A - Environment Error", outcome=outcome, metadata=metadata)
+             except Exception as db_err:
+                 logger.error(f"Failed to record environment error experience: {db_err}")
+             return {
+                 "status": "error",
+                 "action": "execution_failed_runtime_missing",
+                 "data": {"message": "Comando 'python3' não encontrado."},
+             }
+        except Exception as e:
+             logger.exception(f"Erro inesperado durante execução direta: {e}")
+             outcome = f"failure: unexpected error ({type(e).__name__})"
+             metadata = {"error": str(e), "method": execution_method}
+             # <<< Registrar Experiência >>>
+             try:
+                 add_episodic_record(context="execute_code skill", action=code_to_execute if 'code_to_execute' in locals() else "N/A - Early Error", outcome=outcome, metadata=metadata)
+             except Exception as db_err:
+                 logger.error(f"Failed to record unexpected error experience: {db_err}")
+             return {
+                 "status": "error",
+                 "action": "execution_failed",
+                 "data": {"message": f"Erro inesperado durante execução direta: {e}"},
+             }
+
+    # --- Process Results (Common logic for both methods) ---
+    logger.info(f"Execução ({execution_method}) concluída. Exit Code: {exit_code}")
+    if stdout_result:
+        logger.debug(f"Stdout: {stdout_result}")
+    if stderr_result:
+        logger.debug(f"Stderr: {stderr_result}")
+
+    if exit_code == 0:
+        outcome = "success"
+        metadata = {"returncode": exit_code, "stdout_len": len(stdout_result), "stderr_len": len(stderr_result), "method": execution_method}
         # <<< Registrar Experiência >>>
         try:
             add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
         except Exception as db_err:
-            logger.error(f"Failed to record timeout experience: {db_err}")
+            logger.error(f"Failed to record success experience: {db_err}")
+        return {
+            "status": "success",
+            "action": "code_executed",
+            "data": {
+                "stdout": stdout_result,
+                "stderr": stderr_result,
+                "returncode": exit_code,
+                "message": f"Código executado com sucesso (via {execution_method}).",
+            },
+        }
+    else:
+        error_cause = f"erro durante a execução (exit code: {exit_code})"
+        if "SyntaxError:" in stderr_result:
+            error_cause = "erro de sintaxe"
+        elif "Traceback (most recent call last):" in stderr_result:
+            error_cause = "erro de runtime"
+
+        outcome = f"failure: {error_cause}"
+        metadata = {"returncode": exit_code, "error_cause": error_cause, "stderr_preview": stderr_result[:200], "method": execution_method}
+        # <<< Registrar Experiência >>>
+        try:
+            add_episodic_record(context="execute_code skill", action=code_to_execute, outcome=outcome, metadata=metadata)
+        except Exception as db_err:
+            logger.error(f"Failed to record failure experience: {db_err}")
         return {
             "status": "error",
             "action": "execution_failed",
             "data": {
-                "message": f"Execução do código excedeu o limite de tempo ({timeout_sec}s)."
+                "stdout": stdout_result,
+                "stderr": stderr_result,
+                "returncode": exit_code,
+                "message": f"Falha na execução do código (via {execution_method}): {error_cause}. Stderr: {stderr_result[:200]}...",
             },
-        }
-    except FileNotFoundError:
-        logger.error(
-            "Comando 'firejail' ou 'python3' não encontrado. Verifique a instalação e o PATH.",
-            exc_info=True,
-        )
-        outcome = "failure: environment error (firejail/python3 not found)"
-        metadata = {"error_type": "FileNotFoundError"}
-        # <<< Registrar Experiência >>>
-        try:
-            add_episodic_record(context="execute_code skill", action="N/A - Environment Error", outcome=outcome, metadata=metadata)
-        except Exception as db_err:
-            logger.error(f"Failed to record environment error experience: {db_err}")
-        return {
-            "status": "error",
-            "action": "execution_failed",
-            "data": {
-                "message": "Erro de ambiente: 'firejail' ou 'python3' não encontrado."
-            },
-        }
-    except Exception as e:
-        logger.exception("Erro inesperado ao tentar executar código:")
-        outcome = f"failure: unexpected error - {type(e).__name__}"
-        metadata = {"error_type": type(e).__name__, "error_message": str(e)[:200]}
-        # <<< Registrar Experiência >>>
-        try:
-            add_episodic_record(context="execute_code skill", action=code_to_execute if 'code_to_execute' in locals() else "N/A - Early Error", outcome=outcome, metadata=metadata)
-        except Exception as db_err:
-            logger.error(f"Failed to record unexpected error experience: {db_err}")
-        return {
-            "status": "error",
-            "action": "execution_failed",
-            "data": {"message": f"Erro inesperado ao tentar executar código: {e}"},
         }
 
     # Update context with execution results using ContextAccessor

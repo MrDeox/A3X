@@ -1,0 +1,68 @@
+# --- A3L Script: Conceptual Learning - Intention ---
+# Goal: Guide A³X/A³Net to learn the concept of "intention" beyond simple classification, 
+# involving definition, reflection, example generation, training, analysis, and knowledge linking.
+
+# --- Stage 1: Initial Conceptual Understanding ---
+# Ask the Professor for a definition and explanation of the concept.
+# The system should store this information internally (perhaps via the context store or a dedicated reflective fragment).
+aprender com 'prof_geral' question "Descreva detalhadamente o conceito de 'intenção' em linguagem natural, incluindo seus aspectos chave, como é expressa e exemplos comuns." context_key "knowledge:concept:intention_definition"
+
+# --- Stage 2: Internal Reflection on Definition ---
+# Create a reflective fragment specifically to hold and process conceptual knowledge about 'intention'.
+# If it already exists, this step might be skipped or update the existing one.
+criar fragmento 'conceito_intencao' tipo 'reflective' description "Holds consolidated knowledge about the concept of 'intention'" input_dim 384 hidden_dim 128 num_classes 2 id_to_label {0:'Presente', 1:'Ausente'} # Example dimensions/classes
+
+# Reflect on the newly acquired definition to internalize it within the concept fragment.
+# This assumes 'refletir sobre' can use the information stored by 'aprender com' via the context_key or other mechanism.
+refletir sobre fragmento 'conceito_intencao' using_context_key "knowledge:concept:intention_definition"
+
+# --- Stage 3: Example Generation & Data Planning ---
+# Plan the data format needed to train a detector for this concept.
+planejar dados para tarefa "intencao_linguagem_natural"
+
+# Generate varied examples based on the understanding stored in 'conceito_intencao' and the planned format.
+# We request more examples than usual to capture nuances.
+# The system should ideally use 'conceito_intencao' to guide the Professor's generation, but currently relies on the task name and planned format.
+solicitar exemplos para tarefa "intencao_linguagem_natural" quantidade 30 professor_id 'prof_geral'
+
+# --- Stage 4: Fragment Creation & Training ---
+# Create a neural fragment specialized in detecting the presence/absence of intention in text snippets.
+criar fragmento 'detector_intencao' tipo 'neural' description "Detects presence/absence of intention in text" input_dim 384 hidden_dim 64 num_classes 2 # Will use dataset labels
+
+# Train the detector using the generated examples.
+# Use the specific task name to link to the generated .jsonl dataset.
+treinar fragmento 'detector_intencao' com dados de 'intencao_linguagem_natural' por 15 epocas
+
+# --- Stage 5: Evaluation & Error Reflection ---
+# Evaluate the trained detector on a held-out test set from the generated data.
+avaliar fragmento 'detector_intencao' com dados de teste 'intencao_linguagem_natural'
+
+# Reflect specifically on the detector's performance and potential errors.
+# This might involve identifying misclassified examples or patterns of failure.
+refletir sobre fragmento 'detector_intencao' focus 'performance_analysis'
+
+# Compare its performance against previous evaluations (if any).
+# This helps track learning progress.
+comparar desempenho do fragmento 'detector_intencao' na tarefa 'intencao_linguagem_natural'
+
+# --- Stage 6: Heuristic Extraction (Approximation) ---
+# Attempt to extract general rules or heuristics from the trained detector or the reflection process.
+# This currently relies on querying the Professor, using the detector fragment as context.
+aprender com 'prof_geral' question "Baseado no fragmento 'detector_intencao' e sua avaliação, quais heurísticas ou padrões indicam a presença de 'intenção' no texto?" context_fragment_id 'detector_intencao' context_key "knowledge:heuristics:intention"
+
+# Reflect again on the concept fragment, incorporating these heuristics.
+refletir sobre fragmento 'conceito_intencao' using_context_key "knowledge:heuristics:intention"
+
+# --- Stage 7: Knowledge Linking/Transfer (Placeholder) ---
+# Create a related fragment that might use the learned concept.
+criar fragmento 'gerador_resposta_intencional' tipo 'neural' description "Generates responses acknowledging user intention" input_dim 384 hidden_dim 128 num_classes 5 # Example output
+
+# Placeholder: Explicitly state the goal of linking knowledge.
+# Future A3L might have directives like 'ensinar fragmento X usando Y' or 'conectar fragmentos A, B'.
+interpretar texto "# META: O conhecimento do 'detector_intencao' e 'conceito_intencao' deve ser usado para inicializar ou guiar o treinamento do 'gerador_resposta_intencional'."
+
+# --- Stage 8: Trigger Autonomous Continuation ---
+# Give the autonomous system a prompt to continue exploring related concepts.
+interpretar texto "Continuar aprendendo sobre conceitos semanticamente relacionados à 'intenção', como 'objetivo', 'desejo' e 'propósito'."
+
+# --- End of Script --- 

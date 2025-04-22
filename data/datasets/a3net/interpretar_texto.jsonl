@@ -1,0 +1,20 @@
+{"input": "A solução é fácil.", "label": "positivo"}
+{"input": "A música é alegre.", "label": "positivo"}
+{"input": "O filme é chato.", "label": "negativo"}
+{"input": "O céu está azul.", "label": "positivo"}
+{"input": "O clima está frio.", "label": "negativo"}
+{"input": "O livro é interessante.", "label": "positivo"}
+{"input": "O carro é vermelho.", "label": "positivo"}
+{"input": "A comida está fria.", "label": "negativo"}
+{"input": "O dia está ensolarado.", "label": "positivo"}
+{"input": "O problema é difícil.", "label": "negativo"}
+{"input": "O céu está azul.", "label": "positivo"}
+{"input": "A comida está fria.", "label": "negativo"}
+{"input": "Eu estou triste.", "label": "negativo"}
+{"input": "O dia está ensolarado.", "label": "positivo"}
+{"input": "O livro é longo.", "label": "negativo"}
+{"input": "Eu estou feliz.", "label": "positivo"}
+{"input": "O filme é chato.", "label": "negativo"}
+{"input": "Eu amo a natureza.", "label": "positivo"}
+{"input": "Eu adoro sorvete.", "label": "positivo"}
+{"input": "O carro é rápido.", "label": "positivo"}

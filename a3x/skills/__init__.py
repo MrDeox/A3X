@@ -84,17 +84,18 @@ def load_skills(reload=False):
     time.sleep(0.01) # Reduced sleep
 
     # Explicitly import specific modules after dynamic loading
-    try:
-        print("*** DEBUG: --> Trying explicit import: .file_manager", flush=True)
-        from . import file_manager
-        logger.info("Imported file_manager skill.")
-        print("*** DEBUG: <-- Finished explicit import: .file_manager", flush=True)
-    except ImportError as e:
-        logger.warning(f"Could not import file_manager skill: {e}")
-        print(f"*** WARNING: Could not import .file_manager: {e}", flush=True)
-    except Exception as e:
-        logger.error(f"Error importing file_manager skill: {e}", exc_info=True)
-        print(f"*** ERROR: Could not import .file_manager: {e}", flush=True)
+    # <<< REMOVED explicit import of file_manager to prevent circular dependency >>>
+    # try:
+    #     print("*** DEBUG: --> Trying explicit import: .file_manager", flush=True)
+    #     from . import file_manager
+    #     logger.info("Imported file_manager skill.")
+    #     print("*** DEBUG: <-- Finished explicit import: .file_manager", flush=True)
+    # except ImportError as e:
+    #     logger.warning(f"Could not import file_manager skill: {e}")
+    #     print(f"*** WARNING: Could not import .file_manager: {e}", flush=True)
+    # except Exception as e:
+    #     logger.error(f"Error importing file_manager skill: {e}", exc_info=True)
+    #     print(f"*** ERROR: Could not import .file_manager: {e}", flush=True)
 
     try:
         print("*** DEBUG: --> Trying explicit import: .simulate", flush=True)

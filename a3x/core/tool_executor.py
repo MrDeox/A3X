@@ -13,10 +13,11 @@ import asyncio
 import re
 import uuid
 from a3x.fragments.registry import FragmentRegistry
-from .context import SharedTaskContext, FragmentContext, _ToolExecutionContext
+from a3x.core.context import SharedTaskContext, FragmentContext, _ToolExecutionContext
 
 # Import SKILL_REGISTRY and PROJECT_ROOT for instantiation and context
-from a3x.core.skill_management import SKILL_REGISTRY
+from a3x.core.registry_instance import SKILL_REGISTRY
+from a3x.core.skills import load_all_skills
 from a3x.core.config import PROJECT_ROOT
 
 # --- Import State Update Hooks ---
@@ -28,170 +29,215 @@ from a3x.core.hooks.state_updates import (
 
 logger = logging.getLogger(__name__)
 
-# Modified Signature: Accept workspace_root and context elements instead of just logger/memory
-async def execute_tool(
-    tool_name: str,
-    action_input: Dict[str, Any],
-    tools_dict: 'ToolRegistry', # Expect ToolRegistry type
-    context: Union[_ToolExecutionContext, FragmentContext] # <<< Accept either context type
-) -> Dict[str, Any]:
-    """Executa a ferramenta/skill, medindo tempo e status, e retorna resultado + métricas."""
-    log_prefix = "[Tool Executor]"
-    ctx_logger = context.logger
-    ctx_logger.info(f"[DEBUG TEST] execute_tool called with tool_name={tool_name}, action_input={action_input}, tools_dict={tools_dict}, context={type(context).__name__}")
-    start_time = time.time()
-    result_payload: Dict[str, Any] = {}
-    skill_status: str = "error"
-    skill_message: str = "Execution did not start or failed before completion."
-    # Initialize metrics with default error state
-    metrics = {
-        "duration_seconds": 0.0,
-        "status": "error", 
-        "message": "Tool execution did not proceed past initial validation."
-    }
-
-    ctx_logger.info(
-        f"{log_prefix} Attempting tool: '{tool_name}', Input: {action_input}"
-    )
-
-    # Check if the tool exists using the appropriate method if tools_dict is a ToolRegistry
-    available_tools = {}
-    if hasattr(tools_dict, 'list_tools') and callable(tools_dict.list_tools):
-        available_tools = tools_dict.list_tools() # Get the dictionary of available tools
-    elif isinstance(tools_dict, dict):
-        available_tools = tools_dict # Assume it's already a dictionary
-    else:
-        ctx_logger.error(f"{log_prefix} Invalid tools_dict type: {type(tools_dict)}")
-        result_payload = {"status": "error", "action": "invalid_tool_registry_object", "data": {"message": "Invalid tool registry object provided."}}
-        skill_message = "Invalid tool registry object provided."
-        # Return metrics along with payload
-        metrics["message"] = skill_message
-        return {"result": result_payload, "metrics": metrics}
-
-    if tool_name not in available_tools:
-        error_message = f"Tool '{tool_name}' not found in the registry."
-        ctx_logger.error(f"{log_prefix} {error_message}")
-        result_payload = {"status": "error", "action": "tool_not_found_in_registry", "data": {"message": error_message}}
-        skill_message = error_message
-        # Return metrics along with payload
-        metrics["message"] = skill_message
-        return {"result": result_payload, "metrics": metrics}
-
-    try:
-        # Retrieve the instance and the bound tool method using the updated ToolRegistry
-        tool_instance, tool_method = tools_dict.get_instance_and_tool(tool_name)
-
-        if not tool_method or not callable(tool_method):
-            error_message = f"Tool '{tool_name}' found but is not callable."
-            ctx_logger.error(f"{log_prefix} {error_message}")
-            result_payload = {"status": "error", "action": "tool_not_callable", "data": {"message": error_message}}
-            skill_message = error_message
-            return result_payload
-
-        # --- MODIFIED: Context Handling --- 
-        if isinstance(context, FragmentContext):
-            # If we received FragmentContext, create _ToolExecutionContext
-            ctx_logger.debug(f"{log_prefix} Received FragmentContext, creating _ToolExecutionContext.")
-            # Need to get allowed_skills from somewhere if needed by _ToolExecutionContext
-            # Placeholder: Get skills from the fragment instance if possible, else None
-            # This assumes context might have a reference to the calling fragment or its skills
-            # For now, setting allowed_skills to None as it's not directly available in FragmentContext
-            # and the original ToolExecutionContext didn't seem to reliably have it populated either.
-            effective_context = _ToolExecutionContext(
-                context.logger,
-                context.workspace_root,
-                context.llm_interface.llm_url, # Assuming llm_interface has llm_url
-                context.tool_registry,
-                context.llm_interface,
-                context.fragment_registry,
-                context.shared_task_context,
-                None, # allowed_skills - Placeholder - where should this come from?
-                tool_instance, # skill_instance - Add the instance
-                context.memory_manager # memory_manager <<< ADDED: Pass memory_manager from FragmentContext >>>
-            )
-        elif isinstance(context, _ToolExecutionContext):
-            # If we already have _ToolExecutionContext, just update skill_instance
-            ctx_logger.debug(f"{log_prefix} Received _ToolExecutionContext, replacing skill_instance.")
-            try:
-                # <<< ALSO ADD memory_manager update if needed? >>>
-                # Assuming _ToolExecutionContext already has memory_manager if created elsewhere
-                effective_context = context._replace(skill_instance=tool_instance)
-            except ValueError as e:
-                 # This should not happen now if check above works, but safety net
-                 ctx_logger.error(f"{log_prefix} Error using _replace on _ToolExecutionContext: {e}. Context: {context}")
-                 raise # Re-raise the error
-        else:
-            # Handle unexpected context type
-            error_message = f"Received unexpected context type: {type(context).__name__}"
-            ctx_logger.error(f"{log_prefix} {error_message}")
-            result_payload = {"status": "error", "action": "invalid_context_type", "data": {"message": error_message}}
-            skill_message = error_message
-            # Need to wrap result here too
-            metrics["message"] = skill_message
-            return {"result": result_payload, "metrics": metrics}
-        # --- END MODIFIED Context Handling ---
-
-        # Check if it's an async function
-        is_async = asyncio.iscoroutinefunction(tool_method)
-        sig = inspect.signature(tool_method)
-        params = sig.parameters # Get parameters from signature
-        
-        # --- REVISED Argument Passing Logic (Again) --- 
-        call_kwargs = {} # Start fresh
-        
-        # 1. Add context/ctx if expected
-        if 'context' in params:
-            call_kwargs['context'] = effective_context 
-            ctx_logger.debug(f"Adding _ToolExecutionContext as 'context' argument for {tool_name}")
-        elif 'ctx' in params:
-            call_kwargs['ctx'] = effective_context 
-            ctx_logger.debug(f"Adding _ToolExecutionContext as 'ctx' argument for {tool_name}")
-        
-        # 2. Add shared_task_context if expected and available in effective_context
-        if 'shared_task_context' in params and hasattr(effective_context, 'shared_task_context'):
-            call_kwargs['shared_task_context'] = effective_context.shared_task_context
-            ctx_logger.debug(f"Adding SharedTaskContext as 'shared_task_context' argument for {tool_name}")
-
-        # 3. Merge action_input, preferring values from action_input if keys overlap
-        #    Only add keys from action_input that are expected by the function signature.
-        original_action_input = action_input or {}
-        provided_unexpected_args = set()
-        for k, v in original_action_input.items():
-            if k in params:
-                # Overwrite context/shared_context if explicitly provided in action_input? 
-                # Generally no, context should come from the executor.
-                if k not in ('context', 'ctx', 'shared_task_context'): 
-                    call_kwargs[k] = v
-                else:
-                    ctx_logger.warning(f"{log_prefix} Ignoring '{k}' from action_input for {tool_name}; using executor-provided context.")
+# Utility function, keep outside the class or make it static
+def _parse_docstring_args(docstring: Optional[str]) -> Dict[str, str]:
+    """Parses arguments from a Python function's docstring (numpy style)."""
+    # Simple placeholder implementation - enhance as needed
+    args = {}
+    if not docstring:
+        return args
+    lines = docstring.strip().split('\n')
+    in_args_section = False
+    for line in lines:
+        line = line.strip()
+        if line.lower() in ('args:', 'arguments:', 'parameters:'):
+            in_args_section = True
+            continue
+        if in_args_section:
+            if not line or line.startswith(('---', '===')):
+                break # End of section
+            match = re.match(r"^([\w\*]+)\s*\(([^)]*)\)\s*:\s*(.*)$", line)
+            if match:
+                name, type_info, desc = match.groups()
+                args[name.strip()] = desc.strip()
             else:
-                 provided_unexpected_args.add(k)
+                # Handle lines without type info
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    name, desc = parts
+                    args[name.strip()] = desc.strip()
+    return args
 
-        if provided_unexpected_args:
-            ctx_logger.warning(f"{log_prefix} Action input provided unexpected arguments for {tool_name}: {provided_unexpected_args}. These were ignored.")
+class ToolExecutor:
+    """
+    Manages the loading and execution of skills (tools).
+    This class is intended to be instantiated and passed within the Context.
+    """
 
-        final_call_kwargs = call_kwargs # Use the carefully constructed kwargs
-        # --- END REVISED Logic --- 
+    def __init__(self, tool_registry: Any = None): # Made tool_registry optional
+        """Initializes the ToolExecutor."""
+        resolved_registry = None
+        if tool_registry:
+            # Check if the provided object looks like our ToolRegistry
+            if hasattr(tool_registry, 'get_tool') and callable(tool_registry.get_tool):
+                resolved_registry = tool_registry
+                logger.info(f"ToolExecutor initialized with provided registry: {type(tool_registry).__name__}")
+            else:
+                # Warn if an invalid object was passed, before falling back
+                logger.warning(f"Provided tool_registry ({type(tool_registry).__name__}) is invalid or lacks 'get_tool' method. Falling back to global SKILL_REGISTRY instance.")
+        
+        if not resolved_registry:
+            # Fallback to the global singleton instance
+            logger.info("No valid tool_registry provided or fallback needed. Using global SKILL_REGISTRY instance from registry_instance.py.")
+            resolved_registry = SKILL_REGISTRY # Use the imported singleton instance
+            
+            # Ensure skills are loaded into the global registry if it's empty
+            if not resolved_registry.list_tools(): 
+                logger.info("Global skill registry appears empty, attempting to load default skills...")
+                try:
+                    # TODO: Make this configurable
+                    default_skill_packages = ['a3x.skills.core', 'a3x.skills.auto_generated'] 
+                    load_all_skills(default_skill_packages)
+                    logger.info(f"Skills loaded successfully into global registry from {default_skill_packages}.")
+                    if not resolved_registry.list_tools():
+                        logger.warning("load_all_skills completed but global skill registry still seems empty.")
+                except Exception as e:
+                    logger.exception("Failed to load default skills automatically during ToolExecutor fallback initialization.")
+                    # Continuing with potentially empty registry
+            
+        # Final check on the resolved registry (should be ToolRegistry instance)
+        if not hasattr(resolved_registry, 'get_tool') or not callable(resolved_registry.get_tool):
+            # This should ideally not happen now if the singleton is imported correctly
+            logger.critical(f"Resolved tool registry ({type(resolved_registry).__name__}) lacks 'get_tool' method. ToolExecutor cannot function.")
+            raise TypeError("Valid tool registry with 'get_tool' method is required.")
+        
+        self.tool_registry = resolved_registry
+        logger.info(f"ToolExecutor successfully initialized using registry: {type(self.tool_registry).__name__}")
 
-        ctx_logger.debug(f"{log_prefix} Preparing to call {'async' if is_async else 'sync'} tool '{tool_name}'. Final Kwargs: {list(final_call_kwargs.keys())}")
+    async def execute_tool(
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any], # Renamed from action_input for clarity
+        context: Union[_ToolExecutionContext, FragmentContext, Any] # Expect Context object, allow Any for flexibility
+    ) -> Dict[str, Any]:
+        """Executa a ferramenta/skill, medindo tempo e status, e retorna resultado + métricas."""
+        log_prefix = "[Tool Executor]"
+        # Attempt to get logger from context, fallback to global logger
+        ctx_logger = getattr(context, 'logger', logger)
+        ctx_logger.info(f"{log_prefix} Executing tool '{tool_name}' with input keys: {list(tool_input.keys()) if tool_input else []}")
+        
+        start_time_overall = time.time()
+        result_payload: Dict[str, Any] = {}
+        skill_status: str = "error"
+        skill_message: str = "Execution did not start or failed before completion."
+        metrics = {
+            "duration_seconds": 0.0,
+            "status": "error",
+            "message": "Tool execution did not proceed past initial validation."
+        }
+        duration_exec = 0.0 # Initialize execution duration
 
-        # Execute the tool method
         try:
+            # Retrieve the instance and the bound tool method from the registry
+            tool_instance, tool_method = self.tool_registry.get_tool(tool_name)
+
+            if not tool_method or not callable(tool_method):
+                error_message = f"Tool '{tool_name}' found in registry but is not callable."
+                ctx_logger.error(f"{log_prefix} {error_message}")
+                skill_status = "error"
+                skill_message = error_message
+                result_payload = {"status": skill_status, "action": "tool_not_callable", "data": {"message": error_message}}
+                raise ValueError(error_message) # Raise to go to finally block
+
+            # --- Context Handling --- 
+            # Determine the effective context to pass to the skill
+            effective_context = context # Default to the received context
+            if isinstance(context, FragmentContext):
+                # Convert FragmentContext to _ToolExecutionContext if possible
+                try:
+                    effective_context = _ToolExecutionContext(
+                        context.logger,
+                        context.workspace_root,
+                        getattr(context.llm_interface, 'llm_url', None), 
+                        self.tool_registry, 
+                        context.llm_interface,
+                        context.fragment_registry,
+                        context.shared_task_context,
+                        None, # allowed_skills - Placeholder
+                        tool_instance, 
+                        context.memory_manager 
+                    )
+                except AttributeError as ae:
+                    ctx_logger.warning(f"Could not fully create _ToolExecutionContext from FragmentContext: {ae}. Passing FragmentContext directly.")
+                    effective_context = context # Pass original if conversion fails
+            elif isinstance(context, _ToolExecutionContext):
+                # Ensure skill_instance is set correctly
+                try:
+                    effective_context = context._replace(skill_instance=tool_instance)
+                except AttributeError:
+                    ctx_logger.warning("Could not use _replace on _ToolExecutionContext. Passing original context.")
+                    effective_context = context
+            else:
+                # If it's neither, pass it as is, the skill must handle it
+                ctx_logger.warning(f"ToolExecutor received unexpected context type: {type(context).__name__}. Passing it directly to the skill.")
+                effective_context = context
+            # --- End Context Handling ---
+
+            # Check if it's an async function
+            is_async = asyncio.iscoroutinefunction(tool_method)
+            sig = inspect.signature(tool_method)
+            params = sig.parameters
+
+            # --- Argument Passing Logic --- 
+            call_kwargs = {} 
+            
+            # 1. Add context/ctx if the skill expects it
+            #    Prefer passing the derived 'effective_context' if it matches the expected type hint, otherwise pass the original context.
+            if 'context' in params:
+                # Check type hint if available
+                param_type = params['context'].annotation
+                if param_type is inspect.Parameter.empty or isinstance(effective_context, param_type):
+                    call_kwargs['context'] = effective_context 
+                else:
+                    ctx_logger.debug(f"Passing original context to 'context' param due to type mismatch (Expected: {param_type}, Got: {type(effective_context)}).")
+                    call_kwargs['context'] = context # Pass original context if type hint doesn't match effective_context
+            elif 'ctx' in params:
+                param_type = params['ctx'].annotation
+                if param_type is inspect.Parameter.empty or isinstance(effective_context, param_type):
+                    call_kwargs['ctx'] = effective_context
+                else:
+                    ctx_logger.debug(f"Passing original context to 'ctx' param due to type mismatch (Expected: {param_type}, Got: {type(effective_context)}).")
+                    call_kwargs['ctx'] = context
+            
+            # 2. Add shared_task_context if expected and available
+            if 'shared_task_context' in params and hasattr(effective_context, 'shared_task_context') and effective_context.shared_task_context is not None:
+                call_kwargs['shared_task_context'] = effective_context.shared_task_context
+
+            # 3. Add arguments from tool_input
+            original_tool_input = tool_input or {}
+            provided_unexpected_args = set()
+            for k, v in original_tool_input.items():
+                if k in params:
+                    # Avoid overwriting context arguments passed explicitly above
+                    if k not in ('context', 'ctx', 'shared_task_context'): 
+                        call_kwargs[k] = v
+                    # Do not warn if context keys are present, they are just ignored from input
+                else:
+                    provided_unexpected_args.add(k)
+
+            if provided_unexpected_args:
+                ctx_logger.warning(f"{log_prefix} Tool input provided unexpected arguments for {tool_name}: {provided_unexpected_args}. These were ignored.")
+            # --- End Argument Passing Logic ---
+
+            ctx_logger.debug(f"{log_prefix} Preparing to call {'async' if is_async else 'sync'} tool '{tool_name}'. Final Kwargs: {list(call_kwargs.keys())}")
+
+            # --- Execute the tool method --- 
             start_time_exec = time.monotonic()
+            # --- Notify Tool Execution Start --- << HOOK >>
+            notify_tool_execution_start(tool_name, call_kwargs, source="ToolExecutor")
+            # ----------------------------------
             if is_async:
                 ctx_logger.debug(f"{log_prefix} Awaiting async tool '{tool_name}'")
-                # >>> Use final_call_kwargs <<< 
-                result = await tool_method(**final_call_kwargs)
+                result = await tool_method(**call_kwargs)
             else:
                 ctx_logger.debug(f"{log_prefix} Calling sync tool '{tool_name}'")
-                # >>> Use final_call_kwargs <<< 
-                result = tool_method(**final_call_kwargs)
+                result = tool_method(**call_kwargs)
             
             end_time_exec = time.monotonic()
             duration_exec = end_time_exec - start_time_exec
             ctx_logger.info(f"{log_prefix} Tool '{tool_name}' executed successfully in {duration_exec:.4f}s.")
 
-            # Process result
+            # --- Process result --- 
             if isinstance(result, dict) and 'status' in result:
                 skill_status = result.get('status', 'unknown')
                 if skill_status != "success":
@@ -206,82 +252,40 @@ async def execute_tool(
                 result_payload = {"status": skill_status, "data": result} # Wrap non-dict results
 
         except Exception as e:
+            # This block catches errors during tool lookup or execution
             end_time_exec = time.monotonic()
-            duration_exec = end_time_exec - start_time_exec
-            ctx_logger.exception(f"{log_prefix} Error executing tool '{tool_name}': {e}")
+            # Use start_time_exec if it exists, otherwise overall start time for duration
+            exec_start = start_time_exec if 'start_time_exec' in locals() else start_time_overall
+            duration_exec = end_time_exec - exec_start
+            
+            ctx_logger.exception(f"{log_prefix} Error during execution/setup for tool '{tool_name}': {e}")
             skill_status = "error"
-            skill_message = f"Execution failed: {str(e)}"
+            # Use the specific error message if available, otherwise the general one
+            skill_message = str(e) if str(e) else f"Execution failed: {type(e).__name__}"
             result_payload = {"status": skill_status, "message": skill_message}
-            # Ensure metrics reflect the execution duration even on error
+            # Set metrics based on execution error
+            # Metrics dict is defined outside the try block, update it here
+            # metrics = {
+            #     "duration_seconds": duration_exec,
+            #     "status": skill_status,
+            #     "message": skill_message[:500]
+            # }
+            # Note: No raise here, finally block will handle return
+
+        finally:
+            # Calculate final metrics regardless of success or failure point
             metrics = {
-                "duration_seconds": duration_exec,
+                "duration_seconds": duration_exec if duration_exec > 0 else time.time() - start_time_overall, # Use exec time if available, else overall
                 "status": skill_status,
-                "message": skill_message[:500]
+                "message": skill_message[:500] # Truncate long messages
             }
-            # Exit the outer try block and go to finally
-            raise # Re-raise the exception to be caught by the outer handler if needed, or just let finally run
-
-
-    except Exception as e:
-        # This block catches errors during tool lookup or initial setup
-        end_time = time.time() # Use time.time() for overall duration
-        duration = end_time - start_time
-        logger.exception(f"{log_prefix} Unexpected error during tool execution setup for '{tool_name}': {e}")
-        skill_status = "error"
-        skill_message = f"Tool setup failed: {str(e)}"
-        result_payload = {"status": skill_status, "message": skill_message}
-        metrics = {
-            "duration_seconds": duration, # Use overall duration for setup errors
-            "status": skill_status,
-            "message": skill_message[:500]
-        }
-        # No need to return here, let finally handle it
-
-    finally:
-        # Calculate final duration based on whether execution happened
-        if 'duration_exec' in locals(): # If execution try block was entered
-             metrics = {
-                "duration_seconds": duration_exec,
-                "status": skill_status,
-                "message": skill_message[:500]
-            }
-        else: # Setup failed before execution try block
-             metrics = {
-                "duration_seconds": time.time() - start_time, # Overall duration
-                "status": skill_status,
-                "message": skill_message[:500]
-            }
-
-        ctx_logger.info(f"{log_prefix} Completed '{tool_name}'. Status: {skill_status}, Duration: {metrics['duration_seconds']:.3f}s")
-        # --- Notify Tool Execution End --- << HOOK >>
-        final_result_for_hook = {"result": result_payload, "metrics": metrics}
-        # Ensure notify gets called even if setup failed
-        notify_tool_execution_end(tool_name, final_result_for_hook, source="ToolExecutor")
-        # ----------------------------------
-
-    # Combine result payload and metrics for the final return value
-    final_return_value = {"result": result_payload, "metrics": metrics}
-    ctx_logger.debug(f"{log_prefix} Final return value for '{tool_name}': {final_return_value}")
-    return final_return_value
-
-# Helper to parse docstrings (basic Google style)
-def _parse_docstring_args(docstring: Optional[str]) -> Dict[str, str]:
-    """Parses the Args section of a Google-style docstring."""
-    if not docstring:
-        return {}
-
-    args_section_match = re.search(r"Args:(.*?)(Returns:|Raises:|$)", docstring, re.DOTALL | re.IGNORECASE)
-    if not args_section_match:
-        return {}
-
-    args_section = args_section_match.group(1).strip()
-    args_dict = {}
-    # Regex to capture argument name and its description
-    arg_pattern = re.compile(r"^\s*([\w_]+)\s*(?:\([^)]*\))?:\s*(.*?)(?=\n\s*\w+\s*(?:\([^)]*\))?:|\Z)", re.MULTILINE | re.DOTALL)
-
-    for match in arg_pattern.finditer(args_section):
-        arg_name = match.group(1)
-        description = " ".join(match.group(2).strip().split())
-        args_dict[arg_name] = description
-
-    return args_dict
+            ctx_logger.info(f"{log_prefix} Completed '{tool_name}'. Status: {skill_status}, Duration: {metrics['duration_seconds']:.3f}s")
+            # --- Notify Tool Execution End --- << HOOK >>
+            final_result_for_hook = {"result": result_payload, "metrics": metrics}
+            notify_tool_execution_end(tool_name, final_result_for_hook, source="ToolExecutor")
+            # ----------------------------------
+            
+            ctx_logger.debug(f"{log_prefix} Final Result Payload: {result_payload}")
+            ctx_logger.debug(f"{log_prefix} Final Metrics: {metrics}")
+            # Return structure consistent with previous function
+            return {"result": result_payload, "metrics": metrics}

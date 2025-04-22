@@ -79,8 +79,8 @@ def parse_arguments():
     parser.add_argument(
         "--system-prompt-file",
         type=str,
-        default="prompts/react_system_prompt.md", # Default path relative to a3x/
-        help="Path to the system prompt file (relative to a3x directory)."
+        help="Path to the system prompt file relative to the project root.",
+        default="data/prompts/react_system_prompt.md", # UPDATED Default path
     )
     # Add log level and file args here for clarity, even if setup_logging reads config
     parser.add_argument(

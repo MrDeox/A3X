@@ -23,7 +23,7 @@ try:
     from a3x.core.skills import get_skill, SKILL_REGISTRY
     from a3x.core.tool_executor import execute_tool
     from a3x.core.llm_interface import LLMInterface
-    from a3x.training.trainer import run_qlora_finetuning
+    # from a3x.training.trainer import run_qlora_finetuning # REMOVED Import - Training is external
     from a3x.core.config import PROJECT_ROOT
 except ImportError as e:
     # Fallback or error logging if imports fail
@@ -33,7 +33,6 @@ except ImportError as e:
     SKILL_REGISTRY = {}
     execute_tool = None
     LLMInterface = None
-    run_qlora_finetuning = None
     PROJECT_ROOT = "."
 
 logger = logging.getLogger(__name__)

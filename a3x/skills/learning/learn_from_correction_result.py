@@ -19,15 +19,15 @@ logger = logging.getLogger(__name__)
         "type": "object",
         "properties": {
             "stderr": {
-                "type": "string",
+                "type": "str",
                 "description": "The standard error output from the *initial* failed sandbox execution."
             },
             "original_code": {
-                "type": "string",
+                "type": "str",
                 "description": "The code content *before* the successful correction was applied."
             },
             "corrected_code": {
-                "type": "string",
+                "type": "str",
                 "description": "The code content *after* the successful correction (which passed sandbox)."
             },
             "metadata": {

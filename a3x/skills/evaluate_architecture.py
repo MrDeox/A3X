@@ -1,14 +1,14 @@
 # a3x/skills/evaluate_architecture.py
 
 import logging
-from typing import Dict
+import json
+from typing import Dict, Any, Optional, List
 
 # Core components
 from a3x.core.skills import skill, SkillContext
 from a3x.core.llm_interface import LLMInterface
-
-# Reflection component
-from a3x.reflection.structure_reflector import StructureReflector
+from a3x.core.context import Context
+# from a3x.reflection.structure_reflector import StructureReflector # <<< COMMENTED OUT
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
         "type": "object",
         "properties": {
             "module_path": {
-                "type": "string",
+                "type": "str",
                 "description": "Caminho relativo ao root do projeto para o módulo a ser avaliado (ex: a3x/core, a3x/cli). Default: a3x",
             }
         },
@@ -48,7 +48,8 @@ async def evaluate_architecture(context: SkillContext, module_path: str = "a3x")
         return f"Error: {error_msg}"
 
     try:
-        reflector = StructureReflector(llm_interface=llm_interface)
+        # reflector = StructureReflector(llm_interface=llm_interface) # COMMENTED OUT
+        pass # Added pass to make the try block valid
     except ValueError as e:
         logger.error(f"Failed to initialize StructureReflector: {e}")
         return f"Error initializing reflector: {e}"

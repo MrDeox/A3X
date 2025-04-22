@@ -5,6 +5,7 @@ import os
 from typing import Dict, Any, Optional
 from pathlib import Path
 import datetime
+import asyncio
 
 # Ensure skill decorator and utils are imported correctly
 try:
@@ -26,8 +27,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Constants
-LEARNING_LOG_DIR = "memory/learning_logs"
+# Directory containing heuristic learning logs (now relative to project root)
+LEARNING_LOG_DIR = "data/memory/learning_logs" # UPDATED PATH
 HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics.jsonl")
 GENERALIZED_RULES_FILE = os.path.join(LEARNING_LOG_DIR, "generalized_rules.jsonl")
 DEFAULT_GENERALIZATION_THRESHOLD = 10 # Trigger generalization after N new heuristics
@@ -293,5 +294,4 @@ if __name__ == '__main__':
         print("\n--- Auto-Generalization Result (Not Met) ---")
         print(json.dumps(result_not_met, indent=2, ensure_ascii=False))
 
-    import asyncio
     asyncio.run(run_main_test()) 

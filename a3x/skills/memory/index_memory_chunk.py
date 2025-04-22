@@ -5,13 +5,15 @@ from typing import Any, List, Dict, Optional
 # A3X Core Imports
 from a3x.core.skills import skill
 from a3x.core.embeddings import get_embedding
-from a3x.core.semantic_memory_backend import add_to_index # <<< IMPORT FAISS BACKEND ADD FUNCTION
+from a3x.core.context import Context # Or specific execution context if needed
+
+# Backend functions for FAISS interaction
+from a3x.core.semantic_memory_backend import add_to_index # <<< IMPORT FAISS BACKEND - Corrected >>>
 
 logger = logging.getLogger(__name__)
 
-# Defina o caminho base para o índice FAISS aqui ou obtenha de uma configuração
-# Usando um caminho relativo ao diretório raiz do projeto (assumindo que a execução ocorre lá)
-DEFAULT_INDEX_BASE_PATH = "a3x/memory/indexes/semantic_memory"
+# Updated default path
+DEFAULT_INDEX_BASE_PATH = "data/indexes/semantic_memory"
 DEFAULT_EMBEDDING_DIM = 768 # Assumed default, should ideally come from config
 
 @skill(

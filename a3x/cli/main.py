@@ -248,7 +248,7 @@ async def main_async():
         console.print(f"[bold red]Unexpected Error:[/bold red] {main_err}")
     finally:
         logger.info("CLI execution finished. Cleaning up...")
-        close_db_connection()
+        await close_db_connection()
         logger.info("Cleanup complete. Exiting.")
 
 # --- Synchronous Entry Point --- #

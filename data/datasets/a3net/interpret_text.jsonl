@@ -1,0 +1,10 @@
+{"input": "O carro é rápido.", "label": "positivo"}
+{"input": "O livro é interessante.", "label": "positivo"}
+{"input": "O céu está azul.", "label": "positivo"}
+{"input": "O dia está ensolarado.", "label": "positivo"}
+{"input": "O tempo está frio.", "label": "negativo"}
+{"input": "A música é triste.", "label": "negativo"}
+{"input": "O filme é chato.", "label": "negativo"}
+{"input": "A comida é amarga.", "label": "negativo"}
+{"input": "O gato é fofo.", "label": "positivo"}
+{"input": "O cachorro é barulhento.", "label": "negativo"}

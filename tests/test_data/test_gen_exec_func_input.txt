@@ -1,2 +1,0 @@
-Gere um código Python que define uma função 'somar(x,y)' que retorna x+y e depois imprima o resultado de somar(70,5).
-execute o código anterior 

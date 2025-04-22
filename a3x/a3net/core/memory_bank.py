@@ -216,6 +216,73 @@ class MemoryBank:
         print(f"[MemoryBank] Listing {len(fragment_ids)} fragments currently in memory cache.")
         return fragment_ids
 
+    def delete(self, fragment_id: str, ignore_errors: bool = False) -> bool:
+        """Deletes a fragment from the cache and attempts to delete its state files.
+
+        Args:
+            fragment_id: The ID of the fragment to delete.
+            ignore_errors: If True, file deletion errors will be logged but not raised.
+
+        Returns:
+            True if deletion was successful (cache removal + file removal), False otherwise.
+        """
+        deleted_from_cache = False
+        deleted_pt = False
+        deleted_meta = False
+        overall_success = True
+
+        # 1. Remove from cache
+        if fragment_id in self.fragments:
+            del self.fragments[fragment_id]
+            deleted_from_cache = True
+            print(f"[MemoryBank] Removed fragment '{fragment_id}' from cache.")
+        else:
+            print(f"[MemoryBank] Fragment '{fragment_id}' not found in cache (may still exist on disk).")
+
+        # 2. Attempt to delete state files
+        pt_file = self._get_save_path(fragment_id, "pt")
+        meta_file = self._get_save_path(fragment_id, "meta") # Assuming .meta exists for some fragments
+
+        # Delete .pt file
+        try:
+            if pt_file.exists():
+                os.remove(pt_file)
+                deleted_pt = True
+                print(f"[MemoryBank] Deleted state file: {pt_file}")
+            else:
+                 deleted_pt = True # Consider it success if file doesn't exist
+                 print(f"[MemoryBank] State file not found (already deleted?): {pt_file}")
+        except OSError as e:
+            logger.error(f"Error deleting state file {pt_file}: {e}", exc_info=True)
+            print(f"[MemoryBank] Error deleting state file {pt_file}: {e}")
+            if not ignore_errors:
+                overall_success = False
+                # Optionally re-raise the exception if strict error handling is needed
+                # raise
+
+        # Delete .meta file (if it exists)
+        try:
+            if meta_file.exists():
+                os.remove(meta_file)
+                deleted_meta = True
+                print(f"[MemoryBank] Deleted meta file: {meta_file}")
+            else:
+                deleted_meta = True # Consider success if file doesn't exist
+        except OSError as e:
+            logger.error(f"Error deleting meta file {meta_file}: {e}", exc_info=True)
+            print(f"[MemoryBank] Error deleting meta file {meta_file}: {e}")
+            if not ignore_errors:
+                 overall_success = False
+
+        # Final success depends on cache removal and file deletion (unless ignored)
+        final_success = (deleted_from_cache or not self.exists(fragment_id)) and overall_success
+        if final_success:
+            print(f"[MemoryBank] Successfully deleted fragment '{fragment_id}'.")
+        else:
+             print(f"[MemoryBank] Deletion of fragment '{fragment_id}' partially failed (check logs). Cache removed: {deleted_from_cache}, PT deleted: {deleted_pt}, Meta deleted: {deleted_meta}")
+
+        return final_success
+
     def __len__(self) -> int:
         """Returns the number of fragments currently cached in memory."""
         return len(self.fragments)

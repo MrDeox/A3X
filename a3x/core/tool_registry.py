@@ -1,132 +1,117 @@
-from typing import Dict, Callable, Any, Awaitable, List, Tuple, Optional
+from typing import Dict, Callable, Any, Awaitable, List, Tuple, Optional, Union
 import logging
 import inspect # Added for potential future use in schema generation/validation
 
 logger = logging.getLogger(__name__)
 
 # Define a type alias for clarity
-# The callable is the bound method (instance.method)
-ToolInfo = Tuple[Optional[Any], Callable[..., Awaitable[Any]]]  # (instance, bound_method)
+# The callable is the bound method (instance.method) OR a standalone function
+ToolFunc = Callable[..., Union[Any, Awaitable[Any]]]
+ToolInfo = Tuple[Optional[Any], ToolFunc]  # (instance, tool_function)
 
-# Define a type alias for the tool schema dictionary
-ToolSchema = Dict[str, Any] # Example: {"name": str, "description": str, "parameters": {"type": "object", ...}}
+# Define a type alias for the structured tool schema dictionary expected by register_tool
+# ToolSchema = Dict[str, Any] # Example: {"name": str, "description": str, "parameters": {"type": "object", ...}, "required": ["param1"]}
 
 class ToolRegistry:
     """
-    A registry for managing tools and skills available to Fragments in the A³X system.
-    Stores the instance, the bound method, and the JSON schema for each tool.
+    A registry for managing tools (skills) available to Fragments/Agents.
+    Stores the instance, the function/method, and schema details for each tool.
     """
     def __init__(self):
-        # Stores {tool_name: (instance, bound_method)}
+        # Stores {tool_name: (instance, tool_function)}
         self._tools: Dict[str, ToolInfo] = {}
-        # Stores {tool_name: tool_schema_dict}
-        self._tool_schemas: Dict[str, ToolSchema] = {}
+        # Stores {tool_name: structured_tool_schema_dict}
+        self._tool_schemas: Dict[str, Dict[str, Any]] = {}
         logger.info("ToolRegistry initialized.")
 
     def register_tool(
         self,
-        name: str,
-        instance: Optional[Any], # The skill instance
-        tool: Callable[..., Awaitable[Any]], # The bound method
-        schema: ToolSchema # The JSON schema for the tool
+        name: str, # Explicit name for lookup
+        instance: Optional[Any], # The skill instance (None for functions)
+        tool: ToolFunc, # The function or bound method
+        schema: Dict[str, Any] # The structured schema dict {"name": ..., "description": ..., "parameters": ...}
     ) -> None:
         """
-        Registers a new tool (bound method) associated with its instance and schema.
+        Registers a new tool (function or bound method) associated with its instance and schema.
         
         Args:
-            name: The unique name of the tool (should match schema['name']).
-            instance: The instance of the class containing the tool method. Can be None for static/class methods.
-            tool: The callable representing the bound tool method (e.g., instance.method).
-            schema: A dictionary representing the JSON schema of the tool's parameters and description.
-                      Must contain at least 'name' and 'description' keys.
+            name: The unique name for lookup (should match schema['name']).
+            instance: The instance of the class containing the tool method. None for functions.
+            tool: The callable representing the tool function or method.
+            schema: A dictionary representing the tool's schema, MUST contain
+                    at least 'name' and 'description' keys. 'parameters' dict is expected.
         """
         if not callable(tool):
             logger.error(f"Attempted to register non-callable tool for '{name}'. Type: {type(tool)}")
             raise ValueError(f"Tool provided for '{name}' must be callable.")
         
+        # <<< MODIFIED VALIDATION: Check schema dict structure >>>
         if not isinstance(schema, dict) or 'name' not in schema or 'description' not in schema:
-            logger.error(f"Invalid or incomplete schema provided for tool '{name}'. Schema: {schema}")
-            raise ValueError(f"Schema for tool '{name}' must be a dictionary containing at least 'name' and 'description'.")
+            logger.error(f"Invalid or incomplete schema dictionary provided for tool '{name}'. Schema: {schema}")
+            raise ValueError(f"Schema for tool '{name}' must be a dictionary containing at least 'name' and 'description' keys.")
 
-        if schema['name'] != name:
-             logger.warning(f"Schema name '{schema['name']}' does not match registration name '{name}'. Using registration name.")
-             # Optionally enforce schema['name'] == name? For now, allow discrepancy but use registration name.
+        # Validate consistency between lookup name and schema name
+        schema_name = schema['name']
+        if schema_name != name:
+             logger.warning(f"Schema name '{schema_name}' inside schema dict does not match registration lookup name '{name}'. Using lookup name '{name}' for registration.")
+             # Optionally: raise ValueError("Registration name must match schema name.")
 
+        # Ensure parameters is a dict if present
+        if 'parameters' in schema and not isinstance(schema['parameters'], dict):
+            logger.error(f"Schema for tool '{name}' contains 'parameters' but it is not a dictionary. Schema: {schema}")
+            raise ValueError(f"The 'parameters' key in the schema for tool '{name}' must be a dictionary.")
+
+        # <<< Store the info using the lookup name >>>
         self._tools[name] = (instance, tool)
-        self._tool_schemas[name] = schema # Store the full schema
-        logger.info(f"Tool '{name}' registered (Instance: {type(instance).__name__ if instance else 'None'}). Schema keys: {list(schema.keys())}")
+        self._tool_schemas[name] = schema # Store the whole structured schema dict
+        logger.info(f"Tool '{name}' registered (Instance: {type(instance).__name__ if instance else 'Function'}). Schema keys: {list(schema.keys())}")
+        # <<< END MODIFIED STORAGE >>>
 
-    def get_tool(self, name: str) -> Callable[..., Awaitable[Any]]:
+    def get_tool(self, name: str) -> ToolInfo:
         """
-        Retrieves the callable tool (bound method) by its name.
+        Retrieves the tuple (instance, tool_function) by its registration name.
         
         Args:
-            name: The name of the tool to retrieve.
+            name: The registration name of the tool.
         
         Returns:
-            The callable bound tool method if found, otherwise raises a KeyError.
+            A tuple (instance, tool_function) if found, otherwise raises KeyError.
         """
         if name not in self._tools:
             logger.error(f"Tool '{name}' not found in registry.")
             raise KeyError(f"Tool '{name}' not found.")
-        instance, tool_method = self._tools[name]
-        return tool_method
+        return self._tools[name] # Return the tuple directly
 
-    def get_instance_and_tool(self, name: str) -> ToolInfo:
+    def get_tool_schema(self, name: str) -> Optional[Dict[str, Any]]:
         """
-        Retrieves the instance and the callable tool (bound method) by its name.
+        Retrieves the full structured schema dictionary for a tool by its name.
         
         Args:
-            name: The name of the tool to retrieve.
-            
+            name: The registration name of the tool.
+        
         Returns:
-            A tuple (instance, bound_method) if found, otherwise raises a KeyError.
+            The schema dictionary {"name": ..., "description": ..., "parameters": ...} if found, otherwise None.
         """
-        if name not in self._tools:
-            logger.error(f"Tool '{name}' not found in registry.")
-            raise KeyError(f"Tool '{name}' not found.")
-        # Directly return the stored tuple
-        return self._tools[name]
+        schema_info = self._tool_schemas.get(name)
+        if not schema_info:
+            logger.warning(f"Schema details for tool '{name}' not found in registry.")
+        return schema_info
 
-    def get_tool_details(self, name: str) -> Optional[ToolSchema]:
+    def list_tools(self) -> List[Dict[str, Any]]: # Return list of schemas
         """
-        Retrieves the full schema dictionary for a tool by its name.
-        
-        Args:
-            name: The name of the tool.
+        Lists all registered tools by returning their structured schema dictionaries.
         
         Returns:
-            The schema dictionary if the tool is found, otherwise None.
+            A list of schema dictionaries {"name": ..., "description": ..., "parameters": ...}.
         """
-        details = self._tool_schemas.get(name)
-        if not details:
-            logger.warning(f"Details (schema) for tool '{name}' not found in registry.")
-        return details
+        return list(self._tool_schemas.values())
 
-    def get_tools_by_capability(self, capability: str) -> List[Callable[..., Awaitable[Any]]]:
-        """
-        Retrieves a list of tools (bound methods) that match a given capability based on their descriptions within the schema.
-        
-        Args:
-            capability: The capability or keyword to search for in tool descriptions.
-        
-        Returns:
-            A list of callable bound tool methods that match the capability.
-        """
-        matching_tools = []
-        for name, schema in self._tool_schemas.items():
-            description = schema.get("description", "") # Safely get description from schema
-            if capability.lower() in description.lower():
-                instance, tool_method = self._tools[name]
-                matching_tools.append(tool_method)
-        logger.info(f"Found {len(matching_tools)} tools matching capability '{capability}'.")
-        return matching_tools
+    # <<< REMOVED get_tools_by_capability - description is in the schema now >>>
+    # def get_tools_by_capability(self, capability: str) -> List[ToolFunc]:
+    #     ...
 
-    def list_tools(self) -> Dict[str, ToolSchema]:
-        """
-        Lists all registered tools with their full schemas.
-        
-        Returns:
-            A dictionary mapping tool names to their schema dictionaries.
-        """
-        return self._tool_schemas.copy() 
+    # def get_instance_and_tool(self, name: str) -> ToolInfo:
+    #     ...
+
+    # def get_tool_details(self, name: str) -> Optional[ToolSchema]:
+    #     ... 

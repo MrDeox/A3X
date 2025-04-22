@@ -1,0 +1,10 @@
+{"input": "A grama é verde.", "label": "Natureza"}
+{"input": "O rio corre rápido.", "label": "Natureza"}
+{"input": "A comida é deliciosa.", "label": "Objetos"}
+{"input": "A casa é grande.", "label": "Objetos"}
+{"input": "A música é alegre.", "label": "Arte"}
+{"input": "O céu está azul.", "label": "Natureza"}
+{"input": "O sol brilha forte.", "label": "Natureza"}
+{"input": "O computador é rápido.", "label": "Objetos"}
+{"input": "O carro é vermelho.", "label": "Objetos"}
+{"input": "O livro é interessante.", "label": "Objetos"}

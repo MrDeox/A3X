@@ -5,14 +5,16 @@ from typing import Dict, Any, List, Optional
 from a3x.core.skills import skill
 # Import the class and default URL, not the function
 from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
-from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE
-from a3x.core.context import Context
-from a3x.core.context import SharedTaskContext
+from a3x.core.config import LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE, ERROR_LOG_FILE
+from a3x.core.context import Context, SharedTaskContext
 import os
+from pathlib import Path
 
 reflect_logger = logging.getLogger(__name__)
 
-HEURISTIC_LOG_PATH = os.path.join(LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE)
+# Log file paths (ensure directory exists later)
+HEURISTIC_LOG_PATH = Path(LEARNING_LOGS_DIR) / HEURISTIC_LOG_FILE
+ERROR_LOG_PATH = Path(LEARNING_LOGS_DIR) / ERROR_LOG_FILE
 
 async def _log_learned_heuristic(log_entry: Dict[str, Any]):
     # (Same logging helper function as in reflect_on_success)
@@ -48,30 +50,30 @@ REFLECTION_PROMPT_TEMPLATE_FAILURE = """
 
 @skill(
     name="reflect_on_failure",
-    description="Reflete sobre uma execução falha para extrair heurísticas preventivas.",
+    description="Reflete sobre uma execução que falhou para extrair heurísticas de correção.",
     parameters={
-        "objective": {"type": str, "description": "The original objective that failed."},
-        "plan": {"type": List[str], "description": "The plan that was being executed."},
-        "execution_results": {"type": List[Dict[str, Any]], "description": "The results of each step of the plan execution."},
-        "final_task_context": {"type": Optional[SharedTaskContext], "description": "The final state of the shared task context for analysis.", "default": None}
+        "objective": {"type": str, "description": "O objetivo geral da tarefa que falhou."},
+        "failed_step": {"type": str, "description": "A descrição da ação/skill que falhou."},
+        "error_message": {"type": str, "description": "A mensagem de erro ou o resultado detalhado da falha."},
+        "plan_executed": {"type": List[str], "description": "A sequência de passos executados até a falha."},
+        "final_task_context": {"type": Optional[SharedTaskContext], "description": "The final state of the shared task context at the time of failure.", "default": None}
     }
 )
 async def reflect_on_failure(
     ctx: Context,
     objective: str,
-    plan: List[str],
-    execution_results: List[Dict[str, Any]],
+    failed_step: str,
+    error_message: str,
+    plan_executed: List[str],
     final_task_context: Optional[SharedTaskContext] = None
 ) -> Dict[str, Any]:
-    """Reflects on a failed execution to extract preventative heuristics."""
+    """Reflects on a failed execution to extract corrective heuristics."""
     reflect_logger.info(f"Reflecting on failure for objective: {objective[:100]}...")
 
     # Prepare input for the LLM
-    plan_str = "\n".join([f"- {step}" for step in plan])
+    plan_str = "\n".join([f"- {step}" for step in plan_executed])
     # Focus on the errors
-    errors_str = "\n".join([f"- Passo {i+1} ({res.get('action', 'N/A')}): Status={res.get('status')}, Erro={str(res.get('output', 'N/A'))[:100]}..." for i, res in enumerate(execution_results) if res.get('status') != 'success'])
-    if not errors_str:
-        errors_str = "(Nenhum erro detalhado registrado nos resultados)"
+    errors_str = f"- Falha no passo: {failed_step}\n- Mensagem de erro: {error_message}"
 
     # Prepare shared context summary for prompt
     context_summary = "(No shared context provided or empty)"
@@ -122,8 +124,8 @@ async def reflect_on_failure(
             log_entry = {
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z',
                 "objective": objective,
-                "plan": plan,
-                "results": execution_results,
+                "plan": plan_executed,
+                "results": [{'action': failed_step, 'status': 'failed', 'output': error_message}],
                 "heuristic": heuristic_text,
                 "type": "failure" # Mark as failure heuristic
             }

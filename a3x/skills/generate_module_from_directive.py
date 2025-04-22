@@ -1,6 +1,6 @@
 # LLM desativado. Este fragmento não deve mais acessar modelos. Toda cognição é feita pelo A³Net.
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from a3x.core.skills import skill
 from a3x.core.context import Context
@@ -9,26 +9,22 @@ logger = logging.getLogger(__name__)
 
 @skill(
     name="generate_module_from_directive",
-    description="Generates the content of a new Python module based on an architectural directive.",
+    description="Generates Python module code based on a specific directive or task description.",
     parameters={
-        "message": {
-            "type": "string",
-            "description": "Architectural directive describing the module's purpose and content (e.g., 'Separate parsing functions into cli_parsing.py')."
-        },
-        "target_path": {
-            "type": "string",
-            "description": "The suggested file path for the new module (e.g., 'a3x/cli/cli_parsing.py')."
-        },
-    },
+        "directive": {"type": str, "description": "Clear, concise description of the desired module's functionality and goals."},
+        "target_path": {"type": str, "description": "Target file path for the generated module (e.g., 'a3x/utils/log_parser.py')."},
+        "example_code": {"type": str, "optional": True, "description": "Optional example code snippet to guide generation."}
+    }
 )
-async def generate_module_from_directive(context: Context, message: str, target_path: str) -> Dict[str, Any]:
+async def generate_module_from_directive(context: Context, directive: str, target_path: str, example_code: Optional[str] = None) -> Dict[str, Any]:
     """
     Generates Python code for a new module based on a directive using an LLM.
 
     Args:
         context: The Context containing the LLM interface and other resources.
-        message: The architectural directive.
+        directive: The architectural directive.
         target_path: The target path for the new module file.
+        example_code: Optional example code snippet.
 
     Returns:
         A dictionary containing the status, path, and generated content.
@@ -40,8 +36,9 @@ async def generate_module_from_directive(context: Context, message: str, target_
     prompt_template = f"""
     Objective: Generate the complete Python code content for a new module based on the following architectural directive.
 
-    Directive: {message}
+    Directive: {directive}
     Suggested Path: {target_path}
+    Optional Example Code Hint: {example_code or 'None'}
 
     Instructions:
     1. Generate the full Python code for the file specified by the Suggested Path.
@@ -57,7 +54,7 @@ async def generate_module_from_directive(context: Context, message: str, target_
     """
 
     try:
-        logger.info(f"Generating module content for directive: '{message}' (Target: {target_path})")
+        logger.info(f"Generating module content for directive: '{directive}' (Target: {target_path})")
         # Use non-streaming call to get the full content at once
         # response_content = ""
         # async for chunk in context.llm_interface.call_llm(
@@ -70,7 +67,7 @@ async def generate_module_from_directive(context: Context, message: str, target_
         logger.error("Direct LLM call in generate_module_from_directive is deprecated. Refactor needed.")
         return {"status": "error", "reason": "Direct LLM call in skill is deprecated. Use A3L command via A3Net."}
         # --- End Refactoring ---
-        
+
         # Basic validation (can be improved)
         # if not response_content or not response_content.strip():
         #      logger.warning("LLM returned empty content for module generation.")

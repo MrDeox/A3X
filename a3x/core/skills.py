@@ -5,10 +5,11 @@ import logging
 import importlib
 import inspect
 import pkgutil  # <<< ADDED IMPORT >>>
-from typing import Dict, Any, Callable, Optional, Union
+from typing import Dict, Any, Callable, Optional, Union, Type, List, get_origin, get_args # Added List, get_origin, get_args
 from pydantic import BaseModel, create_model, ConfigDict # <<< ADDED ConfigDict >>>
 from collections import namedtuple
 from pathlib import Path
+from pydantic import PydanticUserError # Import the specific error
 
 # Initialize logger before potentially using it in print statements
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ SkillContext = namedtuple(
     ["logger", "llm_call", "is_test", "workspace_root", "task"]
 )
 
-# <<< ADD LOG HERE >>>
+# <<< LOG HERE >>>
 print(f"\n*** Executing module: a3x.core.skills (ID: {id(sys.modules.get('a3x.core.skills'))}) ***\n")
 
 # <<< START PROJECT ROOT PATH CORRECTION >>>
@@ -47,8 +48,15 @@ del _current_file_dir
 # Keep 'project_root' as it might be useful elsewhere in this module, like in load_skills
 # <<< END PROJECT ROOT PATH CORRECTION >>>
 
-# <<< IMPORT SKILL_REGISTRY from skill_management >>>
-from a3x.core.skill_management import SKILL_REGISTRY
+# <<< IMPORT ToolRegistry for type hint >>>
+from .tool_registry import ToolRegistry, ToolInfo
+# <<< IMPORT the singleton instance >>>
+from .registry_instance import SKILL_REGISTRY
+# <<< ADDED IMPORT for BaseFragment needed by model_rebuild >>>
+from a3x.fragments.base import BaseFragment
+
+# <<< REMOVED: Instantiation moved to registry_instance.py >>>
+# SKILL_REGISTRY = ToolRegistry()
 
 # --- Novo Registro de Skills e Decorador ---
 
@@ -134,8 +142,8 @@ def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
 
 
         # Create Pydantic schema dynamically
-        pydantic_fields = {}
-        param_details_for_registry = {} # Store details for SKILL_REGISTRY
+        pydantic_fields: Dict[str, tuple[Type[Any], Any]] = {} # Type hint for clarity
+        # param_details_for_registry = {} # No longer needed for separate storage
 
         # <<< REVISED SCHEMA GENERATION LOGIC (handle direct dict vs. schema object) >>>
         params_to_process = {}
@@ -163,14 +171,14 @@ def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
             param_default_value = param_config.get("default", ...) if not is_optional else param_config.get("default", None)
 
             # Store details for the registry
-            param_details_for_registry[param_name] = {
-                 "type_obj": param_type,
-                 "type_str": str(param_type.__name__) if hasattr(param_type, '__name__') else str(param_type),
-                 "required": param_default_value is ... and not is_optional,
-                 "default": None if (param_default_value is ...) else param_default_value, # Store None if required, else the default
-                 "description": param_desc,
-                 "optional_flag": is_optional # Store the explicit optional flag
-            }
+            # param_details_for_registry[param_name] = {
+            #      "type_obj": param_type,
+            #      "type_str": str(param_type.__name__) if hasattr(param_type, '__name__') else str(param_type),
+            #      "required": param_default_value is ... and not is_optional,
+            #      "default": None if (param_default_value is ...) else param_default_value, # Store None if required, else the default
+            #      "description": param_desc,
+            #      "optional_flag": is_optional # Store the explicit optional flag
+            # }
 
             # --- Prepare for Pydantic model --- # <-- MODIFIED BLOCK
             pydantic_type = param_type
@@ -210,6 +218,9 @@ def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
 
         # Dynamic schema name
         schema_name = f"{name.capitalize()}SkillSchema"
+        dynamic_schema: Optional[Type[BaseModel]] = None
+        json_schema_properties = {}
+        json_schema = {}
         try:
             dynamic_schema = create_model(
                 schema_name,
@@ -217,29 +228,65 @@ def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
                 __module__=func.__module__,
                 **pydantic_fields
             )
-        except Exception as e:
-            logger.error(
-                f"Failed to create Pydantic schema for skill '{name}'. Error: {e}"
-            )
-            raise TypeError(
-                f"Invalid Pydantic schema definition for skill '{name}'."
-            ) from e
+            
+            # <<< ADDED: Attempt to rebuild the model to resolve forward refs >>>
+            try:
+                dynamic_schema.model_rebuild(force=True) # Force rebuild
+                logger.debug(f"Successfully rebuilt Pydantic model for skill '{name}'.")
+            except PydanticUserError as rebuild_err:
+                # Log specific Pydantic errors during rebuild but try to continue
+                logger.warning(f"PydanticUserError during model_rebuild for skill '{name}': {rebuild_err}. Schema generation might be incomplete.")
+            except Exception as rebuild_generic_err:
+                # Catch other potential errors during rebuild
+                logger.error(f"Unexpected error during model_rebuild for skill '{name}': {rebuild_generic_err}", exc_info=True)
+                # Decide if we should raise here or try to continue
+            
+            # <<< Generate JSON schema AFTER rebuild attempt >>>
+            json_schema = dynamic_schema.model_json_schema()
+            json_schema_properties = json_schema.get('properties', {})
 
-        # Register the skill
-        SKILL_REGISTRY[name] = {
-            "function": func,
+        except Exception as e:
+            # This catches errors during create_model primarily
+            logger.error(f"Failed to create Pydantic/JSON schema for skill '{name}'. Error: {e}")
+            raise TypeError(f"Invalid Pydantic schema definition for skill '{name}'.") from e
+
+        # <<< MODIFIED: Use SKILL_REGISTRY.register_tool with explicit dict >>>
+        instance = None # Assume function
+        # TODO: Add logic to detect if func belongs to a class
+
+        takes_context = False
+        if func_params:
+            first_param_name = next(iter(func_params))
+            first_param = func_params[first_param_name]
+            if first_param_name in ['ctx', 'context'] or first_param.annotation is SkillContext:
+                 takes_context = True
+                 logger.debug(f"Skill '{name}' identified as context-aware.")
+
+        # Create the schema dictionary expected by ToolRegistry.register_tool
+        tool_schema_for_registry = {
+            "name": name,
             "description": description,
-            # <<< Store the NEW parameter config in registry >>>
-            "parameters": param_details_for_registry, # Store the processed details
-            "schema": dynamic_schema,
-            "takes_memory": "agent_memory" in func_params, # Check original signature
-            "takes_history": "agent_history" in func_params # Check original signature
+            "parameters": json_schema_properties # Pass only the properties
+            # Add other top-level schema info if needed, e.g., required fields:
+            # "required": list(dynamic_schema.model_fields_set) if dynamic_schema else [] 
+            # Or get required fields from the generated json_schema dict if preferred
         }
+        # Add optional 'required' list from JSON schema if available
+        if dynamic_schema and 'required' in json_schema:
+             tool_schema_for_registry['required'] = json_schema['required']
+
+        # Register using the correct method and the structured dictionary
+        SKILL_REGISTRY.register_tool(
+            name=name, # Pass name separately for potential validation/lookup
+            instance=instance,
+            tool=func,
+            schema=tool_schema_for_registry # Pass the structured dict
+        )
+        # <<< END MODIFIED REGISTRATION >>>
+
         logger.info(f"Successfully registered skill: {name}")
-        # Adiciona atributos ao método decorado para inspeção posterior
         func._skill_name = name
         func._skill_description = description
-        func._skill_parameters = parameters
         return func
 
     return decorator
@@ -247,72 +294,71 @@ def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
 
 # <<< RENOMEADO: Função para carregar um único pacote de skills >>>
 def _load_single_skill_package(skill_package_name: str):
-    """
-    Carrega ou recarrega dinamicamente UM PACOTE de skills e todos os seus
-    submódulos para garantir que os decoradores @skill sejam executados
-    e registrem as skills. Modifica SKILL_REGISTRY diretamente.
-
-    Args:
-        skill_package_name (str): O nome do pacote Python para as skills (ex: 'a3x.skills').
-    """
-    logger.info(f"Attempting to load/reload skills from single package: {skill_package_name}")
-
-    # Garantir que a raiz do projeto esteja no path
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-        logger.debug(f"Added {project_root} to sys.path")
-
-    count_before = len(SKILL_REGISTRY)
-    module = None # Initialize module variable
-
+    """Loads skills from all modules within a specified package."""
     try:
-        # 1. Load or Reload the main package
+        if not all(part.isidentifier() for part in skill_package_name.split('.')):
+            logger.error(f"Invalid skill package name: {skill_package_name}")
+            return
+
+        count_before = len(SKILL_REGISTRY.list_tools())
+
+        spec = importlib.util.find_spec(skill_package_name)
+
+        # <<< REMOVED RELOAD LOGIC - Only import >>>
+        if spec is None:
+            logger.warning(f"Could not find skill package '{skill_package_name}'. Skipping.")
+            return
+            
+        # Check if already imported (simplest way to avoid re-running module code)
         if skill_package_name in sys.modules:
-            logger.info(f"Reloading existing skills package: {skill_package_name}")
-            module = importlib.reload(sys.modules[skill_package_name])
+             logger.info(f"Skills package '{skill_package_name}' already imported. Skipping module re-execution.")
+             # NOTE: This assumes skills register on first import via @skill decorator.
+             # If re-registration or updates are needed, a different mechanism
+             # than simple import/reload is required.
+             return # Skip walking and importing modules again
         else:
             logger.info(f"Importing skills package for the first time: {skill_package_name}")
-            module = importlib.import_module(skill_package_name)
+            # Try importing the top-level package itself first
+            try:
+                 module = importlib.import_module(skill_package_name)
+                 # Now iterate through its modules if it's a package
+                 if spec.submodule_search_locations:
+                     package_path = spec.submodule_search_locations[0]
+                     logger.debug(f"Walking package: {skill_package_name} at {package_path}")
+                     for _, module_name, is_pkg in pkgutil.iter_modules([package_path]):
+                         full_module_name = f"{skill_package_name}.{module_name}"
+                         if is_pkg:
+                              # Optionally recurse into sub-packages
+                              logger.debug(f"Found sub-package '{full_module_name}', loading recursively...")
+                              _load_single_skill_package(full_module_name) # Recursive call
+                         else:
+                             if full_module_name not in sys.modules:
+                                 try:
+                                     logger.debug(f"---> Importing submodule: {full_module_name}")
+                                     importlib.import_module(full_module_name)
+                                     logger.debug(f"<--- Imported submodule: {full_module_name}")
+                                 except ImportError as e:
+                                     logger.error(f"Failed to import skill submodule '{full_module_name}': {e}", exc_info=True)
+                                 except Exception as e:
+                                     logger.error(f"Error loading submodule '{full_module_name}': {e}", exc_info=True)
+                             else:
+                                 logger.debug(f"Submodule '{full_module_name}' already imported. Skipping.")
+                 else:
+                     logger.debug(f"'{skill_package_name}' is a single module, not a package. Skills loaded (if any)." )
 
-        # 2. Explicitly walk and import/re-import submodules to ensure decorators run
-        package_paths = getattr(module, '__path__', None)
-        if not package_paths:
-             logger.warning(f"'{skill_package_name}' does not appear to be a package (missing __path__). Cannot discover submodules.")
-             # If it's not a package but a single module file with skills?
-             # This scenario is less common for organizing multiple skills.
-             # If needed, one could inspect the module directly here.
-        else:
-            logger.debug(f"Walking package path(s) to discover skill modules: {package_paths}")
-            prefix = module.__name__ + '.'
-            # <<< MODIFIED: Add more robust error handling and logging during walk >>>
-            for importer, modname, ispkg in pkgutil.walk_packages(package_paths, prefix, onerror=lambda name: logger.warning(f"Error accessing module {name} during walk_packages")):
-                logger.info(f"---> Attempting to import skill module: {modname} (is_pkg={ispkg})") # Log processing start
-                try:
-                    if modname not in sys.modules:
-                        logger.debug(f"---> Importing new module: {modname}")
-                        imported_module = importlib.import_module(modname)
-                        logger.info(f"---> Successfully imported skill module: {modname}")
-                    elif not ispkg: # Only reload modules, not packages themselves again
-                        logger.debug(f"---> Reloading existing module: {modname}")
-                        reloaded_module = importlib.reload(sys.modules[modname])
-                        logger.info(f"---> Successfully reloaded skill module: {modname}")
-                    else:
-                        logger.debug(f"---> Skipping package: {modname}")
-                except Exception as e_mod:
-                    # Log specific error for the module that failed
-                    logger.error(f"Failed to import/reload skill module '{modname}'. Error: {e_mod}", exc_info=True)
-                    # Continue loading other modules
-            # <<< END MODIFICATION >>>
+            except ImportError as e:
+                logger.error(f"Failed to import skill package/module '{skill_package_name}': {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Error during skill loading process for '{skill_package_name}':", exc_info=True)
 
+        # <<< END REMOVED RELOAD LOGIC >>>
 
-        count_after = len(SKILL_REGISTRY)
+        count_after = len(SKILL_REGISTRY.list_tools())
         newly_registered = count_after - count_before
-        logger.info(
-            f"Finished processing package '{skill_package_name}'. Newly registered in this pass: {newly_registered}. Total registry now: {count_after}"
-        )
+        logger.info(f"Finished processing package '{skill_package_name}'. Newly registered: {newly_registered}. Total in registry: {count_after}")
+
     except Exception as e:
-        logger.exception(f"Error occurred during skill loading process for '{skill_package_name}':")
-        # Não retornar aqui, pois queremos que a função principal continue com outros pacotes
+        logger.error(f"Unexpected error in _load_single_skill_package for '{skill_package_name}': {e}", exc_info=True)
 
 # <<< NOVA FUNÇÃO: Para carregar skills de MÚLTIPLOS pacotes >>>
 def load_all_skills(skill_package_list: list[str]) -> Dict[str, Dict[str, Any]]:
@@ -327,14 +373,14 @@ def load_all_skills(skill_package_list: list[str]) -> Dict[str, Dict[str, Any]]:
         Dict[str, Dict[str, Any]]: The final skill registry after loading all packages.
     """
     logger.info(f"Loading skills from multiple packages: {skill_package_list}")
-    initial_count = len(SKILL_REGISTRY)
+    initial_count = len(SKILL_REGISTRY.list_tools())
 
     for package_name in skill_package_list:
         logger.debug(f"--->>> About to load package: {package_name}") # Log antes
         _load_single_skill_package(package_name)
         logger.debug(f"--->>> Finished loading package: {package_name}") # Log depois
 
-    final_count = len(SKILL_REGISTRY)
+    final_count = len(SKILL_REGISTRY.list_tools())
     total_new = final_count - initial_count
     logger.info(f"Finished loading all skill packages. Total newly registered: {total_new}. Final registry size: {final_count}")
     logger.debug(f"--->>> Returning final SKILL_REGISTRY from load_all_skills (size: {final_count})") # Log antes de retornar
@@ -344,19 +390,9 @@ def load_all_skills(skill_package_list: list[str]) -> Dict[str, Dict[str, Any]]:
 # --- Funções para acessar informações das Skills ---
 
 
-def get_skill_registry() -> Dict[str, Dict[str, Any]]:
-    """Retorna o registro completo das skills carregadas."""
-    # Garante que as skills foram carregadas pelo menos uma vez
-    # Chamada explícita de load_skills é preferível no ponto de entrada da aplicação (ex: Agent.__init__)
-    # para controlar quando o carregamento ocorre. Remover o carregamento automático daqui.
-    # <<< REMOVED Implicit Load Block >>>
-    # # Se o registro estiver vazio, TENTAR carregar (útil para testes ou execuções diretas)
-    # if not SKILL_REGISTRY:
-    #     logger.warning(
-    #         "Skill registry accessed while empty. Attempting to load skills implicitly."
-    #     )
-    #     load_skills()
-
+def get_skill_registry() -> ToolRegistry:
+    """Returns the global skill registry instance."""
+    # Returns the imported singleton instance
     return SKILL_REGISTRY
 
 
@@ -365,7 +401,9 @@ def get_skill_descriptions() -> str:
     Retorna uma string formatada descrevendo todas as skills registradas,
     incluindo seus parâmetros e suas descrições do docstring.
     """
-    if not SKILL_REGISTRY:
+    tools = SKILL_REGISTRY.list_tools() # Use the imported instance
+
+    if not tools:
         return "No skills are currently registered."
 
     descriptions = []
@@ -444,23 +482,18 @@ def get_skill_descriptions() -> str:
     return "\n".join(descriptions)
 
 
-def get_skill(skill_name: str) -> Optional[Dict[str, Any]]:
-    """Retorna a informação registrada para uma ferramenta específica (skill)."""
-    registry = get_skill_registry()  # Garante que o registro está acessível
-    # Tenta carregar se vazio e a ferramenta não for encontrada
-    if skill_name not in registry and not SKILL_REGISTRY:
-        logger.warning(
-            f"Skill '{skill_name}' not found in empty registry. Attempting to load skills."
-        )
-        load_skills()
-        registry = get_skill_registry()  # Tenta novamente
-
-    skill_info = registry.get(skill_name)
-    if not skill_info:
+def get_skill(skill_name: str) -> Optional[ToolInfo]:
+    """
+    Retrieves the details (ToolInfo) for a specific skill by name.
+    """
+    try:
+        # Use the imported instance
+        return SKILL_REGISTRY.get_tool(skill_name)
+    except KeyError:
         logger.warning(
             f"Skill '{skill_name}' not found in registry even after attempting load."
         )
-    return skill_info
+        return None
 
 
 # É crucial chamar load_skills() no ponto de entrada principal da aplicação

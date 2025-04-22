@@ -38,13 +38,13 @@ def register_missing_skill_heuristic(skill_name: str, context: dict = None):
     description="Orquestra a fase pós-execução completa: reflexão, aprendizado baseado no resultado (sucesso/falha), generalização e consolidação de heurísticas.",
     parameters={
         "objective": {"type": "str", "description": "Objetivo original que iniciou o ciclo"},
-        "plan": {"type": "list", "description": "Plano que foi executado"},
-        "execution_results": {"type": "list", "description": "Lista de dicionários com resultados de cada passo"},
+        "plan": {"type": "array", "description": "Plano que foi executado"},
+        "execution_results": {"type": "array", "description": "Lista de dicionários com resultados de cada passo"},
         "final_status": {"type": "str", "description": "Status final da execução do plano ('completed', 'failed', 'error')"},
-        "agent_tools": {"type": "dict", "description": "Dicionário de tools/skills disponíveis para o agente"},
+        "agent_tools": {"type": "object", "description": "Dicionário de tools/skills disponíveis para o agente"},
         "agent_workspace": {"type": "str", "description": "Caminho do workspace"},
-        "agent_llm_url": {"type": "str", "description": "URL do LLM, se necessário para sub-skills"}, # Note: Making type str as Optional[str] isn't standard JSON Schema
-        "shared_task_context": {"type": "SharedTaskContext", "description": "The final shared context from the task execution.", "optional": True} 
+        "agent_llm_url": {"type": "str", "description": "URL do LLM, se necessário para sub-skills"},
+        "shared_task_context": {"type": "Optional[a3x.core.context.SharedTaskContext]", "description": "The final shared context from the task execution.", "optional": True} 
     },
 )
 async def learning_cycle_skill(

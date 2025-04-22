@@ -24,7 +24,6 @@ from a3x.core.prompt_builder import (
 ) # Import the new builders
 from a3x.core.agent_parser import parse_llm_response
 from a3x.core.history_manager import trim_history
-from a3x.core.tool_executor import execute_tool, _ToolExecutionContext
 from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
 from a3x.core.planner import generate_plan
 from langchain_core.agents import AgentAction, AgentActionMessageLog, AgentFinish
@@ -39,8 +38,8 @@ from a3x.core.utils.param_normalizer import normalize_action_input
 # <<< ADDED import for asyncio (needed for reload_fragments skill) >>>
 import asyncio 
 from a3x.fragments.registry import FragmentRegistry
-# <<< ADDED import for SharedTaskContext >>>
-from a3x.core.context import SharedTaskContext
+# <<< ADDED import for SharedTaskContext AND _ToolExecutionContext from context >>>
+from a3x.core.context import SharedTaskContext, _ToolExecutionContext
 # <<< ADDED import for uuid >>>
 import uuid
 # <<< ADDED import for the new orchestrator >>>

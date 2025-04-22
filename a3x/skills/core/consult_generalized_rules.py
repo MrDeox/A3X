@@ -38,10 +38,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Constants
-LEARNING_LOG_DIR = "memory/learning_logs"
+# Updated paths relative to project root
+LEARNING_LOG_DIR = "data/memory/learning_logs" # UPDATED PATH
 GENERALIZED_RULES_FILE = os.path.join(LEARNING_LOG_DIR, "generalized_rules.jsonl")
-FAISS_INDEX_FILE = os.path.join(LEARNING_LOG_DIR, "generalized_rules.faissindex")
+# FAISS_INDEX_PATH = os.path.join(LEARNING_LOG_DIR, "generalized_rules_index.faiss") # Optional FAISS index
+# FAISS_MAPPING_PATH = os.path.join(LEARNING_LOG_DIR, "generalized_rules_index.mapping.json") # Optional FAISS mapping
 
 # Global cache for index and metadata (simple version)
 # In a real application, consider more robust caching or a dedicated memory manager
@@ -145,7 +146,7 @@ async def consult_generalized_rules(objective: str, top_k: int = 3, ctx: Optiona
     relevant_rules = []
     try:
         workspace_root = Path(getattr(ctx, 'workspace_root', '.'))
-        index_path = workspace_root / FAISS_INDEX_FILE
+        index_path = workspace_root / GENERALIZED_RULES_FILE
         metadata_path = workspace_root / GENERALIZED_RULES_FILE
 
         # 1. Load index and metadata (uses caching)
@@ -289,8 +290,8 @@ if __name__ == '__main__':
                     # Assuming embeddings ARE normalized by the get_embedding function
                     index = faiss.IndexFlatIP(dimension)
                     index.add(embeddings_np)
-                    faiss.write_index(index, FAISS_INDEX_FILE)
-                    logger.info(f"Created dummy FAISS index ({index.ntotal} vectors): {FAISS_INDEX_FILE}")
+                    faiss.write_index(index, GENERALIZED_RULES_FILE)
+                    logger.info(f"Created dummy FAISS index ({index.ntotal} vectors): {GENERALIZED_RULES_FILE}")
                     faiss_index_created = True
                 except Exception as idx_e:
                     logger.exception(f"Failed to create dummy FAISS index: {idx_e}")

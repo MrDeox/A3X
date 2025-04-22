@@ -24,10 +24,9 @@ de forma independente, gerando e testando código em um ambiente seguro."""
         name="explore_sandbox",
         description="Gera e testa código ou hipóteses de forma autônoma em um ambiente sandbox seguro.",
         parameters={
-            "context": {"type": Context, "description": "O contexto de execução fornecido pelo agente."},
             "objective": {"type": Optional[str], "default": None, "description": "Objetivo geral para orientar a exploração (opcional)."},
             "max_attempts": {"type": int, "default": 3, "description": "Número máximo de tentativas de geração e teste (padrão: 3)."},
-            "shared_task_context": {"type": "SharedTaskContext", "description": "O contexto compartilhado para acessar dados relacionados à tarefa.", "optional": True}
+            "shared_task_context": {"type": "Optional[a3x.core.context.SharedTaskContext]", "description": "O contexto compartilhado para acessar dados relacionados à tarefa.", "optional": True}
         }
     )
     async def explore_sandbox(

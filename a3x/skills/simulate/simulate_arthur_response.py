@@ -19,6 +19,7 @@ import logging
 from typing import Dict, Any, List, Optional
 import random
 import asyncio
+from pathlib import Path
 
 # Core framework imports
 from a3x.core.config import PROJECT_ROOT
@@ -47,9 +48,8 @@ MAPPING_PATH = os.path.join(PROJECT_ROOT, "memory.db.unified.vss_semantic_memory
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 TOP_K = 5 # Number of similar examples to retrieve
 
-# Path to the dataset used for simulating Arthur's persona
-# Assuming unified dataset for now
-ARTHUR_DATASET_PATH = "data/arthur_unified_dataset.jsonl"
+# Updated dataset path
+ARTHUR_DATASET_PATH = Path(PROJECT_ROOT) / "data" / "datasets" / "a3x" / "arthur_unified_dataset.jsonl"
 # Number of examples to retrieve from memory for context
 NUM_MEMORY_EXAMPLES = 3
 # Number of examples to retrieve from the dataset for few-shot prompting

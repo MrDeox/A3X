@@ -52,8 +52,8 @@ def initialize_agent(
         fragment_registry = FragmentRegistry()
 
         memory_config = {
-            "SEMANTIC_INDEX_PATH": "a3x/memory/indexes/semantic_memory",
-            "DATABASE_PATH": "a3x/memory/memory.db",
+            "SEMANTIC_INDEX_PATH": "data/indexes/semantic_memory",
+            "DATABASE_PATH": "data/a3x_main.db",
         }
         memory_manager = MemoryManager(config=memory_config) 
 

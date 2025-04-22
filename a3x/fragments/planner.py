@@ -26,8 +26,10 @@ SUCCESSFUL_ACTION_PATTERN = re.compile(r"-\s*'(.*?)':\s*(\d+)\s*successes")
 FRAGMENT_ERROR_PATTERN = re.compile(r"-\s*'(.*?)':\s*(\d+)\s*errors/failures")
 HEURISTIC_PATTERN = re.compile(r"- Count=(\d+): Sender='(.*?)', Action='(.*?)', Target='(.*?)'")
 
-# Where GoalManager creates files (to mimic target generation)
-GOAL_TARGET_PREFIX = "a3x/generated/strategic"
+# Updated path for generated strategic targets (referenced for context)
+GOAL_TARGET_PREFIX = "data/runtime/generated/strategic"
+# Updated path for generated planned targets
+GENERATED_PLAN_TARGET_PREFIX = "data/runtime/generated/planned"
 
 # Define a list of alternative topics for the research skill
 ALTERNATIVE_TOPICS = [

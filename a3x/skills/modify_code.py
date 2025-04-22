@@ -5,13 +5,15 @@ import json
 import re
 import os
 import ast
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-# from core.tools import skill
+# Import skill decorator and Context
+from a3x.core.skills import skill
+from a3x.core.context import Context
 
-# from core.skills_utils import create_skill_response
-
-# from core.code_safety import is_safe_ast # Import safety check
+# from core.tools import skill # Remove old commented import
+# from core.skills_utils import create_skill_response # Remove old commented import
+# from core.code_safety import is_safe_ast # Import safety check # Keep commented for now if unused
 
 # Use absolute import for config, handle potential ImportError
 try:
@@ -27,55 +29,63 @@ logger = logging.getLogger(__name__)
 if 'LLAMA_SERVER_URL' not in globals():
      logging.warning("Could not import config from a3x.core.config. Using default LLM URL.")
 
-
-def skill_modify_code(
-    action_input: Dict[str, Any],
-    agent_memory: dict = None,
-    agent_history: list | None = None,
+@skill(
+    name="modify_code",
+    description="Modifica um trecho de código com base em instruções fornecidas usando um LLM.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "modification": {
+                "type": "str",
+                "description": "Descrição clara de como modificar o código."
+            },
+            "code_to_modify": {
+                "type": "str",
+                "description": "O código original completo a ser modificado."
+            },
+            "language": {
+                "type": "str",
+                "description": "Linguagem de programação (padrão: python).",
+                "default": "python"
+            }
+        },
+        "required": ["modification", "code_to_modify"]
+    }
+)
+def modify_code(
+    context: Context, # Add context argument
+    modification: str,
+    code_to_modify: str,
+    language: str = "python"
+    # Remove action_input: Dict[str, Any],
+    # Remove agent_memory: dict = None,
+    # Remove agent_history: list | None = None,
 ) -> Dict[str, Any]:
     """
     Modifica um bloco de código existente usando o LLM com base em instruções.
 
     Args:
-        action_input (Dict[str, Any]): Dicionário contendo:
-            - modification (str): Descrição clara de como modificar o código (obrigatório).
-            - code_to_modify (str): O código original completo a ser modificado (obrigatório).
-            - language (str, optional): Linguagem de programação. Padrão: 'python'.
-        agent_memory (dict, optional): Memória do agente.
-        agent_history (list | None, optional): Histórico do agente.
+        context (Context): O contexto de execução da skill.
+        modification (str): Descrição clara de como modificar o código (obrigatório).
+        code_to_modify (str): O código original completo a ser modificado (obrigatório).
+        language (str, optional): Linguagem de programação. Padrão: 'python'.
 
     Returns:
         Dict[str, Any]: Dicionário com status, action, e data (contendo código original e modificado).
     """
-    logger.info("Executando skill_modify_code...")
-    logger.debug(f"Action Input: {action_input}")
+    logger.info("Executando skill modify_code...")
+    # Access parameters directly
+    # logger.debug(f"Action Input: {action_input}") # Remove old debug log
 
-    # Extrair parâmetros
-    modification = action_input.get("modification")
-    original_code = action_input.get("code_to_modify")
-    language = action_input.get("language", "python")
+    # Extrair parâmetros (já são argumentos da função)
+    # modification = action_input.get("modification")
+    # original_code = action_input.get("code_to_modify")
+    # language = action_input.get("language", "python")
+    original_code = code_to_modify # Use argument directly
 
-    # Validar parâmetros obrigatórios
-    if not modification:
-        logger.error("Parâmetro obrigatório 'modification' não fornecido.")
-        return {
-            "status": "error",
-            "action": "modify_code_failed",
-            "data": {
-                "message": "Erro: A instrução de modificação (modification) não foi especificada."
-            },
-        }
-    if (
-        not original_code
-    ):  # code_to_modify pode ser string vazia, mas não None ou ausente
-        logger.error("Parâmetro obrigatório 'code_to_modify' não fornecido.")
-        return {
-            "status": "error",
-            "action": "modify_code_failed",
-            "data": {
-                "message": "Erro: O código a ser modificado (code_to_modify) não foi fornecido."
-            },
-        }
+    # Validar parâmetros obrigatórios (já tratados pelo schema)
+    # if not modification: ... # Remove validation block
+    # if (not original_code): ... # Remove validation block
 
     try:
         # Construir o prompt para o LLM de modificação de código

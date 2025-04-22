@@ -5,6 +5,7 @@ import subprocess
 import os
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
+from array import array
 
 from a3x.core.skills import skill, SkillContext
 from a3x.core.config import PROJECT_ROOT # Assuming PROJECT_ROOT is defined in config
@@ -15,25 +16,22 @@ logger = logging.getLogger(__name__)
     name="execute_python_in_sandbox",
     description="Executa um script Python dentro de um sandbox Firejail seguro e restrito.",
     parameters={
-        "type": "object",
-        "properties": {
-            "script_path": {
-                "type": "string",
-                "description": "Caminho relativo ao root do projeto para o script Python a ser executado.",
-            },
-            "args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Lista de argumentos a serem passados para o script.",
-                "default": [],
-            },
-            "timeout_seconds": {
-                "type": "integer",
-                "description": "Tempo máximo em segundos para a execução do script.",
-                "default": 60,
-            }
+        "script_path": {
+            "type": str,
+            "description": "Caminho relativo ao root do projeto para o script Python a ser executado.",
         },
-        "required": ["script_path"],
+        "args": {
+            "type": Optional[List[str]],
+            "description": "Lista de argumentos a serem passados para o script.",
+            "default": [],
+            "optional": True
+        },
+        "timeout_seconds": {
+            "type": int,
+            "description": "Tempo máximo em segundos para a execução do script.",
+            "default": 60,
+            "optional": True
+        }
     }
 )
 async def execute_python_in_sandbox(

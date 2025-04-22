@@ -1,0 +1,8 @@
+ask 'meu_fragmento_teste' sobre "como funciona o sistema a3x?"
+
+# Reflete sobre a resposta dada ao comando ask anterior
+refletir sobre a resposta de 'meu_fragmento_teste'
+ 
+# Avalia a resposta anterior (que acionou a reflexão) como incorreta
+# Isso deve fazer o sistema pedir sugestões de correção ao ProfessorLLM
+avaliar resposta de 'meu_fragmento_teste' como incorreta 

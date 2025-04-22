@@ -3,6 +3,7 @@ import logging
 import json
 from typing import Dict, Any, Optional
 import re
+import traceback
 
 from a3x.core.skills import skill
 from a3x.core.llm_interface import LLMInterface
@@ -11,9 +12,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Define the directory where generated skills will be saved
-# TODO: Make this configurable via config file?
-GENERATED_SKILLS_DIR = Path("a3x/skills/generated") 
+# Updated path
+GENERATED_SKILLS_DIR = Path("a3x/skills/auto_generated")
 GENERATED_SKILLS_DIR.mkdir(parents=True, exist_ok=True) # Ensure directory exists
 
 @skill(

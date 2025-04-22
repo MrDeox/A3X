@@ -1,0 +1,20 @@
+{"text": "o que é A³X?", "label": "pergunta"}
+{"text": "como eu treino um fragmento?", "label": "pergunta"}
+{"text": "me explique a arquitetura", "label": "pergunta"}
+{"text": "preciso de ajuda com isso", "label": "pergunta"}
+{"text": "tenho uma dúvida sobre o código", "label": "pergunta"}
+{"text": "criar um agente para classificar emails", "label": "intencao"}
+{"text": "quero que o sistema aprenda a jogar xadrez", "label": "intencao"}
+{"text": "faça um plano para otimizar o uso de memória", "label": "intencao"}
+{"text": "execute a tarefa de análise de dados", "label": "intencao"}
+{"text": "o processo falhou com erro 500", "label": "falha"}
+{"text": "não consigo carregar o modelo", "label": "falha"}
+{"text": "deu pau na execução", "label": "falha"}
+{"text": "olá sistema", "label": "saudacao"}
+{"text": "bom dia", "label": "saudacao"}
+{"text": "oi", "label": "saudacao"}
+{"text": "obrigado pela resposta", "label": "feedback"}
+{"text": "isso não funcionou como esperado", "label": "feedback"}
+{"text": "gostei do resultado", "label": "feedback"}
+{"text": "muito útil", "label": "feedback"}
+{"text": "não era bem isso", "label": "feedback"} 

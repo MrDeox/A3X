@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Default directory for storing indexes relative to the execution path (adjust if needed)
 # It's generally better if the caller specifies the full path including the desired directory.
-# INDEX_DIR = "memory/indexes" 
+# INDEX_DIR = "data/memory/indexes" 
 
 def _get_full_paths(index_path_base: str) -> tuple[str, str]:
     """Constructs full paths for index and metadata files."""
@@ -24,7 +24,7 @@ def init_index(index_path_base: str, embedding_dim: int = 768) -> Optional[faiss
     Creates the directory if it doesn't exist.
 
     Args:
-        index_path_base: The base path for the index (e.g., "memory/indexes/semantic_memory").
+        index_path_base: The base path for the index (e.g., "data/memory/indexes/semantic_memory").
                          '.index' will be appended for the FAISS file.
         embedding_dim: The dimension of the embeddings (required if creating a new index).
 
@@ -218,7 +218,7 @@ def search_index(index_path_base: str, query_embedding: List[float], top_k: int 
 #     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 #     
 #     # Define path and dimension
-#     idx_path = "memory/indexes/test_semantic_memory"
+#     idx_path = "data/memory/indexes/test_semantic_memory"
 #     dim = 4 # Example dimension
 #     
 #     # Initialize (creates if not exists)

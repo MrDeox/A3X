@@ -6,6 +6,9 @@ from typing import Dict, Any
 import asyncio
 from filelock import AsyncFileLock, Timeout
 
+# Commenting out hardcoded BASE_DIR. Paths should be handled relative to execution or configured.
+# BASE_DIR = Path("a3x/a3net") 
+
 # Configure logging for this utility
 logger = logging.getLogger(__name__)
 

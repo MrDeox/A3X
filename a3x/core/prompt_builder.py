@@ -16,25 +16,29 @@ Strictly follow this format in ALL your responses:
 
 Thought: [Briefly explain your reasoning, plan for the *single* next action, and how it contributes to solving the task.]
 Action: [The *exact name* of ONE skill from the provided list, e.g., read_file. DO NOT write sentences or descriptions here.]
-Action Input: [Parameters for the skill in valid JSON format, e.g., {{"path": "data/users.json"}}]
+Action Input: [Parameters for the skill in valid JSON format, e.g., {{"operation": "read", "file_path": "data/config/users.json"}}]
+Observation: [Result of the action]
 
 Example 1 (Reading a file):
 Thought: I need to read the user's configuration file to understand their settings.
 Action: read_file
 Action Input: {{"path": "config/settings.yaml"}}
+Observation: {{"result": "Read successfully"}}
 
 Example 2 (Writing to a file):
 Thought: The user asked me to save the results to a file. I will use the write_file skill.
 Action: write_file
 Action Input: {{"path": "output/results.txt", "content": "These are the final results."}}
+Observation: {{"result": "Saved successfully"}}
 
 Example 3 (Using a planner):
 Thought: The task is complex and requires multiple steps. I should use the hierarchical_planner first to break it down.
 Action: hierarchical_planner
 Action Input: {{"task_description": "Create a new web component and integrate it into the main page.", "available_tools": ["read_file", "write_file", "execute_code"]}}
+Observation: {{"result": "Plan created successfully"}}
 
 **CRITICAL RULES:**
-1.  **ReAct Format:** Always use the "Thought:", "Action:", "Action Input:" structure.
+1.  **ReAct Format:** Always use the "Thought:", "Action:", "Action Input:", "Observation:" structure.
 2.  **Action Field:** The `Action:` field MUST contain ONLY the exact name of ONE skill from the available list. No extra words, descriptions, or sentences.
 3.  **Action Input Field:** The `Action Input:` field MUST be a valid JSON object matching the parameters required by the chosen skill. Pay close attention to the required arguments for each skill. If a skill needs `path` and `content`, your JSON must provide both.
 4.  **JSON Validity:** Ensure the JSON in `Action Input:` is correctly formatted (double quotes around keys and string values, correct braces and commas).

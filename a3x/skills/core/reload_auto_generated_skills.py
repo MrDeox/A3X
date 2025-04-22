@@ -25,9 +25,7 @@ AUTO_GENERATED_PACKAGE_NAME = "a3x.skills.auto_generated"
 @skill(
     name="reload_auto_generated_skills",
     description="Detecta novas skills em 'a3x/skills/auto_generated', atualiza o __init__.py e recarrega todas as skills.",
-    parameters={
-        # "ctx": {"type": "Any", "description": "O contexto de execução da skill."} <-- REMOVE THIS LINE
-    } # Added ctx parameter
+    parameters={}
 )
 async def reload_auto_generated_skills(ctx: Any) -> Dict[str, Any]:
     """

@@ -5,6 +5,7 @@ import inspect
 import asyncio
 from typing import Dict, Any, List, Optional
 import re
+from pathlib import Path
 
 # Core framework imports
 # Core imports
@@ -50,20 +51,25 @@ Respond ONLY with the JSON object (either the suggestion or {{}}). Do not add ex
 
 # --- Helper Functions ---
 
-def _check_for_tests(skill_info: Dict[str, Any], test_dir_base: str = "tests/skills") -> bool:
-    """Checks if a corresponding test file likely exists for a skill."""
+def _check_for_tests(skill_info: Dict[str, Any], test_dir_base: str = "tests/unit/skills") -> bool:
+    """Checks if a test file exists for a given skill."""
     source_file = skill_info.get("source_file")
     if not source_file:
         return False # Cannot determine without source file
 
-    # Try to construct a plausible test file path
-    # Example: skills/web/search.py -> tests/skills/web/test_search.py
-    relative_path = os.path.relpath(source_file, start="a3x/skills") # e.g., web/search.py
-    test_filename = f"test_{os.path.splitext(os.path.basename(relative_path))[0]}.py" # e.g., test_search.py
-    potential_test_path = os.path.join(test_dir_base, os.path.dirname(relative_path), test_filename)
-
-    logger.debug(f"Checking for test file at: {potential_test_path}")
-    return os.path.exists(potential_test_path)
+    # Attempt to construct a plausible test file path
+    try:
+        # Get path relative to the skills directory (e.g., core/list_skills.py)
+        relative_path = os.path.relpath(source_file, start="a3x/skills") 
+        base_name = os.path.splitext(relative_path)[0]
+        # Construct potential test path: tests/unit/skills/core/test_list_skills.py
+        test_path = Path(test_dir_base) / f"test_{base_name}.py"
+        return test_path.exists()
+    except ValueError:
+        # Handle cases where relpath fails (e.g., different drives on Windows)
+        logger.warning(f"Could not determine relative path for test check: {source_file}")
+        return False # Assume no test if path fails
+    return False
 
 def _check_llm_usage(skill_info: Dict[str, Any]) -> bool:
     """Rudimentary check if a skill function *might* use llm_interface.call_llm or older patterns."""

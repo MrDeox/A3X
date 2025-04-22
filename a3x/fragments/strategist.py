@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 GOAL_GENERATION_THRESHOLD = 2 # Generate a goal after processing N summaries
 # Regex to parse heuristics from summary (adjust if format changes)
 HEURISTIC_PATTERN = re.compile(r"- Count=(\d+): Sender='(.*?)', Action='(.*?)', Target='(.*?)'")
-# Where GoalManager creates files (to mimic target generation)
-GOAL_TARGET_PREFIX = "a3x/generated/strategic"
+# Updated path for generated strategic targets
+GOAL_TARGET_PREFIX = "data/runtime/generated/strategic"
 
 class StrategistFragment(BaseFragment):
     """Analyzes learned heuristics and generates strategic goals based on successful patterns."""

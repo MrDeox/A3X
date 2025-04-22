@@ -2,6 +2,7 @@
 import os
 import sys
 import logging
+from pathlib import Path
 
 from rich.console import Console
 
@@ -11,7 +12,7 @@ try:
 except ImportError as e:
     print(f"[CLI FS Utils Error] Failed to import PROJECT_ROOT from config: {e}")
     # Fallback: Assume script is run from within a3x/cli
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    PROJECT_ROOT = Path(__file__).resolve().parents[2] # Sobe dois níveis de a3x/cli/fs_utils.py
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -40,12 +41,9 @@ def change_to_project_root():
         logger.exception(f"Error changing directory to project root {PROJECT_ROOT}:")
         # Consider raising an exception
 
-def load_system_prompt(file_path_relative: str = "prompts/react_system_prompt.md") -> str:
-    """Loads the system prompt from a file relative to the a3x package directory."""
-    # Use PROJECT_ROOT imported from config
-    # Construct path relative to PROJECT_ROOT/a3x/
-    a3x_dir = os.path.join(PROJECT_ROOT, "a3x")
-    full_path = os.path.join(a3x_dir, file_path_relative)
+def load_system_prompt(file_path_relative: str = "data/prompts/react_system_prompt.md") -> str:
+    """Carrega o conteúdo de um arquivo de prompt do sistema."""
+    full_path = PROJECT_ROOT / file_path_relative
     logger.debug(f"Attempting to load system prompt from: {full_path}")
     try:
         with open(full_path, "r", encoding="utf-8") as f:

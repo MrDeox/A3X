@@ -10,6 +10,10 @@ Ponto de integração: Chamar no fallback de skill ausente em _execute_action (a
 import uuid
 import datetime
 from typing import Dict, Any
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 def propose_skill_from_gap(skill_name: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -41,8 +45,14 @@ async def {skill_name}(input: str):
     }
     # Opcional: salvar em arquivo para curadoria posterior
     try:
-        with open(f"a3x/skills/auto_generated/{skill_id}.py", "w", encoding="utf-8") as f:
+        # Ensure the directory exists
+        skills_dir = Path("a3x/skills/auto_generated")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = skills_dir / f"{skill_id}.py"
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(template_code)
+        logger.info(f"Successfully generated and saved skill '{skill_id}' to {file_path}")
     except Exception as e:
         proposal["error"] = str(e)
     return proposal

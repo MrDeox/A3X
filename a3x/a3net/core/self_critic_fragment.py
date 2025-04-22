@@ -1,44 +1,127 @@
 import torch.nn as nn
 import logging
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable, Awaitable
 
 # Supondo acesso ao ContextStore e MemoryBank/Registry via contexto injetado
 try:
     from a3x.core.context.context_store import ContextStore
 except ImportError:
-    ContextStore = None
+    # Allow running without full A3X core if needed for standalone testing
+    ContextStore = None 
+    logging.warning("Could not import ContextStore from a3x.core.context.context_store")
     
-try:
-    from a3x.a3net.integration.a3x_bridge import MEMORY_BANK # Exemplo de acesso
-except ImportError:
-    MEMORY_BANK = None
+# try:
+#     from a3x.a3net.integration.a3x_bridge import MEMORY_BANK # Exemplo de acesso
+# except ImportError:
+#     MEMORY_BANK = None
 
 logger = logging.getLogger(__name__)
+
+# Type alias for message handler
+MessageHandler = Callable[[str, Dict[str, Any], str], Awaitable[None]]
 
 class SelfCriticFragment(nn.Module):
     """Analisa o desempenho histórico, detecta redundâncias e sugere otimizações."""
 
-    def __init__(self, fragment_id: str, description: str):
+    def __init__(self, fragment_id: str, 
+                 description: str,
+                 professor_fragment: Optional[Any] = None, # Optional Professor for deeper analysis
+                 context_store: Optional[ContextStore] = None,
+                 post_chat_message_callback: Optional[MessageHandler] = None):
         super().__init__()
         self.fragment_id = fragment_id
         self.description = description
-        self.context_store: Optional[ContextStore] = None
-        # Necessário para postar mensagens - será injetado
-        self.post_chat_message = None
+        self.context_store = context_store
+        self.post_chat_message = post_chat_message_callback
+        self._professor = professor_fragment # Store professor reference
         
         logger.info(f"SelfCriticFragment '{self.fragment_id}' initialized.")
+        if not self.context_store: logger.warning(f"SelfCritic '{self.fragment_id}' initialized without ContextStore.")
+        if not self.post_chat_message: logger.warning(f"SelfCritic '{self.fragment_id}' initialized without post_chat_message callback.")
+        if not self._professor: logger.warning(f"SelfCritic '{self.fragment_id}' initialized without ProfessorFragment.")
 
-    def set_context_and_handler(self, context_store: Optional[ContextStore], message_handler):
-        """Injeta dependências necessárias."""
-        self.context_store = context_store
-        self.post_chat_message = message_handler
-        logger.info(f"SelfCritic '{self.fragment_id}' context and handler set.")
+    async def analyze_performance_history(self, task_name: Optional[str] = None, fragment_id: Optional[str] = None):
+        """Analisa o histórico de avaliações no ContextStore."""
+        if not self.context_store:
+            logger.warning(f"SelfCritic '{self.fragment_id}': Cannot analyze performance, ContextStore not available.")
+            return
+        
+        logger.info(f"SelfCritic '{self.fragment_id}' analyzing performance history (Task: {task_name}, Fragment: {fragment_id})...")
+        
+        # Example: Find evaluation results
+        tags_to_find = ["evaluation_result"]
+        if task_name: tags_to_find.append(f"task:{task_name}")
+        if fragment_id: tags_to_find.append(f"fragment:{fragment_id}")
+            
+        try:
+            eval_keys = await self.context_store.find_keys_by_tags(tags_to_find, match_all=True)
+            
+            if not eval_keys:
+                logger.info(f"No evaluation history found for criteria: {tags_to_find}")
+                return
+
+            logger.info(f"Found {len(eval_keys)} evaluation records. Analyzing trends...")
+            # TODO: Implement more sophisticated analysis (trends, stagnation, etc.)
+            # For now, just log the number of records found.
+            
+            # Example: Check for stagnation (e.g., accuracy not improving)
+            # This requires parsing the evaluation data (assuming it has accuracy and timestamp)
+            
+        except Exception as e:
+            logger.error(f"Error analyzing performance history: {e}", exc_info=True)
+
+    async def suggest_optimizations(self):
+        """Gera sugestões de otimização com base na análise."""
+        # Placeholder for optimization suggestion logic
+        logger.info(f"SelfCritic '{self.fragment_id}' generating optimization suggestions...")
+        
+        # Example: If stagnation detected, suggest consulting professor or trying different hyperparameters
+        suggestion_a3l = None 
+        if False: # Replace with actual condition based on analysis
+             suggestion_a3l = "# Suggestion: Training stagnated. Consider consulting Professor.\n# aprender com 'professor_orientador' question \"Como melhorar o treino do fragmento X?\""
+
+        if suggestion_a3l and self.post_chat_message:
+            logger.info(f"Posting optimization suggestion: {suggestion_a3l}")
+            await self.post_chat_message(
+                 message_type="suggestion", # Or a specific type like "optimization_suggestion"
+                 content={"a3l_command": suggestion_a3l, "source": self.fragment_id},
+                 target_fragment="ExecutorSupervisorFragment" # Or appropriate target
+            )
+        else:
+             logger.info("No specific optimizations suggested at this time.")
+
+    async def run_periodic_check(self, interval_seconds: int = 300):
+         """Run analysis and suggestion periodically."""
+         logger.info(f"SelfCritic '{self.fragment_id}' starting periodic check loop (Interval: {interval_seconds}s)...")
+         while True:
+             try:
+                 await self.analyze_performance_history()
+                 await self.suggest_optimizations()
+                 await asyncio.sleep(interval_seconds)
+             except asyncio.CancelledError:
+                 logger.info(f"SelfCritic '{self.fragment_id}' periodic check cancelled.")
+                 break
+             except Exception as e:
+                  logger.error(f"Error in SelfCritic periodic check: {e}", exc_info=True)
+                  # Avoid tight loop on error
+                  await asyncio.sleep(interval_seconds * 2)
+
+    async def handle_message(self, message_type: str, content: Any, **kwargs):
+         """Handles incoming messages, e.g., requests for analysis."""
+         logger.debug(f"SelfCritic '{self.fragment_id}' received message: Type={message_type}, Content={str(content)[:100]}")
+         if message_type == "request_analysis":
+             task = content.get("task_name")
+             frag = content.get("fragment_id")
+             await self.analyze_performance_history(task_name=task, fragment_id=frag)
+             await self.suggest_optimizations()
+         else:
+             logger.warning(f"Unhandled message type for SelfCritic: {message_type}")
 
     async def perform_analysis(self):
         """Executa a análise crítica do sistema."""
-        if not self.context_store or not self.post_chat_message or not MEMORY_BANK:
-            logger.error(f"SelfCritic '{self.fragment_id}' missing dependencies (store, handler, or memory_bank). Analysis skipped.")
+        if not self.context_store or not self.post_chat_message:
+            logger.error(f"SelfCritic '{self.fragment_id}' missing dependencies (store or handler). Analysis skipped.")
             return
 
         logger.info(f"SelfCritic '{self.fragment_id}' performing analysis...")

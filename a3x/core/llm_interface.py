@@ -25,7 +25,8 @@ try:
         LLAMA_SERVER_ARGS, # Added
         LLAMA_HEALTH_ENDPOINT, # Added
         LLAMA_SERVER_STARTUP_TIMEOUT, # Added
-        PROJECT_ROOT # Added
+        PROJECT_ROOT, # Added
+        config # ADDED Import
     )
 except ImportError:
     LLAMA_DEFAULT_HEADERS = {"Content-Type": "application/json"}  # Sensible fallback
@@ -33,10 +34,11 @@ except ImportError:
     # Define fallbacks for server start config if core.config fails
     LLAMA_SERVER_BINARY = "llama.cpp/server" # Example fallback
     LLAMA_CPP_DIR = "llama.cpp" # Example fallback
-    LLAMA_SERVER_ARGS = ["-m", "models/7B/llama-model.gguf", "-c", "4096"] # Example fallback
+    LLAMA_SERVER_ARGS = ["-m", "models/third_party/your_model.gguf", "-c", "4096"] # Updated default model path
     LLAMA_HEALTH_ENDPOINT = "/health" # Standard health path
     LLAMA_SERVER_STARTUP_TIMEOUT = 30 # Seconds fallback
     PROJECT_ROOT = Path(".").resolve() # Fallback project root
+    config = {} # Use an empty dict as a fallback
     llm_logger.warning(
         "Could not import config from core.config or some LLAMA_* vars missing. Using defaults for LLMInterface and server startup."
     )
@@ -71,11 +73,19 @@ class LLMInterface:
     ):
         """Initializes the LLM Interface."""
         self.llm_url = self._determine_llm_url(llm_url) # Use helper during init
-        self.model_name = model_name
-        self.context_size = context_size
+        self.model_name = config.get("LLM_MODEL_NAME", "default_model") # Use config
+        self.context_size = config.get("LLM_CONTEXT_LENGTH", 4096)   # Use config
         self.timeout = httpx.Timeout(timeout, connect=10.0) # Store as httpx.Timeout object
         self.headers = LLAMA_DEFAULT_HEADERS if 'LLAMA_DEFAULT_HEADERS' in globals() else {"Content-Type": "application/json"}
         llm_logger.info(f"LLMInterface initialized. URL: {self.llm_url}, Model: {self.model_name}, Context: {self.context_size}")
+
+        # Define default server arguments, can be overridden by config
+        # Updated default model path
+        LLAMA_SERVER_ARGS = ["-m", "models/third_party/your_model.gguf", "-c", "4096"] 
+        self.server_args = config.get("LLAMA_SERVER_ARGS", LLAMA_SERVER_ARGS)
+        self.server_process = None
+
+        self.client = httpx.AsyncClient(base_url=self.llm_url, timeout=600.0)
 
     def _determine_llm_url(self, provided_url: Optional[str]) -> str:
         """Determines the LLM URL to use, checking environment variables, defaults, and ensuring /completion is appended for default server."""

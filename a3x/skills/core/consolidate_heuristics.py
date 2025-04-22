@@ -64,6 +64,7 @@ except ImportError:
 try:
     from a3x.core.skills import skill
     from a3x.core.context import Context
+    from a3x.core.learning_logs import save_learning_log
 except ImportError:
     # Fallback for standalone testing
     def skill(**kwargs):
@@ -75,10 +76,15 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Constants
-LEARNING_LOG_DIR = "memory/learning_logs"
-HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics.jsonl")
+# --- Configuration ---
+# How many recent raw heuristic logs to consider
+MAX_LOGS_TO_PROCESS = 100
+# Output file for the consolidated summary
+# Paths relative to project root
+LEARNING_LOG_DIR = "data/memory/learning_logs" # UPDATED PATH
 CONSOLIDATED_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics_consolidated.jsonl")
+RAW_HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics.jsonl") # Source file
+
 # Threshold for considering heuristics similar enough to group
 DEFAULT_SIMILARITY_THRESHOLD = 0.90 # Adjust based on model and desired granularity
 
@@ -243,7 +249,7 @@ async def consolidate_heuristics(ctx: Context, similarity_threshold: Optional[fl
 
     try:
         workspace_root = Path(getattr(ctx, 'workspace_root', '.'))
-        input_log_path = workspace_root / HEURISTIC_LOG_FILE
+        input_log_path = workspace_root / RAW_HEURISTIC_LOG_FILE
         output_log_path = workspace_root / CONSOLIDATED_LOG_FILE
         # <<< CORREÇÃO: Garantir que o diretório exista >>>
         output_log_dir = output_log_path.parent
@@ -379,7 +385,7 @@ if __name__ == '__main__':
              # Unique
             {"timestamp": "2023-10-28T10:00:00Z", "type": "success", "heuristic": "Usar list_dir antes de delete_file previne erros.", "context_snapshot": {}},
         ]
-        input_path = Path(HEURISTIC_LOG_FILE)
+        input_path = Path(RAW_HEURISTIC_LOG_FILE)
         from a3x.core.learning_logs import log_heuristic_with_traceability
         # Limpa o arquivo antes de inserir exemplos
         if input_path.exists():

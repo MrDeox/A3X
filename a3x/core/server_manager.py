@@ -14,7 +14,7 @@ import psutil
 import requests
 import httpx
 
-import a3x.servers.sd_api_server 
+# import a3x.servers.sd_api_server # REMOVED - Servers should be managed externally or via config
 
 from a3x.core.config import (
     LLAMA_SERVER_BINARY, LLAMA_CPP_DIR, LLAMA_SERVER_ARGS, LLAMA_HEALTH_ENDPOINT,

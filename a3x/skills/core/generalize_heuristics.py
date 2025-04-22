@@ -19,8 +19,10 @@ SkillContext = Any # Define as Any if _ToolExecutionContext is not available
 
 logger = logging.getLogger(__name__)
 
+# Directory containing learning logs - relative to project root
+LEARNING_LOG_DIR = "data/memory/learning_logs" # UPDATED PATH
+
 # Constants
-LEARNING_LOG_DIR = "memory/learning_logs"
 CONSOLIDATED_HEURISTIC_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "learned_heuristics_consolidated.jsonl")
 GENERALIZED_HEURISTICS_LOG_FILE = os.path.join(LEARNING_LOG_DIR, "generalized_heuristics.jsonl")
 

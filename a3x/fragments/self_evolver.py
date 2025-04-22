@@ -102,7 +102,7 @@ class SelfEvolverFragment(BaseFragment):
             failures = stats.get("error", 0) + stats.get("failed", 0)
             if total > 10 and failures / total > FAILURE_THRESHOLD_RATIO: # Avoid triggering on very few messages
                 suggestion = {
-                     "target": f"a3x/fragments/assistant_for_{fragment.lower()}.py",
+                     "target": f"a3x/fragments/generated/assistant_for_{fragment.lower()}.py",
                      "message": f"Fragment '{fragment}' has a high failure rate ({failures}/{total}). Create an assistant fragment to analyze its errors, monitor its state, or suggest specific corrections for its common failure modes."
                 }
                 suggestions.append(suggestion)
@@ -115,7 +115,7 @@ class SelfEvolverFragment(BaseFragment):
              skipped = stats.get("skipped", 0)
              if total > 15 and skipped / total > 0.7: # If >70% of attempts for an action are skipped
                   suggestion = {
-                       "target": f"a3x/fragments/handler_for_{action.lower()}.py",
+                       "target": f"a3x/fragments/generated/handler_for_{action.lower()}.py",
                        "message": f"Action '{action}' is frequently skipped ({skipped}/{total}). Create a dedicated fragment to handle '{action}' directives more effectively or investigate why it's being skipped."
                   }
                   suggestions.append(suggestion)
