@@ -3,13 +3,13 @@ from typing import Dict, Optional, Any
 from pathlib import Path
 
 # Assuming these are available in the environment
-from a3x.a3net.core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 
 async def handle_import_fragment(
     directive: Dict[str, Any],
-    memory_bank: MemoryBank
+    memory_manager: MemoryManager
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'import_fragment' directive logic."""
 
@@ -24,7 +24,7 @@ async def handle_import_fragment(
     logger.info(f"[A3X Bridge Handler - Import] Attempting import from: {import_path}")
     # Original code used print here
 
-    # Call MemoryBank import
+    # Call MemoryManager import
     try:
         success = memory_bank.import_a3xfrag(import_path)
         if success:

@@ -3,14 +3,14 @@ import time
 from typing import Dict, Optional, Any
 
 # Assuming these are available in the environment
-from a3x.a3net.core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 from a3x.a3net.core.context_store import ContextStore
 
 logger = logging.getLogger(__name__)
 
 async def handle_evaluate_fragment(
     directive: Dict[str, Any],
-    memory_bank: MemoryBank,
+    memory_manager: MemoryManager,
     context_store: Optional[ContextStore]
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'avaliar_fragmento' directive logic."""

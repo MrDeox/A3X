@@ -12,14 +12,15 @@ from pathlib import Path
 from a3x.core.self_optimizer import FragmentState
 
 # Placeholder for shared components if needed
-# from a3x.core.llm_interface import LLMInterface
-# from a3x.core.skills import SkillRegistry
+
 
 from a3x.core.context import SharedTaskContext, FragmentContext 
 from a3x.core.tool_registry import ToolRegistry  # Added import for ToolRegistry
 from a3x.core.context_accessor import ContextAccessor  # Added import for ContextAccessor
-
+from a3x.core.execution.fragment_executor import FragmentExecutor  # NOVO IMPORT
 from a3x.core.errors import A3XError
+from a3x.core.communication.fragment_chat import FragmentChatManager  # NOVO IMPORT
+from a3x.core.lifecycle.fragment_lifecycle import FragmentLifecycleManager  # NOVO IMPORT
 
 if TYPE_CHECKING:
     from a3x.core.llm_interface import LLMInterface
@@ -80,8 +81,8 @@ class BaseFragment(ABC):
         self._internal_state_lock = asyncio.Lock()
         self._logger.info(f"Fragment '{self.state.name}' initialized with {len(self.state.current_skills)} skills.")
         self._message_handler: Optional[Callable[[str, Dict[str, Any], str], Coroutine[Any, Any, None]]] = None
-        self._is_running = asyncio.Event()
-        self._background_task: Optional[asyncio.Task] = None
+        self._chat_manager = FragmentChatManager(self._logger, self.get_name())
+        self._lifecycle_manager = FragmentLifecycleManager(self._logger)
 
     @property
     def fragment_id(self) -> str:
@@ -116,27 +117,21 @@ class BaseFragment(ABC):
     ) -> str:
         """
         Executa o Fragment com o objetivo fornecido, utilizando as ferramentas disponíveis.
-        Este método serve como ponto de entrada principal para a execução do Fragment,
-        garantindo que a lógica interna seja desacoplada e que a interação com outros componentes
-        seja feita por meio de interfaces claras.
+        Agora delega para o FragmentExecutor.
         """
-        if context is None:
-            context = {}
-        if shared_task_context and not self._context_accessor._context:
-            self.set_context(shared_task_context)
-        # Use provided tools if any, otherwise fetch from registry based on skills
-        if tools is None:
-            tools = []
-            for skill in self.state.current_skills:
-                try:
-                    tool = self._tool_registry.get_tool(skill)
-                    tools.append(tool)
-                except KeyError:
-                    self._logger.warning(f"Tool for skill '{skill}' not found in registry.")
-        self._logger.info(f"Running {self.__class__.__name__} with objective: {objective}")
-        result = await self.execute_task(objective, tools, context)
-        self._logger.info(f"Completed {self.__class__.__name__} with result: {result}")
-        return result
+        fragment_executor = FragmentExecutor(
+            fragment_context=self.ctx,
+            logger=self._logger,
+            llm_interface=getattr(self.ctx, 'llm_interface', None),
+            tool_registry=self._tool_registry,
+            shared_task_context=getattr(self.ctx, 'shared_task_context', None)
+        )
+        return await fragment_executor.execute_task(
+            objective=objective,
+            tools=tools,
+            context=context,
+            max_iterations=max_iterations
+        )
 
     async def execute_task(
         self,
@@ -147,39 +142,22 @@ class BaseFragment(ABC):
     ) -> str:
         """
         Implementação específica da execução da tarefa pelo Fragment.
-        Subclasses devem sobrescrever este método para encapsular sua lógica interna,
-        mantendo o desacoplamento do restante do sistema.
+        Agora delega para o FragmentExecutor.
         """
-        if context is None:
-            context = {}
-        if shared_task_context and not self._context_accessor._context:
-            self.set_context(shared_task_context)
-        if tools is None:
-            tools = []
-            for skill in self.state.current_skills:
-                try:
-                    tool = self._tool_registry.get_tool(skill)
-                    tools.append(tool)
-                except KeyError:
-                    self._logger.warning(f"Tool for skill '{skill}' not found in registry.")
-        # Default implementation - can be overridden by subclasses
-        return await self._default_execute(objective, tools, context)
+        fragment_executor = FragmentExecutor(
+            fragment_context=self.ctx,
+            logger=self._logger,
+            llm_interface=getattr(self.ctx, 'llm_interface', None),
+            tool_registry=self._tool_registry,
+            shared_task_context=getattr(self.ctx, 'shared_task_context', None)
+        )
+        return await fragment_executor.execute_task(
+            objective=objective,
+            tools=tools,
+            context=context
+        )
 
-    async def _default_execute(
-        self,
-        objective: str,
-        tools: List[Callable[[str, Dict[str, Any]], Awaitable[str]]],
-        context: Dict
-    ) -> str:
-        # Simple execution without optimization
-        if tools:
-            tool = tools[0]  # Use the first tool by default
-            input_data = {"objective": objective, "context": context}
-            # Add context accessor data if available
-            if self._context_accessor._context:
-                input_data["shared_task_context"] = self._context_accessor._context
-            return await tool(objective, input_data)
-        return f"No tools available to execute objective: {objective}"
+    # _default_execute foi extraído para FragmentExecutor
 
     def get_name(self) -> str:
         return self.state.name
@@ -203,175 +181,34 @@ class BaseFragment(ABC):
             skills_str += ", ..." # Indicate more exist
         return f"- {self.get_name()}: {purpose} Skills: [{skills_str}]"
 
-    async def run_sub_task(self, sub_task: str, shared_task_context: SharedTaskContext, tool_registry: ToolRegistry, llm_interface: 'LLMInterface') -> Dict:
-        """
-        Executes an internal ReAct loop for the given sub-task, allowing the Fragment to plan and act autonomously.
-        
-        Args:
-            sub_task: The specific sub-task or objective for this Fragment to handle.
-            shared_task_context: The shared context for cross-Fragment data sharing.
-            tool_registry: Registry of available tools/skills this Fragment can use.
-            llm_interface: Interface to the language model for generating thoughts and actions.
-        
-        Returns:
-            A dictionary containing the result of the sub-task execution.
-        """
-        self.set_context(shared_task_context)
-        self._logger.info(f"Starting internal ReAct loop for sub-task: {sub_task} in Fragment: {self.get_name()}")
-        max_iterations = 5
-        history = []
-        
-        for iteration in range(max_iterations):
-            self._logger.info(f"Iteration {iteration + 1}/{max_iterations} for sub-task: {sub_task}")
-            # Build prompt for LLM with allowed skills
-            allowed_tools = [tool_registry.get_tool(skill) for skill in self.get_skills() if skill in tool_registry._tools]
-            messages = await self.build_worker_messages(sub_task, history, allowed_tools, shared_task_context)
-            
-            # Get response from LLM
-            try:
-                response = await llm_interface.get_response(messages)
-                self._logger.info(f"LLM response received for sub-task: {sub_task}")
-                thought = response.get('thought', '')
-                action = response.get('action', {})
-                action_name = action.get('name', 'none')
-                action_params = action.get('parameters', {})
-                history.append({'role': 'assistant', 'content': response})
-                
-                if action_name == 'none':
-                    self._logger.info(f"No action chosen for sub-task: {sub_task}. Concluding based on thought.")
-                    return {'success': True, 'result': thought, 'sub_task': sub_task}
-                
-                # Execute the chosen action
-                self._logger.info(f"Executing action {action_name} for sub_task: {sub_task}")
-                try:
-                    tool_func = tool_registry.get_tool(action_name)
-                    observation = await tool_func(action_name, action_params)
-                    self._logger.info(f"Action {action_name} executed with observation: {observation}")
-                    history.append({'role': 'observation', 'content': observation})
-                    
-                    # Check if the action result indicates completion
-                    if 'success' in observation and observation['success']:
-                        self._logger.info(f"Sub-task {sub_task} completed successfully via action {action_name}.")
-                        return {'success': True, 'result': observation, 'sub_task': sub_task}
-                except Exception as e:
-                    error_msg = f"Error executing action {action_name}: {str(e)}"
-                    self._logger.error(error_msg)
-                    history.append({'role': 'observation', 'content': error_msg})
-            except Exception as e:
-                error_msg = f"Error getting LLM response: {str(e)}"
-                self._logger.error(error_msg)
-                history.append({'role': 'error', 'content': error_msg})
-                return {'success': False, 'error': error_msg, 'sub_task': sub_task}
-        
-        self._logger.warning(f"Max iterations reached for sub-task: {sub_task}. Returning last state.")
-        return {'success': False, 'error': 'Max iterations reached', 'sub_task': sub_task, 'history': history}
+    # run_sub_task foi extraído para FragmentExecutor
 
-    async def build_worker_messages(self, objective: str, history: List[Dict], allowed_tools: List[Callable], shared_task_context: SharedTaskContext) -> List[Dict]:
-        """
-        Builds the message list for the LLM worker prompt, including system instructions and history.
-        
-        Args:
-            objective: The current objective or sub-task.
-            history: List of previous interactions (thoughts, actions, observations).
-            allowed_tools: List of tool functions this Fragment is allowed to use.
-            shared_task_context: Shared context for accessing cross-Fragment data.
-        
-        Returns:
-            A list of message dictionaries for the LLM.
-        """
-        tool_descriptions = []
-        for tool in allowed_tools:
-            try:
-                desc = getattr(tool, 'description', f"Tool: {tool.__name__}")
-                tool_descriptions.append(desc)
-            except Exception as e:
-                self._logger.warning(f"Could not get description for tool {tool.__name__}: {e}")
-                tool_descriptions.append(f"Tool: {tool.__name__} (no description available)")
-        
-        tools_str = "\n".join(tool_descriptions) if tool_descriptions else "No tools available."
-        system_prompt = f"""
-        You are a specialized AI Fragment named {self.get_name()} in the A³X system, focused on a specific sub-task.
-        Your purpose is: {await self.get_purpose()}
-        
-        Available tools/skills for your use:
-        {tools_str}
-        
-        Respond in JSON format with 'thought' (your reasoning) and 'action' (the tool to use with parameters).
-        If no action is needed, set 'action': {{'name': 'none', 'parameters': {{}}}}.
-        Focus on the current objective and use your tools effectively.
-        """
-        messages = [{'role': 'system', 'content': system_prompt}]
-        messages.append({'role': 'user', 'content': f"Current objective: {objective}"})
-        messages.extend(history)
-        return messages
+    def build_worker_messages(self, objective: str, history: List[Dict], allowed_tools: List[Callable], shared_task_context: SharedTaskContext) -> List[Dict]:
+        """Wrapper para construir mensagens do worker usando FragmentChatManager."""
+        return self._chat_manager.build_worker_messages(
+            objective=objective,
+            history=history,
+            allowed_tools=allowed_tools,
+            shared_task_context=shared_task_context
+        )
 
-    async def execute_autonomous_loop(self, objective: str, shared_task_context: SharedTaskContext, tool_registry: ToolRegistry, llm_interface: 'LLMInterface', max_cycles: int = 10) -> Dict:
+
+    async def execute_autonomous_loop(self, objective: str, max_cycles: int = 10) -> Dict:
         """
-        Executes an autonomous loop for the Fragment to plan, act, and adapt based on the given objective.
-        This loop enables the Fragment to select and combine skills, seek consensus with other Fragments if needed,
-        and enter experimentation mode for new ideas, all while respecting isolation and focus.
-        
-        Args:
-            objective: The primary objective or task for this Fragment to achieve.
-            shared_task_context: Shared context for cross-Fragment data sharing and communication.
-            tool_registry: Registry of available tools/skills this Fragment can use.
-            llm_interface: Interface to the language model for generating thoughts and actions.
-            max_cycles: Maximum number of autonomous cycles to run before concluding.
-        
-        Returns:
-            A dictionary containing the result of the autonomous execution, including success status and learnings.
+        Executa o loop autônomo do fragmento (pensar, agir, observar) até critério de parada.
+        Agora delega para o FragmentExecutor.
         """
-        self.set_context(shared_task_context)
-        self._logger.info(f"Starting autonomous execution loop for objective: {objective} in Fragment: {self.get_name()}")
-        cycle_count = 0
-        history = []
-        result = {"success": False, "result": None, "objective": objective, "learnings": [], "cycles": 0}
-        
-        while cycle_count < max_cycles:
-            cycle_count += 1
-            self._logger.info(f"Cycle {cycle_count}/{max_cycles} for objective: {objective}")
-            
-            # Step 1: Plan and select skills for the current objective
-            sub_task_result = await self.run_sub_task(objective, shared_task_context, tool_registry, llm_interface)
-            history.append(sub_task_result)
-            
-            if sub_task_result.get("success", False):
-                self._logger.info(f"Objective {objective} achieved successfully in cycle {cycle_count}.")
-                result["success"] = True
-                result["result"] = sub_task_result.get("result")
-                break
-            else:
-                error_msg = sub_task_result.get("error", "Unknown error")
-                self._logger.warning(f"Cycle {cycle_count} failed with error: {error_msg}")
-                
-                # Step 2: Fallback to internal conversation if in doubt or need support
-                if "max iterations reached" in error_msg.lower() or "uncertainty" in error_msg.lower():
-                    conversation_result = await self.initiate_internal_conversation(objective, history, shared_task_context)
-                    history.append({"role": "conversation", "content": conversation_result})
-                    self._logger.info(f"Internal conversation result for {objective}: {conversation_result.get('summary', 'No summary')}")
-                    
-                    if conversation_result.get("consensus_reached", False):
-                        objective = conversation_result.get("revised_objective", objective)
-                        self._logger.info(f"Revised objective after conversation: {objective}")
-                
-                # Step 3: Enter experimentation mode for new ideas if no progress
-                elif cycle_count > max_cycles // 2 and not result["success"]:
-                    experiment_result = await self.enter_experimentation_mode(objective, history, shared_task_context, tool_registry)
-                    history.append({"role": "experimentation", "content": experiment_result})
-                    result["learnings"].append(experiment_result.get("learnings", "No learnings recorded"))
-                    self._logger.info(f"Experimentation mode result for {objective}: {experiment_result.get('summary', 'No summary')}")
-                    
-                    if experiment_result.get("breakthrough", False):
-                        objective = experiment_result.get("new_approach", objective)
-                        self._logger.info(f"New approach after experimentation: {objective}")
-        
-        result["cycles"] = cycle_count
-        if not result["success"]:
-            result["error"] = "Max cycles reached without achieving objective"
-            self._logger.warning(f"Max cycles reached for objective: {objective}")
-        
-        self._logger.info(f"Autonomous loop completed for {objective} with success: {result['success']}")
-        return result
+        fragment_executor = FragmentExecutor(
+            fragment_context=self.ctx,
+            logger=self._logger,
+            llm_interface=getattr(self.ctx, 'llm_interface', None),
+            tool_registry=self._tool_registry,
+            shared_task_context=getattr(self.ctx, 'shared_task_context', None)
+        )
+        return await fragment_executor.execute_autonomous_loop(
+            objective=objective,
+            max_cycles=max_cycles
+        )
 
     async def initiate_internal_conversation(self, objective: str, history: List[Dict], shared_task_context: SharedTaskContext) -> Dict:
         """
@@ -606,52 +443,27 @@ class BaseFragment(ABC):
         content: Dict,
         target_fragment: Optional[str] = None
     ):
-        """Posts a message to the shared internal chat queue via the ContextAccessor."""
-        # Get the shared context via the accessor
+        """Wrapper para enviar mensagem de chat usando FragmentChatManager."""
         shared_context = self._context_accessor.get_context()
-        
-        if not shared_context:
-            self._logger.error(f"Cannot post chat message: SharedTaskContext not available via accessor for {self.get_name()}. Please set context first.")
-            return
-            
-        if not shared_context.internal_chat_queue:
-            self._logger.error(f"Cannot post chat message: Internal chat queue not available in SharedTaskContext for {self.get_name()}. Please set context first.")
-            return
+        await self._chat_manager.post_chat_message(
+            shared_task_context=shared_context,
+            message_type=message_type,
+            content=content,
+            target_fragment=target_fragment
+        )
 
-        message = {
-            "type": message_type.upper(), # Standardize type to uppercase
-            "sender": self.get_name(),
-            "content": content,
-            "timestamp": time.time(),
-            "target_fragment": target_fragment
-        }
-        try:
-            await shared_context.internal_chat_queue.put(message)
-            target_info = f"to {target_fragment}" if target_fragment else "(broadcast)"
-            self._logger.info(f"[{self.get_name()}] Posted chat message type '{message_type.upper()}' {target_info}. Subject: {content.get('subject', 'N/A')}")
-        except Exception as e:
-            self._logger.error(f"Error posting message to internal queue: {e}", exc_info=True)
 
     async def read_chat_messages(
         self,
         context: FragmentContext,
     ) -> List[Dict[str, Any]]:
-        """Reads new messages from the internal chat log since the last read index."""
-        if not context or not context.shared_task_context:
-            self._logger.error(f"[{self.get_name()}] Cannot read chat messages: SharedTaskContext not available.")
-            return []
-        
-        try:
-            new_messages = await context.shared_task_context.get_chat_messages(since_index=self._last_chat_index_read)
-            if new_messages:
-                self._logger.debug(f"[{self.get_name()}] Read {len(new_messages)} new chat messages.")
-                # Update the index to the index of the last message read + 1
-                # The index is based on the length before reading
-                self._last_chat_index_read += len(new_messages)
-            return new_messages
-        except Exception as e:
-            self._logger.exception(f"[{self.get_name()}] Error reading chat messages:")
-            return []
+        """Wrapper para ler mensagens de chat usando FragmentChatManager."""
+        shared_context = context.shared_task_context if context else None
+        return await self._chat_manager.read_chat_messages(
+            shared_task_context=shared_context,
+            last_index=self._last_chat_index_read
+        )
+
 
     async def _process_chat_message(self, message: Dict[str, Any], context: FragmentContext):
         """Placeholder method to be overridden by subclasses to handle specific chat messages.
@@ -728,41 +540,20 @@ class BaseFragment(ABC):
 
     # <<< ADDED Lifecycle Methods >>>
     async def start(self):
-        """Starts the fragment's main loop or background task."""
-        if not self._is_running.is_set():
-            logger.info(f"Starting {self.metadata.name}...")
-            self._is_running.set()
-            self._background_task = asyncio.create_task(self.execute(), name=f"{self.metadata.name}_execute")
-            logger.info(f"{self.metadata.name} started.")
-        else:
-            logger.warning(f"{self.metadata.name} already started.")
+        """Delegado: inicia o ciclo de vida do fragmento via FragmentLifecycleManager."""
+        await self._lifecycle_manager.start(self.execute, name=f"{self.metadata.name}_execute")
 
     async def stop(self):
-        """Stops the fragment's background task gracefully."""
-        if self._is_running.is_set():
-            logger.info(f"Stopping {self.metadata.name}...")
-            self._is_running.clear()
-            if self._background_task and not self._background_task.done():
-                self._background_task.cancel()
-                try:
-                    await self._background_task
-                    logger.info(f"{self.metadata.name} background task cancelled successfully.")
-                except asyncio.CancelledError:
-                    logger.info(f"{self.metadata.name} background task cancellation confirmed.")
-                except Exception as e:
-                    logger.error(f"Error during {self.metadata.name} background task cancellation: {e}", exc_info=True)
-            self._background_task = None
-            logger.info(f"{self.metadata.name} stopped.")
-        else:
-            logger.info(f"{self.metadata.name} was not running.")
+        """Delegado: para o ciclo de vida do fragmento via FragmentLifecycleManager."""
+        await self._lifecycle_manager.stop()
 
     async def execute(self):
-        """The main execution logic for the fragment. 
-        Subclasses implement their primary behavior here (e.g., a loop).
-        Base implementation does nothing.
         """
-        logger.debug(f"[{self.metadata.name}] Base execute() called. No action defined.")
-        pass # Default implementation does nothing
+        O método principal de execução do fragmento.
+        Subclasses devem sobrescrever para implementar o loop ou tarefa principal.
+        """
+        self._logger.debug(f"[{self.metadata.name}] Base execute() called. No action defined.")
+        pass
 
     # <<< END ADDED Lifecycle Methods >>>
 
@@ -784,12 +575,12 @@ class BaseFragment(ABC):
 
     # <<< ADDED Lifecycle Check Methods >>>
     def is_running(self) -> bool:
-        """Returns True if the fragment's main task is considered running."""
-        return self._is_running.is_set()
+        """Delegado: verifica se o ciclo de vida está ativo via FragmentLifecycleManager."""
+        return self._lifecycle_manager.is_running()
 
     # <<< END ADDED Lifecycle Check Methods >>>
 
-# <<< ManagerFragment class definition REMOVED from here >>>
+
 
 # Make sure existing classes are still defined below if any
 # ... rest of the file ... 

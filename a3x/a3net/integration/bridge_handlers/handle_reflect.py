@@ -4,14 +4,14 @@ from datetime import datetime
 from typing import Dict, Optional, Any
 
 # Assuming these are available in the environment
-from a3x.a3net.core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 from a3x.a3net.core.reflective_language_fragment import ReflectiveLanguageFragment
 
 logger = logging.getLogger(__name__)
 
 async def handle_reflect_fragment(
     directive: Dict[str, Any],
-    memory_bank: MemoryBank
+    memory_manager: MemoryManager
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'reflect_fragment' directive logic."""
 

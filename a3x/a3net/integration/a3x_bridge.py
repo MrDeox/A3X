@@ -20,7 +20,7 @@ import datetime as dt # <<< Alias datetime import
 from ..trainer.dataset_builder import build_dataset_from_context, get_embedding_model
 from ..core.fragment_cell import FragmentCell
 from ..trainer.train_loop import train_fragment_cell # <<< Correct function name
-from ..core.memory_bank import MemoryBank # <<< Import MemoryBank >>>
+from a3x.core.memory.memory_manager import MemoryManager # Agora usamos MemoryManager centralizado
 from ..core.cognitive_graph import CognitiveGraph # <<< Import CognitiveGraph >>>
 from ..core.neural_language_fragment import NeuralLanguageFragment # <<< Import NeuralLanguageFragment >>>
 from ..core.reflective_language_fragment import ReflectiveLanguageFragment # <<< Import ReflectiveLanguageFragment >>>

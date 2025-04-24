@@ -16,7 +16,10 @@ from ..trainer.dataset_builder import get_embedding_model
 
 logger = logging.getLogger(__name__)
 
-class MemoryBank:
+raise ImportError("MemoryBank foi removido. Use a3x.core.memory.memory_manager.MemoryManager.")
+
+# DEPRECATED: MemoryBank não existe mais. Toda a lógica foi migrada para MemoryManager.
+
     """Stores FragmentCell instances in memory and persists/exports their state."""
     
     DEFAULT_SAVE_DIR = "a3net_memory"

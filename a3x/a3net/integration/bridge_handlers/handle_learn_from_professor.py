@@ -3,13 +3,13 @@ from typing import Dict, Optional, Any, Callable, Awaitable
 
 # Assuming these are available in the environment
 from ..core.professor_llm_fragment import ProfessorLLMFragment
-from ..core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 
 async def handle_learn_from_professor(
     directive: Dict[str, Any],
-    memory_bank: MemoryBank, 
+    memory_manager: MemoryManager, 
     post_message_handler: Optional[Callable[..., Awaitable[None]]]
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'learn_from_professor' directive logic."""

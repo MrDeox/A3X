@@ -1,9 +1,17 @@
 import logging
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+from pathlib import Path
+import torch
+import zipfile
+import tempfile
+import os
 from a3x.core.config import LEARNING_LOGS_DIR
 
 class MemoryManager:
+    FRAGMENT_STATE_DIR = "fragment_states"
+    FRAGMENT_EXPORT_DIR = "fragment_exports"
+
     """
     Abstrai o acesso à memória semântica (FAISS) e episódica (SQLite),
     e gerencia metadados de fragmentos.
@@ -11,6 +19,13 @@ class MemoryManager:
     """
 
     def __init__(self, config):
+        self.logger = logging.getLogger(__name__)
+        self.config = config
+        # Diretórios para estados e exportações
+        self.state_dir = Path(config.get("MEMORY_STATE_DIR", self.FRAGMENT_STATE_DIR))
+        self.export_dir = Path(config.get("MEMORY_EXPORT_DIR", self.FRAGMENT_EXPORT_DIR))
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.export_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger(__name__)
         self.config = config
         # Importações locais para facilitar substituição futura
@@ -33,6 +48,125 @@ class MemoryManager:
         self.fragment_metadata: Dict[str, Dict[str, Any]] = {}
         self._load_fragment_metadata() # Attempt to load initial metadata
 
+    # --- FRAGMENT STATE MANAGEMENT (NEURAL/INTERNAL) ---
+    def save_fragment_state(self, fragment_id: str, state_data: Dict[str, Any]):
+        """
+        Salva o estado neural (.pt) de um fragmento.
+        """
+        state_file = self.state_dir / f"{fragment_id}.pt"
+        torch.save(state_data, state_file)
+        self.logger.info(f"[MemoryManager] Saved fragment state for '{fragment_id}' at {state_file}")
+
+    def load_fragment_state(self, fragment_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Carrega o estado neural (.pt) de um fragmento.
+        """
+        state_file = self.state_dir / f"{fragment_id}.pt"
+        if not state_file.exists():
+            self.logger.warning(f"[MemoryManager] State file not found for fragment '{fragment_id}': {state_file}")
+            return None
+        state_data = torch.load(state_file)
+        self.logger.info(f"[MemoryManager] Loaded state for fragment '{fragment_id}' from {state_file}")
+        return state_data
+
+    def delete_fragment_state(self, fragment_id: str) -> bool:
+        """
+        Remove o arquivo de estado (.pt) associado ao fragmento.
+        """
+        state_file = self.state_dir / f"{fragment_id}.pt"
+        try:
+            if state_file.exists():
+                os.remove(state_file)
+                self.logger.info(f"[MemoryManager] Deleted state file for fragment '{fragment_id}' at {state_file}")
+            return True
+        except Exception as e:
+            self.logger.error(f"[MemoryManager] Error deleting state file for '{fragment_id}': {e}")
+            return False
+
+    def export_fragment(self, fragment_id: str, export_filename: Optional[Union[str, Path]] = None) -> bool:
+        """
+        Exporta o fragmento (estado neural + metadados) para um pacote .a3xfrag.
+        """
+        state_data = self.load_fragment_state(fragment_id)
+        if not state_data:
+            self.logger.error(f"[MemoryManager] Cannot export: state for '{fragment_id}' not found.")
+            return False
+        metadata = self.fragment_metadata.get(fragment_id, {})
+        if not metadata:
+            self.logger.warning(f"[MemoryManager] Export: no metadata found for '{fragment_id}'. Exporting with minimal metadata.")
+            metadata = {"fragment_id": fragment_id}
+        if export_filename is None:
+            export_path = self.export_dir / f"{fragment_id}.a3xfrag"
+        else:
+            export_path = Path(export_filename)
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            if export_path.suffix != ".a3xfrag":
+                export_path = export_path.with_suffix(".a3xfrag")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir_path = Path(tmpdir)
+                state_path = tmpdir_path / "fragment.pt"
+                torch.save(state_data["state_dict"], state_path)
+                meta_path = tmpdir_path / "metadata.json"
+                with open(meta_path, "w") as f:
+                    json.dump(metadata, f, indent=4)
+                with zipfile.ZipFile(export_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.write(state_path, arcname="fragment.pt")
+                    zipf.write(meta_path, arcname="metadata.json")
+            self.logger.info(f"[MemoryManager] Exported fragment '{fragment_id}' to {export_path}")
+            return True
+        except Exception as e:
+            self.logger.error(f"[MemoryManager] Error exporting fragment '{fragment_id}': {e}")
+            if export_path.exists():
+                try:
+                    os.remove(export_path)
+                except OSError:
+                    pass
+            return False
+
+    def import_fragment(self, a3xfrag_path: Union[str, Path]) -> bool:
+        """
+        Importa um fragmento de um pacote .a3xfrag (zip).
+        """
+        a3xfrag_file = Path(a3xfrag_path)
+        if not a3xfrag_file.exists() or not a3xfrag_file.is_file():
+            self.logger.error(f"[MemoryManager] Import failed: File not found - {a3xfrag_file}")
+            return False
+        if a3xfrag_file.suffix != ".a3xfrag":
+            self.logger.error(f"[MemoryManager] Import failed: Invalid extension - {a3xfrag_file}")
+            return False
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir_path = Path(tmpdir)
+                with zipfile.ZipFile(a3xfrag_file, 'r') as zipf:
+                    zipf.extractall(tmpdir_path)
+                state_path = tmpdir_path / "fragment.pt"
+                meta_path = tmpdir_path / "metadata.json"
+                if not state_path.exists() or not meta_path.exists():
+                    self.logger.error(f"[MemoryManager] Import failed: missing files in archive {a3xfrag_file}")
+                    return False
+                state_dict = torch.load(state_path)
+                with open(meta_path, 'r') as f:
+                    metadata = json.load(f)
+                fragment_id = metadata.get("fragment_id")
+                if not fragment_id:
+                    self.logger.error(f"[MemoryManager] Import failed: fragment_id missing in metadata.")
+                    return False
+                # Save state
+                save_data = {
+                    "class_name": metadata.get("class_name", "Unknown"),
+                    "module": metadata.get("module", "Unknown"),
+                    "state_dict": state_dict,
+                    "init_args": metadata
+                }
+                self.save_fragment_state(fragment_id, save_data)
+                # Atualiza metadados
+                self.register_fragment(fragment_id, metadata)
+                self.logger.info(f"[MemoryManager] Imported fragment '{fragment_id}' from {a3xfrag_file}")
+                return True
+        except Exception as e:
+            self.logger.error(f"[MemoryManager] Error importing fragment from {a3xfrag_file}: {e}")
+            return False
     # --- FRAGMENT METADATA MANAGEMENT (NEW SECTION) ---
 
     def _load_fragment_metadata(self):

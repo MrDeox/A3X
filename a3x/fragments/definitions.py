@@ -2,7 +2,6 @@
 import os
 from .basic_fragments import PlannerFragment, FinalAnswerProvider
 from .file_manager_fragment import FileOpsManager
-from .code_execution_fragment import CodeExecutionManager
 from .debugger import DebuggerFragment
 from .meta_reflector_fragment import MetaReflectorFragment
 from .evolution_orchestrator_fragment import EvolutionOrchestratorFragment
@@ -26,11 +25,7 @@ from .performance_manager_fragment import PerformanceManagerFragment
 #         "web_search",
 #         # Add browser skills here if/when integrated and relevant for this role
 #         # "get_page_content",
-#     ],
-#     "CodeExecutor": [
-#         "execute_code",
-#         # Maybe add generate_code if this fragment should also generate?
-#     ],
+
 #      "Planner": [ # Fragment responsible for planning/decomposition
 #          "hierarchical_planner",
 #          # Could potentially use 'list_directory' or 'read_file' for context? Keep focused for now.

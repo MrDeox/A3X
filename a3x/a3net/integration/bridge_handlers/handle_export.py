@@ -3,13 +3,13 @@ from typing import Dict, Optional, Any
 from pathlib import Path
 
 # Assuming these are available in the environment
-from a3x.a3net.core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 
 async def handle_export_fragment(
     directive: Dict[str, Any],
-    memory_bank: MemoryBank
+    memory_manager: MemoryManager
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'export_fragment' directive logic."""
 
@@ -31,7 +31,7 @@ async def handle_export_fragment(
         logger.info(f"[A3X Bridge Handler - Export] No path provided, using default export location for {fragment_id}.")
         # Original code used print here
     
-    # Call MemoryBank export
+    # Call MemoryManager export
     try:
         success = memory_bank.export(fragment_id, export_path) # Pass None if path wasn't provided
         if success:

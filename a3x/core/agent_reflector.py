@@ -7,8 +7,9 @@ from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING, Literal
 
 # Avoid circular import for type hinting
 if TYPE_CHECKING:
-    # from .agent import ReactAgent
-    from a3x.core.agent import ReactAgent
+    pass
+
+    
 
 # Logger for this module
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ async def reflect_on_observation(
     history: list,
     memory: MemoryType,
     agent_logger: logging.Logger,
-    agent_instance: "ReactAgent",
+    agent_instance: "CerebrumXAgent",
 ) -> Tuple[Decision, Optional[List[str]]]:
     """Analyzes the observation from the last action and decides the next course of action.
 
@@ -51,7 +52,7 @@ async def reflect_on_observation(
         history: The agent's conversation history.
         memory: The agent's memory state.
         agent_logger: The logger instance for agent activities.
-        agent_instance: The instance of the ReactAgent for potential recursive calls.
+        agent_instance: The instance of the CerebrumXAgent for potential recursive calls.
 
     Returns:
         A tuple containing:

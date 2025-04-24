@@ -1,7 +1,7 @@
 
 from a3x.fragments.base import BaseFragment
-from a3x.context import Context
+from typing import Any
 
 class ValidTestFragment(BaseFragment):
-    def execute(self, ctx: Context):
+    async def execute(self, ctx: Any):
         return {"status": "success", "message": "Executed valid fragment"}

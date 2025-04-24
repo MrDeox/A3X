@@ -11,20 +11,6 @@ from a3x.fragments.base import BaseFragment, FragmentContext, FragmentDef # Use 
 from a3x.fragments.registry import fragment # Use real decorator
 from a3x.core.tool_registry import ToolRegistry 
 
-# --- Remove Placeholder Imports/Definitions ---
-# try:
-#     from a3x.fragments.base import BaseFragment, FragmentContext
-#     # Placeholder for fragment registration decorator
-#     # from a3x.fragment_registry import fragment_decorator
-#     # Placeholder for the actual skill/tool import
-#     # from a3x.skills.code_generation import generate_code_variation
-# except ImportError as e:
-#     print(f"[MutatorFragment] Warning: Could not import core A3X components ({e}). Using placeholders.")
-#     # Define placeholders if imports fail
-#     class FragmentContext:
-#         workspace_root: Optional[str] = None
-#         post_message_handler: Optional[Callable[..., Awaitable[None]]] = None
-#
 #     class BaseFragment:
 #         _a3x_fragment_name: str = "placeholder_fragment"
 #         def __init__(self, *args, **kwargs): pass

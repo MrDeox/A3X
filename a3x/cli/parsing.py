@@ -62,7 +62,7 @@ def parse_arguments():
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=15, # Default from ReactAgent
+        default=15, # Default from antigo ReactAgent
         help="Maximum number of steps the agent can take for a task."
     )
     parser.add_argument(

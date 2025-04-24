@@ -340,9 +340,34 @@ class FragmentRegistry:
             self.logger.warning(f"Fragment '{name}' not found in loaded instances. Attempting to load...")
             fragment = self.load_fragment(name) # load_fragment handles logging on failure
             if not fragment:
-                 # Keep error minimal as load_fragment already logged details
-                 self.logger.error(f"Failed to get or load fragment '{name}'.")
-                 return None
+                # Try to instantiate directly from registered class/definition (for test mocks)
+                fragment_cls = self._fragment_classes.get(name)
+                fragment_def = self._fragment_defs.get(name)
+                if fragment_cls and fragment_def:
+                    try:
+                        ctx = FragmentContext(
+                            fragment_id=name,
+                            fragment_name=name,
+                            fragment_class=fragment_cls,
+                            fragment_def=fragment_def,
+                            config=self.config,
+                            logger=self.logger.getChild(f"fragment.{name}"),
+                            llm_interface=self.llm_interface,
+                            tool_registry=self.skill_registry,
+                            fragment_registry=self,
+                            shared_task_context={},
+                            workspace_root=Path.cwd(),
+                            memory_manager=None
+                        )
+                        fragment = fragment_cls(ctx=ctx)
+                        self._fragments[name] = fragment
+                        self.logger.info(f"Instantiated fragment '{name}' directly from registry for test/mocking.")
+                    except Exception as e:
+                        self.logger.error(f"Failed to instantiate fragment '{name}' directly from registry: {e}")
+                        return None
+                else:
+                    self.logger.error(f"Failed to get or load fragment '{name}'. No registered class/definition.")
+                    return None
         return fragment
 
     def get_fragment_definition(self, name: str) -> Optional[FragmentDef]:

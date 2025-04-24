@@ -3,14 +3,14 @@ import torch
 from typing import Dict, Optional, Any
 
 # Assuming these are available in the environment
-from a3x.a3net.core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 from a3x.a3net.core.cognitive_graph import CognitiveGraph
 
 logger = logging.getLogger(__name__)
 
 async def handle_run_graph(
     directive: Dict[str, Any],
-    memory_bank: MemoryBank
+    memory_manager: MemoryManager
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'run_graph' directive logic."""
 

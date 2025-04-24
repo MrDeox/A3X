@@ -49,39 +49,34 @@ def load_skills(reload=False):
     if reload:
         _skill_registry = {} # Clear registry on reload
 
-    print("*** DEBUG: Entering walk_packages loop in skills/__init__.py ***", flush=True)
-    time.sleep(0.01) # Reduced sleep
+
     for _, name, is_pkg in pkgutil.walk_packages(__path__, prefix=__name__ + '.'):
         # Skip __init__ modules themselves if necessary, though walk_packages usually handles this
         if name.endswith('.__init__'):
             continue
 
         relative_name = name.split('.')[-1]
-        print(f"*** DEBUG: walk_packages found: {relative_name} (is_pkg={is_pkg}) ***", flush=True)
+
         # time.sleep(0.01) # Reduced sleep
         logger.info(f"---> Attempting to import skill module: {relative_name} (is_pkg={is_pkg})")
         try:
-            print(f"*** DEBUG: --- Importing: {name} ---", flush=True)
-            # time.sleep(0.01) # Reduced sleep
+
             module = importlib.import_module(name)
-            print(f"*** DEBUG: +++ Imported: {name} +++", flush=True)
-            # time.sleep(0.01) # Reduced sleep
+
             logger.info(f"---> Successfully imported skill module: {relative_name}")
             # Optional: Reload nested skills if the module supports it
             # if reload and hasattr(module, 'load_skills'):
             #     module.load_skills(reload=True)
         except Exception as e:
             logger.error(f"Failed to import skill module {name}: {e}", exc_info=True)
-            print(f"*** ERROR: Failed to import {name}: {e} ***", flush=True) # Add error print
+
         # time.sleep(0.01) # Reduced sleep
 
-    print("*** DEBUG: Exited walk_packages loop in skills/__init__.py ***", flush=True)
-    time.sleep(0.01) # Reduced sleep
+
 
     # Removed atexit check here
 
-    print("*** DEBUG: Passed walk_packages. About to try importing .file_manager ***", flush=True)
-    time.sleep(0.01) # Reduced sleep
+
 
     # Explicitly import specific modules after dynamic loading
     # <<< REMOVED explicit import of file_manager to prevent circular dependency >>>
@@ -97,44 +92,7 @@ def load_skills(reload=False):
     #     logger.error(f"Error importing file_manager skill: {e}", exc_info=True)
     #     print(f"*** ERROR: Could not import .file_manager: {e}", flush=True)
 
-    try:
-        print("*** DEBUG: --> Trying explicit import: .simulate", flush=True)
-        from . import simulate # Assuming simulate is a package
-        logger.info("Imported simulate package.")
-        print("*** DEBUG: <-- Finished explicit import: .simulate", flush=True)
-    except ImportError as e:
-        logger.warning(f"Could not import simulate package: {e}")
-        print(f"*** WARNING: Could not import .simulate: {e}", flush=True)
-    except Exception as e:
-        logger.error(f"Error importing simulate package: {e}", exc_info=True)
-        print(f"*** ERROR: Could not import .simulate: {e}", flush=True)
 
-    try:
-        print("*** DEBUG: --> Trying explicit import: .monetization", flush=True)
-        from . import monetization # Assuming monetization is a package
-        logger.info("Imported monetization package.")
-        print("*** DEBUG: <-- Finished explicit import: .monetization", flush=True)
-    except ImportError as e:
-        logger.warning(f"Could not import monetization package: {e}")
-        print(f"*** WARNING: Could not import .monetization: {e}", flush=True)
-    except Exception as e:
-        logger.error(f"Error importing monetization package: {e}", exc_info=True)
-        print(f"*** ERROR: Could not import .monetization: {e}", flush=True)
-
-    try:
-        print("*** DEBUG: --> Trying explicit import: .learning", flush=True)
-        from . import learning # Assuming learning is a package
-        logger.info("Imported learning package.")
-        print("*** DEBUG: <-- Finished explicit import: .learning", flush=True)
-    except ImportError as e:
-        logger.warning(f"Could not import learning package: {e}")
-        print(f"*** WARNING: Could not import .learning: {e}", flush=True)
-    except Exception as e:
-        logger.error(f"Error importing learning package: {e}", exc_info=True)
-        print(f"*** ERROR: Could not import .learning: {e}", flush=True)
-
-    print("*** DEBUG: Finished explicit imports in skills/__init__.py ***", flush=True)
-    logger.info("Skills package initialized.")
 
 # This file now primarily serves to mark the 'skills' directory as a Python package.
 # Skill loading and registration logic has been moved to skills.loader
@@ -148,7 +106,4 @@ def load_skills(reload=False):
 
 logger.debug("a3x.skills package initialized. Load skills via skills.loader.load_skills().")
 
-# Remove automatic loading on import:
-# print("*** DEBUG: Starting initial load_skills() call in skills/__init__.py ***", flush=True)
-# load_skills() # <-- REMOVED
-# print("*** DEBUG: Finished initial load_skills() call in skills/__init__.py ***", flush=True)
+# Descoberta e registro de skills deve ser feita explicitamente na inicialização da aplicação principal (ex: onde ToolRegistry é criado).

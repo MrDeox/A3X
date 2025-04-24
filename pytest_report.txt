@@ -1,0 +1,727 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.16, pytest-8.3.5, pluggy-1.5.0 -- /home/arthur/projects/A3X/.venv/bin/python3.10
+cachedir: .pytest_cache
+rootdir: /home/arthur/projects/A3X
+configfile: pytest.ini
+plugins: asyncio-0.26.0, mock-3.14.0, anyio-4.9.0
+asyncio: mode=auto, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/functional/test_orchestrator_integration.py::test_task_completion_triggers_self_evolver_fragment FAILED [ 50%]
+tests/functional/test_orchestrator_integration.py::test_task_completion_triggers_meta_reflector_fragment FAILED [100%]
+
+=================================== FAILURES ===================================
+_____________ test_task_completion_triggers_self_evolver_fragment ______________
+
+self = <a3x.core.orchestrator.TaskOrchestrator object at 0x74c120765cc0>
+objective = 'Test objective', main_history = [], final_status = 'success'
+shared_context = <test_orchestrator_integration.test_task_completion_triggers_self_evolver_fragment.<locals>.DummySharedTaskContext object at 0x74c120775e40>
+
+    async def _invoke_learning_cycle(
+        self,
+        objective: str,
+        main_history: List,
+        final_status: str,
+        shared_context: "SharedTaskContext",
+    ):
+        task_id = shared_context.task_id
+        log_prefix = f"[Orchestrator Task {task_id}]"
+        self.logger.info(f"{log_prefix} Invoking learning cycle for task.")
+    
+        # Garantir max_steps definido para robustez em chamadas isoladas/testes
+        if not hasattr(self, '_current_max_steps'):
+            try:
+                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
+                max_steps = ORCHESTRATOR_MAX_STEPS
+                self.logger.warning(f"{log_prefix} max_steps não definido no contexto do ciclo de aprendizado. Usando default: {max_steps}")
+            except ImportError:
+                max_steps = 10
+                self.logger.warning(f"{log_prefix} max_steps não definido e config não importável. Usando fallback: {max_steps}")
+        else:
+            max_steps = self._current_max_steps
+    
+        try:
+            # Example: Create a summary or structured data from the execution
+            learning_data = {
+                "objective": objective,
+                "final_status": final_status,
+                "history": main_history,
+                "final_answer": shared_context.get_data("final_answer", "N/A"),
+                "steps_taken": len(main_history),
+            }
+            # Chama o método de aprendizado do MemoryManager e captura recomendação
+            recommendation = await self.memory_manager.learn_from_task(learning_data)
+    
+            if recommendation:
+                trigger = recommendation.get('trigger')
+                trigger_context = recommendation.get('context', {}) # Contexto da falha/sucesso
+    
+                self.logger.info(f"{log_prefix} Recomendação do MemoryManager: Trigger '{trigger}'")
+    
+                # Mapeamento de triggers para nomes dos fragmentos meta
+                trigger_to_fragment = {
+                    'reflection_on_failure': 'MetaReflectorFragment',
+                    'self_evolution': 'SelfEvolverFragment',
+                    'reflection_on_success': 'MetaReflectorFragment', # Pode ser outro fragmento se desejar
+                }
+                fragment_name = trigger_to_fragment.get(trigger)
+                if fragment_name:
+>                   fragment_class = self.fragment_registry.get_fragment_class(fragment_name)
+E                   AttributeError: 'FragmentRegistry' object has no attribute 'get_fragment_class'. Did you mean: '_fragment_classes'?
+
+a3x/core/orchestrator.py:286: AttributeError
+
+During handling of the above exception, another exception occurred:
+
+self = <a3x.core.orchestrator.TaskOrchestrator object at 0x74c120765cc0>
+objective = 'Test objective', main_history = [], final_status = 'success'
+shared_context = <test_orchestrator_integration.test_task_completion_triggers_self_evolver_fragment.<locals>.DummySharedTaskContext object at 0x74c120775e40>
+
+    async def _invoke_learning_cycle(
+        self,
+        objective: str,
+        main_history: List,
+        final_status: str,
+        shared_context: "SharedTaskContext",
+    ):
+        task_id = shared_context.task_id
+        log_prefix = f"[Orchestrator Task {task_id}]"
+        self.logger.info(f"{log_prefix} Invoking learning cycle for task.")
+    
+        # Garantir max_steps definido para robustez em chamadas isoladas/testes
+        if not hasattr(self, '_current_max_steps'):
+            try:
+                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
+                max_steps = ORCHESTRATOR_MAX_STEPS
+                self.logger.warning(f"{log_prefix} max_steps não definido no contexto do ciclo de aprendizado. Usando default: {max_steps}")
+            except ImportError:
+                max_steps = 10
+                self.logger.warning(f"{log_prefix} max_steps não definido e config não importável. Usando fallback: {max_steps}")
+        else:
+            max_steps = self._current_max_steps
+    
+        try:
+            # Example: Create a summary or structured data from the execution
+            learning_data = {
+                "objective": objective,
+                "final_status": final_status,
+                "history": main_history,
+                "final_answer": shared_context.get_data("final_answer", "N/A"),
+                "steps_taken": len(main_history),
+            }
+            # Chama o método de aprendizado do MemoryManager e captura recomendação
+            recommendation = await self.memory_manager.learn_from_task(learning_data)
+    
+            if recommendation:
+                trigger = recommendation.get('trigger')
+                trigger_context = recommendation.get('context', {}) # Contexto da falha/sucesso
+    
+                self.logger.info(f"{log_prefix} Recomendação do MemoryManager: Trigger '{trigger}'")
+    
+                # Mapeamento de triggers para nomes dos fragmentos meta
+                trigger_to_fragment = {
+                    'reflection_on_failure': 'MetaReflectorFragment',
+                    'self_evolution': 'SelfEvolverFragment',
+                    'reflection_on_success': 'MetaReflectorFragment', # Pode ser outro fragmento se desejar
+                }
+                fragment_name = trigger_to_fragment.get(trigger)
+                if fragment_name:
+                    fragment_class = self.fragment_registry.get_fragment_class(fragment_name)
+                    if fragment_class:
+                        try:
+                            fragment_def = self.fragment_registry.get_fragment_def(fragment_name)
+                            from a3x.fragments.base import FragmentContext # Import local para evitar ciclos
+                            meta_context = FragmentContext(
+                                logger=self.logger,
+                                llm_interface=self.llm_interface,
+                                tool_registry=self.tool_registry,
+                                fragment_registry=self.fragment_registry,
+                                shared_task_context=shared_context,
+                                workspace_root=self.workspace_root,
+                                memory_manager=self.memory_manager,
+                                heuristic_store=getattr(shared_context, 'heuristic_store', None),
+                                fragment_id=f"meta_{trigger}_{shared_context.task_id}",
+                                fragment_name=fragment_name,
+                                fragment_class=fragment_class,
+                                fragment_def=fragment_def,
+                                config=self.fragment_registry.get_fragment_config(fragment_name)
+                            )
+                            # Instanciar o fragmento meta
+                            fragment_instance = fragment_class(fragment_def=fragment_def, tool_registry=self.tool_registry)
+                            print(f"[DEBUG orchestrator] fragment_instance type: {type(fragment_instance)} (class: {fragment_class})")
+                            fragment_instance.set_context(meta_context)
+                            self.logger.info(f"{log_prefix} Executando fragmento meta: {fragment_name}...")
+                            # Executar o fragmento, passando trigger_context como kwargs
+                            meta_result = await fragment_instance.execute(**trigger_context)
+                        except Exception as meta_exc:
+                            self.logger.exception(f"{log_prefix} Erro ao executar fragmento meta {fragment_name}: {meta_exc}")
+            self.logger.info(f"{log_prefix} Learning cycle completed (com recomendação).")
+    
+        except Exception:
+            self.logger.exception(
+                f"{log_prefix} Error during learning cycle invocation:"
+            )
+    
+            # --- End of Orchestration Loop --- #
+    
+            # --- Handle Max Steps Reached --- #
+>           if not task_completed_successfully and current_step >= max_steps:
+E           NameError: name 'task_completed_successfully' is not defined
+
+a3x/core/orchestrator.py:325: NameError
+
+During handling of the above exception, another exception occurred:
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74c125764a30>
+integration_test_env = {'exception_policy': <test_orchestrator_integration.integration_test_env.<locals>.DummyExceptionPolicy object at 0x74c...gration_test_env.<locals>.DummyLLMInterface object at 0x74c125764ca0>, 'logger': <MagicMock id='128372906020240'>, ...}
+
+    @pytest.mark.asyncio
+    async def test_task_completion_triggers_self_evolver_fragment(monkeypatch, integration_test_env):
+        tool_registry = integration_test_env["tool_registry"]
+        fragment_registry = integration_test_env["fragment_registry"]
+        llm_interface = integration_test_env["llm_interface"]
+        memory_manager = integration_test_env["memory_manager"]
+        exception_policy = integration_test_env["exception_policy"]
+        workspace_root = integration_test_env["workspace_root"]
+        logger = integration_test_env["logger"]
+    
+        # Registro manual do fragmento mock
+        mock_se_def = FragmentDef(
+            name="SelfEvolverFragment",
+            fragment_class=MockSelfEvolverFragment,
+            description="Mock para SelfEvolver",
+            category="Evolution",
+            skills=["mock_skill_for_test"],
+            managed_skills=["mock_managed_skill"],
+            prompt_template="mock template for test",
+            capabilities=[]
+        )
+        fragment_registry._fragment_defs["SelfEvolverFragment"] = mock_se_def
+        fragment_registry._fragment_classes["SelfEvolverFragment"] = MockSelfEvolverFragment
+    
+        orchestrator = TaskOrchestrator(
+            fragment_registry=fragment_registry,
+            tool_registry=tool_registry,
+            llm_interface=llm_interface,
+            memory_manager=memory_manager,
+            agent_logger=logger,
+            workspace_root=Path(workspace_root),
+            config={},
+    
+        )
+    
+        class DummySharedTaskContext:
+            def __init__(self, task_id="test_task_id"):
+                self.task_id = task_id
+            def get_data(self, key, default=None):
+                return default
+        shared_context = DummySharedTaskContext()
+        main_history = []
+        objective = "Test objective"
+        final_status = "success"
+    
+        # Mock MemoryManager.learn_from_task para retornar trigger self_evolution
+        async def fake_learn_from_task(learning_data):
+            return {"trigger": "self_evolution", "context": {"foo": "bar"}}
+        monkeypatch.setattr(memory_manager, "learn_from_task", fake_learn_from_task)
+    
+        # Mock execute do MockSelfEvolverFragment
+        print("[DEBUG] Entering patch for MockSelfEvolverFragment.execute")
+        with patch.object(MockSelfEvolverFragment, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = {"status": "success"}
+>           await orchestrator._invoke_learning_cycle(
+                objective=objective,
+                main_history=main_history,
+                final_status=final_status,
+                shared_context=shared_context,
+            )
+
+tests/functional/test_orchestrator_integration.py:137: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <a3x.core.orchestrator.TaskOrchestrator object at 0x74c120765cc0>
+objective = 'Test objective', main_history = [], final_status = 'success'
+shared_context = <test_orchestrator_integration.test_task_completion_triggers_self_evolver_fragment.<locals>.DummySharedTaskContext object at 0x74c120775e40>
+
+    async def _invoke_learning_cycle(
+        self,
+        objective: str,
+        main_history: List,
+        final_status: str,
+        shared_context: "SharedTaskContext",
+    ):
+        task_id = shared_context.task_id
+        log_prefix = f"[Orchestrator Task {task_id}]"
+        self.logger.info(f"{log_prefix} Invoking learning cycle for task.")
+    
+        # Garantir max_steps definido para robustez em chamadas isoladas/testes
+        if not hasattr(self, '_current_max_steps'):
+            try:
+                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
+                max_steps = ORCHESTRATOR_MAX_STEPS
+                self.logger.warning(f"{log_prefix} max_steps não definido no contexto do ciclo de aprendizado. Usando default: {max_steps}")
+            except ImportError:
+                max_steps = 10
+                self.logger.warning(f"{log_prefix} max_steps não definido e config não importável. Usando fallback: {max_steps}")
+        else:
+            max_steps = self._current_max_steps
+    
+        try:
+            # Example: Create a summary or structured data from the execution
+            learning_data = {
+                "objective": objective,
+                "final_status": final_status,
+                "history": main_history,
+                "final_answer": shared_context.get_data("final_answer", "N/A"),
+                "steps_taken": len(main_history),
+            }
+            # Chama o método de aprendizado do MemoryManager e captura recomendação
+            recommendation = await self.memory_manager.learn_from_task(learning_data)
+    
+            if recommendation:
+                trigger = recommendation.get('trigger')
+                trigger_context = recommendation.get('context', {}) # Contexto da falha/sucesso
+    
+                self.logger.info(f"{log_prefix} Recomendação do MemoryManager: Trigger '{trigger}'")
+    
+                # Mapeamento de triggers para nomes dos fragmentos meta
+                trigger_to_fragment = {
+                    'reflection_on_failure': 'MetaReflectorFragment',
+                    'self_evolution': 'SelfEvolverFragment',
+                    'reflection_on_success': 'MetaReflectorFragment', # Pode ser outro fragmento se desejar
+                }
+                fragment_name = trigger_to_fragment.get(trigger)
+                if fragment_name:
+                    fragment_class = self.fragment_registry.get_fragment_class(fragment_name)
+                    if fragment_class:
+                        try:
+                            fragment_def = self.fragment_registry.get_fragment_def(fragment_name)
+                            from a3x.fragments.base import FragmentContext # Import local para evitar ciclos
+                            meta_context = FragmentContext(
+                                logger=self.logger,
+                                llm_interface=self.llm_interface,
+                                tool_registry=self.tool_registry,
+                                fragment_registry=self.fragment_registry,
+                                shared_task_context=shared_context,
+                                workspace_root=self.workspace_root,
+                                memory_manager=self.memory_manager,
+                                heuristic_store=getattr(shared_context, 'heuristic_store', None),
+                                fragment_id=f"meta_{trigger}_{shared_context.task_id}",
+                                fragment_name=fragment_name,
+                                fragment_class=fragment_class,
+                                fragment_def=fragment_def,
+                                config=self.fragment_registry.get_fragment_config(fragment_name)
+                            )
+                            # Instanciar o fragmento meta
+                            fragment_instance = fragment_class(fragment_def=fragment_def, tool_registry=self.tool_registry)
+                            print(f"[DEBUG orchestrator] fragment_instance type: {type(fragment_instance)} (class: {fragment_class})")
+                            fragment_instance.set_context(meta_context)
+                            self.logger.info(f"{log_prefix} Executando fragmento meta: {fragment_name}...")
+                            # Executar o fragmento, passando trigger_context como kwargs
+                            meta_result = await fragment_instance.execute(**trigger_context)
+                        except Exception as meta_exc:
+                            self.logger.exception(f"{log_prefix} Erro ao executar fragmento meta {fragment_name}: {meta_exc}")
+            self.logger.info(f"{log_prefix} Learning cycle completed (com recomendação).")
+    
+        except Exception:
+            self.logger.exception(
+                f"{log_prefix} Error during learning cycle invocation:"
+            )
+    
+            # --- End of Orchestration Loop --- #
+    
+            # --- Handle Max Steps Reached --- #
+            if not task_completed_successfully and current_step >= max_steps:
+                self.logger.warning(f"{log_prefix} Task reached max steps ({max_steps}) without completion.")
+                final_status = STATUS_MAX_ITERATIONS
+                final_reason = REASON_MAX_STEPS_REACHED
+                final_answer = "Task stopped: Maximum execution steps reached."
+                shared_task_context.error_info = {"stage": "max_steps", "details": final_answer}
+                shared_task_context.status = "failed_max_steps"
+                await notify_task_error(shared_task_context.task_id, final_reason, shared_task_context.error_info)
+    
+        except Exception as e:
+            self.logger.exception(f"{log_prefix} Critical error during orchestration loop:")
+            final_status = STATUS_ERROR; final_reason = REASON_ORCHESTRATION_CRITICAL_ERROR
+            final_answer = f"Task failed due to unexpected orchestrator error: {e}"
+            if 'shared_task_context' in locals():
+                 shared_task_context.error_info = {"stage": "orchestrator_critical", "details": str(e)}; shared_task_context.status = "failed_critical"
+                 await notify_task_error(shared_task_context.task_id, final_reason, shared_task_context.error_info)
+            else: await notify_task_error(task_id, final_reason, {"details": str(e)})
+    
+        finally:
+            # --- Clean up --- #
+            self.logger.info(f"{log_prefix} Orchestration loop finished. Final Status: {final_status}")
+            if self.monitor_task and not self.monitor_task.done():
+                self.monitor_task.cancel(); await asyncio.sleep(0) # Allow cancellation to propagate
+                try: await self.monitor_task
+                except asyncio.CancelledError: self.logger.info(f"{log_prefix} Chat monitor task successfully cancelled.")
+                except Exception as monitor_cancel_err: self.logger.error(f"{log_prefix} Error waiting for monitor task cancellation: {monitor_cancel_err}")
+            else: self.logger.info(f"{log_prefix} Monitor task was already done or not started.")
+    
+            # --- Invoke Learning Cycle --- #
+>           await self._invoke_learning_cycle(objective, orchestration_history, final_status, shared_task_context)
+E           NameError: name 'orchestration_history' is not defined
+
+a3x/core/orchestrator.py:354: NameError
+----------------------------- Captured stdout call -----------------------------
+[DEBUG] Entering patch for MockSelfEvolverFragment.execute
+____________ test_task_completion_triggers_meta_reflector_fragment _____________
+
+self = <a3x.core.orchestrator.TaskOrchestrator object at 0x74c1265a3d60>
+objective = 'Test objective', main_history = [], final_status = 'failure'
+shared_context = <test_orchestrator_integration.test_task_completion_triggers_meta_reflector_fragment.<locals>.DummySharedTaskContext object at 0x74c1265be350>
+
+    async def _invoke_learning_cycle(
+        self,
+        objective: str,
+        main_history: List,
+        final_status: str,
+        shared_context: "SharedTaskContext",
+    ):
+        task_id = shared_context.task_id
+        log_prefix = f"[Orchestrator Task {task_id}]"
+        self.logger.info(f"{log_prefix} Invoking learning cycle for task.")
+    
+        # Garantir max_steps definido para robustez em chamadas isoladas/testes
+        if not hasattr(self, '_current_max_steps'):
+            try:
+                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
+                max_steps = ORCHESTRATOR_MAX_STEPS
+                self.logger.warning(f"{log_prefix} max_steps não definido no contexto do ciclo de aprendizado. Usando default: {max_steps}")
+            except ImportError:
+                max_steps = 10
+                self.logger.warning(f"{log_prefix} max_steps não definido e config não importável. Usando fallback: {max_steps}")
+        else:
+            max_steps = self._current_max_steps
+    
+        try:
+            # Example: Create a summary or structured data from the execution
+            learning_data = {
+                "objective": objective,
+                "final_status": final_status,
+                "history": main_history,
+                "final_answer": shared_context.get_data("final_answer", "N/A"),
+                "steps_taken": len(main_history),
+            }
+            # Chama o método de aprendizado do MemoryManager e captura recomendação
+            recommendation = await self.memory_manager.learn_from_task(learning_data)
+    
+            if recommendation:
+                trigger = recommendation.get('trigger')
+                trigger_context = recommendation.get('context', {}) # Contexto da falha/sucesso
+    
+                self.logger.info(f"{log_prefix} Recomendação do MemoryManager: Trigger '{trigger}'")
+    
+                # Mapeamento de triggers para nomes dos fragmentos meta
+                trigger_to_fragment = {
+                    'reflection_on_failure': 'MetaReflectorFragment',
+                    'self_evolution': 'SelfEvolverFragment',
+                    'reflection_on_success': 'MetaReflectorFragment', # Pode ser outro fragmento se desejar
+                }
+                fragment_name = trigger_to_fragment.get(trigger)
+                if fragment_name:
+>                   fragment_class = self.fragment_registry.get_fragment_class(fragment_name)
+E                   AttributeError: 'FragmentRegistry' object has no attribute 'get_fragment_class'. Did you mean: '_fragment_classes'?
+
+a3x/core/orchestrator.py:286: AttributeError
+
+During handling of the above exception, another exception occurred:
+
+self = <a3x.core.orchestrator.TaskOrchestrator object at 0x74c1265a3d60>
+objective = 'Test objective', main_history = [], final_status = 'failure'
+shared_context = <test_orchestrator_integration.test_task_completion_triggers_meta_reflector_fragment.<locals>.DummySharedTaskContext object at 0x74c1265be350>
+
+    async def _invoke_learning_cycle(
+        self,
+        objective: str,
+        main_history: List,
+        final_status: str,
+        shared_context: "SharedTaskContext",
+    ):
+        task_id = shared_context.task_id
+        log_prefix = f"[Orchestrator Task {task_id}]"
+        self.logger.info(f"{log_prefix} Invoking learning cycle for task.")
+    
+        # Garantir max_steps definido para robustez em chamadas isoladas/testes
+        if not hasattr(self, '_current_max_steps'):
+            try:
+                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
+                max_steps = ORCHESTRATOR_MAX_STEPS
+                self.logger.warning(f"{log_prefix} max_steps não definido no contexto do ciclo de aprendizado. Usando default: {max_steps}")
+            except ImportError:
+                max_steps = 10
+                self.logger.warning(f"{log_prefix} max_steps não definido e config não importável. Usando fallback: {max_steps}")
+        else:
+            max_steps = self._current_max_steps
+    
+        try:
+            # Example: Create a summary or structured data from the execution
+            learning_data = {
+                "objective": objective,
+                "final_status": final_status,
+                "history": main_history,
+                "final_answer": shared_context.get_data("final_answer", "N/A"),
+                "steps_taken": len(main_history),
+            }
+            # Chama o método de aprendizado do MemoryManager e captura recomendação
+            recommendation = await self.memory_manager.learn_from_task(learning_data)
+    
+            if recommendation:
+                trigger = recommendation.get('trigger')
+                trigger_context = recommendation.get('context', {}) # Contexto da falha/sucesso
+    
+                self.logger.info(f"{log_prefix} Recomendação do MemoryManager: Trigger '{trigger}'")
+    
+                # Mapeamento de triggers para nomes dos fragmentos meta
+                trigger_to_fragment = {
+                    'reflection_on_failure': 'MetaReflectorFragment',
+                    'self_evolution': 'SelfEvolverFragment',
+                    'reflection_on_success': 'MetaReflectorFragment', # Pode ser outro fragmento se desejar
+                }
+                fragment_name = trigger_to_fragment.get(trigger)
+                if fragment_name:
+                    fragment_class = self.fragment_registry.get_fragment_class(fragment_name)
+                    if fragment_class:
+                        try:
+                            fragment_def = self.fragment_registry.get_fragment_def(fragment_name)
+                            from a3x.fragments.base import FragmentContext # Import local para evitar ciclos
+                            meta_context = FragmentContext(
+                                logger=self.logger,
+                                llm_interface=self.llm_interface,
+                                tool_registry=self.tool_registry,
+                                fragment_registry=self.fragment_registry,
+                                shared_task_context=shared_context,
+                                workspace_root=self.workspace_root,
+                                memory_manager=self.memory_manager,
+                                heuristic_store=getattr(shared_context, 'heuristic_store', None),
+                                fragment_id=f"meta_{trigger}_{shared_context.task_id}",
+                                fragment_name=fragment_name,
+                                fragment_class=fragment_class,
+                                fragment_def=fragment_def,
+                                config=self.fragment_registry.get_fragment_config(fragment_name)
+                            )
+                            # Instanciar o fragmento meta
+                            fragment_instance = fragment_class(fragment_def=fragment_def, tool_registry=self.tool_registry)
+                            print(f"[DEBUG orchestrator] fragment_instance type: {type(fragment_instance)} (class: {fragment_class})")
+                            fragment_instance.set_context(meta_context)
+                            self.logger.info(f"{log_prefix} Executando fragmento meta: {fragment_name}...")
+                            # Executar o fragmento, passando trigger_context como kwargs
+                            meta_result = await fragment_instance.execute(**trigger_context)
+                        except Exception as meta_exc:
+                            self.logger.exception(f"{log_prefix} Erro ao executar fragmento meta {fragment_name}: {meta_exc}")
+            self.logger.info(f"{log_prefix} Learning cycle completed (com recomendação).")
+    
+        except Exception:
+            self.logger.exception(
+                f"{log_prefix} Error during learning cycle invocation:"
+            )
+    
+            # --- End of Orchestration Loop --- #
+    
+            # --- Handle Max Steps Reached --- #
+>           if not task_completed_successfully and current_step >= max_steps:
+E           NameError: name 'task_completed_successfully' is not defined
+
+a3x/core/orchestrator.py:325: NameError
+
+During handling of the above exception, another exception occurred:
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74c1265a3d30>
+integration_test_env = {'exception_policy': <test_orchestrator_integration.integration_test_env.<locals>.DummyExceptionPolicy object at 0x74c...gration_test_env.<locals>.DummyLLMInterface object at 0x74c1265a3b80>, 'logger': <MagicMock id='128372920957968'>, ...}
+
+    @pytest.mark.asyncio
+    async def test_task_completion_triggers_meta_reflector_fragment(monkeypatch, integration_test_env):
+        tool_registry = integration_test_env["tool_registry"]
+        fragment_registry = integration_test_env["fragment_registry"]
+        llm_interface = integration_test_env["llm_interface"]
+        memory_manager = integration_test_env["memory_manager"]
+        exception_policy = integration_test_env["exception_policy"]
+        workspace_root = integration_test_env["workspace_root"]
+        logger = integration_test_env["logger"]
+    
+        # Registro manual do fragmento mock
+        mock_mr_def = FragmentDef(
+            name="MetaReflectorFragment",
+            fragment_class=MockMetaReflectorFragment,
+            description="Mock para MetaReflector",
+            category="Reflection",
+            skills=["mock_skill_for_test"],
+            managed_skills=["mock_managed_skill"],
+            prompt_template="mock template for test",
+            capabilities=[]
+        )
+        fragment_registry._fragment_defs["MetaReflectorFragment"] = mock_mr_def
+        fragment_registry._fragment_classes["MetaReflectorFragment"] = MockMetaReflectorFragment
+    
+        orchestrator = TaskOrchestrator(
+            fragment_registry=fragment_registry,
+            tool_registry=tool_registry,
+            llm_interface=llm_interface,
+            memory_manager=memory_manager,
+            agent_logger=logger,
+            workspace_root=Path(workspace_root),
+            config={},
+    
+        )
+        class DummySharedTaskContext:
+            def __init__(self, task_id="test_task_id"):
+                self.task_id = task_id
+            def get_data(self, key, default=None):
+                return default
+        shared_context = DummySharedTaskContext()
+        main_history = []
+        objective = "Test objective"
+        final_status = "failure"
+    
+        # Mock MemoryManager.learn_from_task para retornar trigger reflection_on_failure
+        async def fake_learn_from_task(learning_data):
+            return {"trigger": "reflection_on_failure", "context": {"fail_reason": "unit test"}}
+        monkeypatch.setattr(memory_manager, "learn_from_task", fake_learn_from_task)
+    
+        # Mock execute do MockMetaReflectorFragment
+        print("[DEBUG] Entering patch for MockMetaReflectorFragment.execute")
+        with patch.object(MockMetaReflectorFragment, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = {"status": "success"}
+>           await orchestrator._invoke_learning_cycle(
+                objective=objective,
+                main_history=main_history,
+                final_status=final_status,
+                shared_context=shared_context,
+            )
+
+tests/functional/test_orchestrator_integration.py:200: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <a3x.core.orchestrator.TaskOrchestrator object at 0x74c1265a3d60>
+objective = 'Test objective', main_history = [], final_status = 'failure'
+shared_context = <test_orchestrator_integration.test_task_completion_triggers_meta_reflector_fragment.<locals>.DummySharedTaskContext object at 0x74c1265be350>
+
+    async def _invoke_learning_cycle(
+        self,
+        objective: str,
+        main_history: List,
+        final_status: str,
+        shared_context: "SharedTaskContext",
+    ):
+        task_id = shared_context.task_id
+        log_prefix = f"[Orchestrator Task {task_id}]"
+        self.logger.info(f"{log_prefix} Invoking learning cycle for task.")
+    
+        # Garantir max_steps definido para robustez em chamadas isoladas/testes
+        if not hasattr(self, '_current_max_steps'):
+            try:
+                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
+                max_steps = ORCHESTRATOR_MAX_STEPS
+                self.logger.warning(f"{log_prefix} max_steps não definido no contexto do ciclo de aprendizado. Usando default: {max_steps}")
+            except ImportError:
+                max_steps = 10
+                self.logger.warning(f"{log_prefix} max_steps não definido e config não importável. Usando fallback: {max_steps}")
+        else:
+            max_steps = self._current_max_steps
+    
+        try:
+            # Example: Create a summary or structured data from the execution
+            learning_data = {
+                "objective": objective,
+                "final_status": final_status,
+                "history": main_history,
+                "final_answer": shared_context.get_data("final_answer", "N/A"),
+                "steps_taken": len(main_history),
+            }
+            # Chama o método de aprendizado do MemoryManager e captura recomendação
+            recommendation = await self.memory_manager.learn_from_task(learning_data)
+    
+            if recommendation:
+                trigger = recommendation.get('trigger')
+                trigger_context = recommendation.get('context', {}) # Contexto da falha/sucesso
+    
+                self.logger.info(f"{log_prefix} Recomendação do MemoryManager: Trigger '{trigger}'")
+    
+                # Mapeamento de triggers para nomes dos fragmentos meta
+                trigger_to_fragment = {
+                    'reflection_on_failure': 'MetaReflectorFragment',
+                    'self_evolution': 'SelfEvolverFragment',
+                    'reflection_on_success': 'MetaReflectorFragment', # Pode ser outro fragmento se desejar
+                }
+                fragment_name = trigger_to_fragment.get(trigger)
+                if fragment_name:
+                    fragment_class = self.fragment_registry.get_fragment_class(fragment_name)
+                    if fragment_class:
+                        try:
+                            fragment_def = self.fragment_registry.get_fragment_def(fragment_name)
+                            from a3x.fragments.base import FragmentContext # Import local para evitar ciclos
+                            meta_context = FragmentContext(
+                                logger=self.logger,
+                                llm_interface=self.llm_interface,
+                                tool_registry=self.tool_registry,
+                                fragment_registry=self.fragment_registry,
+                                shared_task_context=shared_context,
+                                workspace_root=self.workspace_root,
+                                memory_manager=self.memory_manager,
+                                heuristic_store=getattr(shared_context, 'heuristic_store', None),
+                                fragment_id=f"meta_{trigger}_{shared_context.task_id}",
+                                fragment_name=fragment_name,
+                                fragment_class=fragment_class,
+                                fragment_def=fragment_def,
+                                config=self.fragment_registry.get_fragment_config(fragment_name)
+                            )
+                            # Instanciar o fragmento meta
+                            fragment_instance = fragment_class(fragment_def=fragment_def, tool_registry=self.tool_registry)
+                            print(f"[DEBUG orchestrator] fragment_instance type: {type(fragment_instance)} (class: {fragment_class})")
+                            fragment_instance.set_context(meta_context)
+                            self.logger.info(f"{log_prefix} Executando fragmento meta: {fragment_name}...")
+                            # Executar o fragmento, passando trigger_context como kwargs
+                            meta_result = await fragment_instance.execute(**trigger_context)
+                        except Exception as meta_exc:
+                            self.logger.exception(f"{log_prefix} Erro ao executar fragmento meta {fragment_name}: {meta_exc}")
+            self.logger.info(f"{log_prefix} Learning cycle completed (com recomendação).")
+    
+        except Exception:
+            self.logger.exception(
+                f"{log_prefix} Error during learning cycle invocation:"
+            )
+    
+            # --- End of Orchestration Loop --- #
+    
+            # --- Handle Max Steps Reached --- #
+            if not task_completed_successfully and current_step >= max_steps:
+                self.logger.warning(f"{log_prefix} Task reached max steps ({max_steps}) without completion.")
+                final_status = STATUS_MAX_ITERATIONS
+                final_reason = REASON_MAX_STEPS_REACHED
+                final_answer = "Task stopped: Maximum execution steps reached."
+                shared_task_context.error_info = {"stage": "max_steps", "details": final_answer}
+                shared_task_context.status = "failed_max_steps"
+                await notify_task_error(shared_task_context.task_id, final_reason, shared_task_context.error_info)
+    
+        except Exception as e:
+            self.logger.exception(f"{log_prefix} Critical error during orchestration loop:")
+            final_status = STATUS_ERROR; final_reason = REASON_ORCHESTRATION_CRITICAL_ERROR
+            final_answer = f"Task failed due to unexpected orchestrator error: {e}"
+            if 'shared_task_context' in locals():
+                 shared_task_context.error_info = {"stage": "orchestrator_critical", "details": str(e)}; shared_task_context.status = "failed_critical"
+                 await notify_task_error(shared_task_context.task_id, final_reason, shared_task_context.error_info)
+            else: await notify_task_error(task_id, final_reason, {"details": str(e)})
+    
+        finally:
+            # --- Clean up --- #
+            self.logger.info(f"{log_prefix} Orchestration loop finished. Final Status: {final_status}")
+            if self.monitor_task and not self.monitor_task.done():
+                self.monitor_task.cancel(); await asyncio.sleep(0) # Allow cancellation to propagate
+                try: await self.monitor_task
+                except asyncio.CancelledError: self.logger.info(f"{log_prefix} Chat monitor task successfully cancelled.")
+                except Exception as monitor_cancel_err: self.logger.error(f"{log_prefix} Error waiting for monitor task cancellation: {monitor_cancel_err}")
+            else: self.logger.info(f"{log_prefix} Monitor task was already done or not started.")
+    
+            # --- Invoke Learning Cycle --- #
+>           await self._invoke_learning_cycle(objective, orchestration_history, final_status, shared_task_context)
+E           NameError: name 'orchestration_history' is not defined
+
+a3x/core/orchestrator.py:354: NameError
+----------------------------- Captured stdout call -----------------------------
+[DEBUG] Entering patch for MockMetaReflectorFragment.execute
+=========================== short test summary info ============================
+FAILED tests/functional/test_orchestrator_integration.py::test_task_completion_triggers_self_evolver_fragment
+FAILED tests/functional/test_orchestrator_integration.py::test_task_completion_triggers_meta_reflector_fragment
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 2 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+========================= 2 failed, 1 warning in 0.35s =========================

@@ -18,17 +18,26 @@ from a3x.fragments.base import BaseFragment
 from a3x.fragments.base import BaseFragment, FragmentDef
 
 class MockSelfEvolverFragment(BaseFragment):
+    async def get_purpose(self, context=None):
+        return "Mock purpose"
     async def execute(self, **kwargs):
         print("[DEBUG] MockSelfEvolverFragment.execute called (REAL METHOD)")
         return {"status": "success", "message": "Mock Self Evolver Executed"}
 
 class MockMetaReflectorFragment(BaseFragment):
+    async def get_purpose(self, context=None):
+        return "Mock purpose"
     async def execute(self, **kwargs):
         print("[DEBUG] MockMetaReflectorFragment.execute called (REAL METHOD)")
         return {"status": "success", "message": "Mock Meta Reflector Executed"}
 
 @pytest.fixture
-def integration_test_env():
+def integration_test_env(monkeypatch):
+    # Patch autodiscovery on the CLASS before any instance is created
+    monkeypatch.setattr(
+        "a3x.fragments.registry.FragmentRegistry.discover_and_register_fragments",
+        lambda self, *args, **kwargs: None
+    )
     temp_dir = tempfile.TemporaryDirectory()
     temp_path = Path(temp_dir.name)
     db_path = temp_path / "test_memory.db"

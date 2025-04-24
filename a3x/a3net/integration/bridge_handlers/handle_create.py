@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, Optional
 
 # Assuming these are available in the environment
-from a3x.a3net.core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 from a3x.a3net.core.neural_language_fragment import NeuralLanguageFragment
 from a3x.a3net.core.reflective_language_fragment import ReflectiveLanguageFragment
 from a3x.a3net.trainer.dataset_builder import get_embedding_model
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 async def handle_create_fragment(
     directive: Dict[str, Any], 
-    memory_bank: MemoryBank
+    memory_manager: MemoryManager
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'create_fragment' directive logic."""
     

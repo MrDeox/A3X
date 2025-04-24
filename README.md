@@ -28,7 +28,7 @@ source .venv/bin/activate  # Linux/Mac
 
 3. Instale as dependências:
 ```bash
-pip install -r requirements.txt
+pip install -e . # Para instalação editável (recomendado para desenvolvimento)
 ```
 
 4. Configure as variáveis de ambiente (copie e edite o exemplo):
@@ -38,12 +38,13 @@ cp .env.example .env
 
 ## Uso Básico
 
-O A³X pode ser usado de duas formas principais:
+O A³X pode ser utilizado de duas formas principais:
 
 ### 1. Sistema Unificado (Recomendado)
 
 ```python
 from a3x.core.a3x_unified import create_a3x_system
+import asyncio
 
 async def main():
     # Criar e inicializar o sistema
@@ -63,7 +64,6 @@ async def main():
         # Limpar recursos
         await system.cleanup()
 
-# Rodar
 asyncio.run(main())
 ```
 
@@ -73,19 +73,25 @@ asyncio.run(main())
 from a3x.fragments.registry import FragmentRegistry
 from a3x.core.tool_registry import ToolRegistry
 from a3x.core.orchestrator import TaskOrchestrator
+from a3x.core.memory_manager import MemoryManager
+from a3x.core.llm_interface import LLMInterface
 
 # Inicializar componentes
 fragment_registry = FragmentRegistry()
 tool_registry = ToolRegistry()
+memory_manager = MemoryManager()
+llm_interface = LLMInterface()
 
 # Registrar fragments e skills
-fragment_registry.discover_and_register_fragments()
 tool_registry.discover_skills()
+fragment_registry.discover_and_register_fragments()
 
 # Criar orquestrador
 orchestrator = TaskOrchestrator(
     fragment_registry=fragment_registry,
-    tool_registry=tool_registry
+    tool_registry=tool_registry,
+    memory_manager=memory_manager,
+    llm_interface=llm_interface
 )
 
 # Executar tarefa
@@ -105,25 +111,38 @@ Veja a pasta `examples/` para mais exemplos de uso, incluindo:
 
 ## Arquitetura
 
-O A³X é composto por vários subsistemas integrados:
+O A³X é estruturado em torno de componentes centrais que promovem modularidade, extensibilidade e interoperabilidade:
 
-### Core
-- **Orchestrator**: Coordena a execução de tarefas
-- **FragmentRegistry**: Gerencia fragments disponíveis
-- **ToolRegistry**: Gerencia skills e ferramentas
-- **MemoryManager**: Sistema de memória e contexto
+### Núcleo (Core)
+- **TaskOrchestrator**: Componente central que coordena a execução de tarefas, delegando para fragments especializados conforme necessário.
+- **FragmentRegistry**: Gerencia o registro e descoberta dinâmica de fragments disponíveis no sistema.
+- **ToolRegistry**: Gerencia o registro e descoberta de skills (ferramentas) que podem ser utilizadas por fragments.
+- **MemoryManager**: Sistema de memória persistente e contexto compartilhado entre fragments, garantindo histórico e aprendizado contínuo.
+- **LLMInterface**: Interface padronizada para interação com modelos de linguagem de grande porte (LLMs), utilizada por fragments como ProfessorLLM.
 
 ### Fragments
-- **ProfessorLLM**: Interface com modelos de linguagem
-- **KnowledgeInterpreter**: Tradução entre linguagem natural e A3L
-- **AutonomousStarter**: Inicia ciclos autônomos
-- **MetaLearner**: Gerencia evolução do sistema
+Fragments são unidades de competência autônomas, cada uma responsável por um aspecto do processo de raciocínio ou execução. Exemplos:
+- **ProfessorLLMFragment**: Consulta LLMs para análise e geração de conhecimento.
+- **KnowledgeInterpreterFragment**: Converte respostas textuais em comandos A3L estruturados.
+- **MetaReflectorFragment**: Analisa ciclos evolutivos e sugere ajustes estratégicos.
+- **EvolutionOrchestratorFragment**: Orquestra ciclos completos de evolução simbólica.
+
+Fragments são registrados automaticamente via o decorador `@fragment` e gerenciados pelo `FragmentRegistry`.
 
 ### Skills
-- Módulos de funcionalidade específica
-- Facilmente extensíveis
-- Integração com APIs externas
+Skills são funções especializadas que realizam operações atômicas (ex: leitura de arquivos, execução de código, consulta web). São registradas via o decorador `@skill` e gerenciadas pelo `ToolRegistry`. Fragments podem requisitar skills conforme necessário durante sua execução.
 
+### Comunicação e Memória
+- **Communication Layer**: Todos os fragments e a CLI compartilham contexto persistente via `a3x/core/communication/`, utilizando o mesmo `task_id` para interoperabilidade.
+- **Ciclo Completo**: O fluxo típico envolve o TaskOrchestrator delegando para fragments, que por sua vez utilizam skills, com estados e resultados compartilhados pelo MemoryManager.
+
+### Remoção de Componentes Obsoletos
+- Componentes antigos como `ReactAgent` e `MemoryBank` foram removidos. O fluxo é agora centrado no TaskOrchestrator, FragmentExecutor, e comunicação persistente.
+
+### Extensibilidade
+- Para adicionar novos Fragments ou Skills, basta criar o arquivo correspondente e usar os decoradores `@fragment` ou `@skill`.
+
+Consulte a seção de Desenvolvimento para exemplos práticos.
 ## Desenvolvimento
 
 ### Adicionando Novos Fragments

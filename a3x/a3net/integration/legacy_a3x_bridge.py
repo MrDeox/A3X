@@ -8,7 +8,7 @@ import logging # Added logging
 from a3x.a3net.trainer.dataset_builder import build_dataset_from_context
 from a3x.a3net.core.fragment_cell import FragmentCell
 from a3x.a3net.trainer.train_loop import train_fragment_cell
-from a3x.a3net.core.memory_bank import MemoryBank # <<< Import MemoryBank >>>
+from a3x.core.memory.memory_manager import MemoryManager # Agora usamos MemoryManager centralizado
 from a3x.a3net.core.cognitive_graph import CognitiveGraph # <<< Import CognitiveGraph >>>
 from a3x.a3net.core.neural_language_fragment import NeuralLanguageFragment # <<< Import NeuralLanguageFragment >>>
 from a3x.a3net.core.reflective_language_fragment import ReflectiveLanguageFragment # <<< Import ReflectiveLanguageFragment >>>
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # --- Module-Level Memory Bank Instance ---
 # Instantiate with a specific directory for persistence
-MEMORY_BANK = MemoryBank(save_dir="a3net_memory") 
+MEMORY_MANAGER = MemoryManager({"MEMORY_STATE_DIR": "a3net_memory/fragment_states", "MEMORY_EXPORT_DIR": "a3net_memory/fragment_exports"}) 
 # Note: This creates one instance when the module is first imported.
 
 def handle_directive(directive: Dict) -> Optional[Dict[str, Any]]: # <<< Add return type >>>

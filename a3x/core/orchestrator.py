@@ -244,6 +244,19 @@ class TaskOrchestrator:
         task_id = shared_context.task_id
         log_prefix = f"[Orchestrator Task {task_id}]"
         self.logger.info(f"{log_prefix} Invoking learning cycle for task.")
+
+        # Garantir max_steps definido para robustez em chamadas isoladas/testes
+        if not hasattr(self, '_current_max_steps'):
+            try:
+                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
+                max_steps = ORCHESTRATOR_MAX_STEPS
+                self.logger.warning(f"{log_prefix} max_steps não definido no contexto do ciclo de aprendizado. Usando default: {max_steps}")
+            except ImportError:
+                max_steps = 10
+                self.logger.warning(f"{log_prefix} max_steps não definido e config não importável. Usando fallback: {max_steps}")
+        else:
+            max_steps = self._current_max_steps
+
         try:
             # Example: Create a summary or structured data from the execution
             learning_data = {
@@ -270,272 +283,20 @@ class TaskOrchestrator:
                 }
                 fragment_name = trigger_to_fragment.get(trigger)
                 if fragment_name:
-                    fragment_class = self.fragment_registry.get_fragment_class(fragment_name)
-                    if fragment_class:
+                    meta_fragment = self.fragment_registry.get_fragment(fragment_name)
+                    if meta_fragment:
                         try:
-                            fragment_def = self.fragment_registry.get_fragment_def(fragment_name)
-                            from a3x.fragments.base import FragmentContext # Import local para evitar ciclos
-                            meta_context = FragmentContext(
-                                logger=self.logger,
-                                llm_interface=self.llm_interface,
-                                tool_registry=self.tool_registry,
-                                fragment_registry=self.fragment_registry,
-                                shared_task_context=shared_context,
-                                workspace_root=self.workspace_root,
-                                memory_manager=self.memory_manager,
-                                heuristic_store=getattr(shared_context, 'heuristic_store', None),
-                                fragment_id=f"meta_{trigger}_{shared_context.task_id}",
-                                fragment_name=fragment_name,
-                                fragment_class=fragment_class,
-                                fragment_def=fragment_def,
-                                config=self.fragment_registry.get_fragment_config(fragment_name)
-                            )
-                            # Instanciar o fragmento meta
-                            fragment_instance = fragment_class(fragment_def=fragment_def, tool_registry=self.tool_registry)
-                            print(f"[DEBUG orchestrator] fragment_instance type: {type(fragment_instance)} (class: {fragment_class})")
-                            fragment_instance.set_context(meta_context)
                             self.logger.info(f"{log_prefix} Executando fragmento meta: {fragment_name}...")
                             # Executar o fragmento, passando trigger_context como kwargs
-                            meta_result = await fragment_instance.execute(**trigger_context)
-                            self.logger.info(f"{log_prefix} Fragmento meta {fragment_name} concluído. Resultado: {meta_result.get('status', 'N/A')}")
+                            meta_result = await meta_fragment.execute(**trigger_context)
                         except Exception as meta_exc:
-                            self.logger.error(f"{log_prefix} Erro ao instanciar ou executar fragmento meta {fragment_name}: {meta_exc}", exc_info=True)
-                            if hasattr(self, 'exception_policy'):
-                                self.exception_policy.handle(meta_exc, context=f"Erro no fragmento meta {fragment_name}")
-                    else:
-                        self.logger.error(f"{log_prefix} Fragmento '{fragment_name}' não encontrado no registro para o trigger '{trigger}'.")
-                else:
-                    self.logger.warning(f"{log_prefix} Trigger desconhecido recebido do MemoryManager: '{trigger}'")
-            else:
-                self.logger.info(f"{log_prefix} Nenhuma recomendação de aprendizado/evolução recebida do MemoryManager.")
-
-            # O log "Learning cycle completed successfully." pode ser movido ou removido dependendo da lógica acima
-            self.logger.info(f"{log_prefix} Learning cycle completed (com recomendação).")
+                            self.logger.exception(f"{log_prefix} Erro ao executar fragmento meta {fragment_name}: {meta_exc}")
+                self.logger.info(f"{log_prefix} Learning cycle completed (com recomendação).")
 
         except Exception:
             self.logger.exception(
                 f"{log_prefix} Error during learning cycle invocation:"
             )
-            # Decide if this error should impact the overall task status ou apenas ser logado
-
-
-        # --- Initialize Task State --- #
-        shared_task_context = SharedTaskContext(task_id=task_id, initial_objective=objective)
-        shared_task_context.status = "starting"
-        orchestration_history: List[Tuple[str, str]] = []
-        current_step = 0
-        final_status = "in_progress"
-        final_answer = "Task did not complete."
-        task_completed_successfully = False
-
-        # --- Start Chat Monitor --- #
-        self.monitor_task = asyncio.create_task(
-            chat_monitor_task(
-                task_id=task_id, shared_task_context=shared_task_context,
-                llm_interface=self.llm_interface, tool_registry=self.tool_registry,
-                fragment_registry=self.fragment_registry, memory_manager=self.memory_manager,
-                workspace_root=self.workspace_root
-            )
-        )
-        self.logger.info(f"{log_prefix} Chat monitor started.")
-
-        # --- Resolve max_steps --- #
-        if max_steps is None:
-            try:
-                from a3x.core.config import ORCHESTRATOR_MAX_STEPS
-                max_steps = ORCHESTRATOR_MAX_STEPS
-            except ImportError:
-                max_steps = 10
-            self.logger.info(f"{log_prefix} Using max_steps: {max_steps}")
-
-        # --- Orchestration Loop --- #
-        try:
-            while current_step < max_steps and not task_completed_successfully:
-                current_step += 1
-                self.logger.info(f"{log_prefix} --- Step {current_step}/{max_steps} --- ")
-                shared_task_context.status = f"running_step_{current_step}"
-                await notify_task_update(shared_task_context.task_id, f"Starting step {current_step}")
-
-                # --- Check Chat Monitor for Interrupts --- #
-                try:
-                    monitor_message_entry = shared_task_context.internal_chat_queue.get_nowait()
-                    if isinstance(monitor_message_entry, dict) and monitor_message_entry.get("type") == "CONTROL" and monitor_message_entry.get("content", {}).get("command") == "STOP":
-                        self.logger.warning(f"{log_prefix} Received STOP signal from monitor. Halting task.")
-                        final_status = "stopped_by_user"
-                        final_answer = "Task stopped by user interaction."
-                        await notify_task_error(shared_task_context.task_id, "user_interrupt", {"details": final_answer})
-                        break
-                    else:
-                        self.logger.debug(f"{log_prefix} Received non-control message from queue: {monitor_message_entry}")
-                except asyncio.QueueEmpty:
-                    pass
-                
-                # <<< Reset loop-specific state before decision >>>
-                component_name = None
-                sub_task = None
-                delegation_reason = None
-                action_was_executed = False 
-                pending_request_handled = False
-
-                # --- Check for Pending Request FIRST --- 
-                pending_request_obj = shared_task_context.pending_request
-                if pending_request_obj:
-                    self.logger.info(f"{log_prefix} Handling Pending Request for capability: '{pending_request_obj.capability_needed}'")
-                    shared_task_context.pending_request = None # Clear the request
-                    pending_request_handled = True
-
-                    # Attempt to find fragment directly by capability
-                    found_fragment_name = self._find_fragment_by_capability(pending_request_obj.capability_needed)
-                    
-                    if found_fragment_name:
-                        component_name = found_fragment_name
-                        sub_task = pending_request_obj.details or f"Fulfill request for capability '{pending_request_obj.capability_needed}' from {pending_request_obj.requested_by or 'unknown'}."
-                        self.logger.info(f"{log_prefix} Delegating directly to '{component_name}' based on capability '{pending_request_obj.capability_needed}'.")
-                    else:
-                        # Fallback: No fragment found with capability, try asking OrchestratorFragment
-                        self.logger.warning(f"{log_prefix} No fragment found for capability '{pending_request_obj.capability_needed}'. Falling back to OrchestratorFragment delegation.")
-                        (
-                            component_name,
-                            sub_task,
-                            delegation_reason,
-                        ) = await self._get_next_step_delegation(
-                            objective=f"{objective} (Context: Fulfilling request for {pending_request_obj.capability_needed} from {pending_request_obj.requested_by or 'unknown'} - {pending_request_obj.details or 'No details'})", 
-                            history=orchestration_history, 
-                            shared_task_context=shared_task_context
-                        )
-                        if delegation_reason:
-                            self.logger.error(f"{log_prefix} Fallback delegation failed for pending request {pending_request_obj.capability_needed}: {delegation_reason}")
-                            final_status = STATUS_ERROR
-                            final_reason = REASON_DELEGATION_FAILED # Or maybe REASON_CAPABILITY_NOT_FOUND?
-                            final_answer = f"Orchestration failed: Could not fulfill pending request for '{pending_request_obj.capability_needed}' ({delegation_reason})"
-                            await notify_task_error(shared_task_context.task_id, final_reason, {"details": "Pending request handling failed"})
-                            break # Exit loop
-                        else:
-                             self.logger.info(f"{log_prefix} OrchestratorFragment delegated pending request to '{component_name}'.")
-
-                # --- Decide Next Action (if no pending request was handled) --- #
-                if not pending_request_handled:
-                    # <<< Existing logic using plan or _get_next_step_delegation >>>
-                    current_plan = shared_task_context.task_data.get("current_plan")
-                    next_step_index = shared_task_context.task_data.get("next_plan_step_index", 0)
-
-                    if isinstance(current_plan, list) and isinstance(next_step_index, int) and next_step_index < len(current_plan):
-                        plan_step = current_plan[next_step_index]
-                        if isinstance(plan_step, dict):
-                            component_name = plan_step.get("component", "tool_executor")
-                            sub_task = plan_step.get("task") or plan_step.get("description") or str(plan_step)
-                        else:
-                            component_name = "tool_executor"
-                            sub_task = str(plan_step)
-                        self.logger.info(f"{log_prefix} Executing plan step {next_step_index + 1}/{len(current_plan)}: Target='{component_name}', Task='{sub_task}'")
-                        shared_task_context.task_data["next_plan_step_index"] = next_step_index + 1
-                    else:
-                        self.logger.info(f"{log_prefix} No active plan step. Asking OrchestratorFragment for next delegation.")
-                        (
-                            component_name,
-                            sub_task,
-                            delegation_reason,
-                        ) = await self._get_next_step_delegation(objective, orchestration_history, shared_task_context)
-                        if delegation_reason:
-                            self.logger.error(f"{log_prefix} Failed to get delegation from OrchestratorFragment: {delegation_reason}")
-                            final_status = STATUS_ERROR; final_reason = delegation_reason; final_answer = f"Orchestration failed: Could not determine next step ({delegation_reason})"
-                            await notify_task_error(shared_task_context.task_id, final_reason, {"details": "OrchestratorFragment delegation failed"}); break
-                
-                # <<< Simplified Execution - component_name and sub_task should be set now >>>
-                fragment_success = False
-                fragment_result = None
-                component_executed = component_name 
-
-                if component_name:
-                    shared_task_context.status = f"executing_{component_name}"
-                    try:
-                        fragment_result_dict = await self._execute_fragment_task(
-                            component_name=component_name, sub_task=sub_task,
-                            objective=objective, shared_task_context=shared_task_context,
-                        )
-                        if isinstance(fragment_result_dict, dict):
-                            fragment_status = fragment_result_dict.get("status")
-                            fragment_success = fragment_status == STATUS_SUCCESS
-                            fragment_result = fragment_result_dict
-                            if not fragment_success:
-                                self.logger.error(f"{log_prefix} FragmentExecutor execution failed for '{component_name}'. Status: {fragment_status}, Reason: {fragment_result_dict.get('reason')}")
-                        else:
-                            self.logger.error(f"{log_prefix} _execute_fragment_task returned non-dict result for {component_name}: {fragment_result_dict}")
-                            fragment_success = False
-                            fragment_result = {"status": STATUS_ERROR, "reason": REASON_EXECUTOR_CALL_FAILED, "message": "Internal orchestrator error: _execute_fragment_task invalid return."}
-                    except FragmentExecutionError as fee:
-                        error_message = str(fee)
-                        self.logger.error(f"{log_prefix} FragmentExecutionError for '{component_name}': {error_message} (Status: {fee.status}, Reason: {fee.reason})", exc_info=True)
-                        fragment_success = False; fragment_result = {"status": fee.status, "reason": fee.reason, "message": error_message}
-                    except Exception as e:
-                        self.logger.exception(f"{log_prefix} Unexpected error during fragment execution for '{component_name}':")
-                        fragment_success = False; fragment_result = {"status": STATUS_ERROR, "reason": REASON_FRAGMENT_FAILED, "message": f"Unexpected error executing {component_name}: {e}"}
-                else:
-                    self.logger.warning(f"{log_prefix} No component determined for execution in this step. Skipping execution.")
-                    continue 
-
-                # --- Process Fragment Execution Result --- 
-                if fragment_result:
-                    result_summary = json.dumps(fragment_result)
-                    orchestration_history.append((component_executed, result_summary))
-                    self.logger.debug(f"{log_prefix} Added to history: ({component_executed}, {result_summary[:200]}...) ")
-                    
-                    # Update context (e.g., plan)
-                    if component_executed == "PlannerFragment" and fragment_success:
-                        new_plan = fragment_result.get("plan")
-                        if isinstance(new_plan, list):
-                            self.logger.info(f"{log_prefix} Received new plan from PlannerFragment. Updating context.")
-                            shared_task_context.task_data["current_plan"] = new_plan
-                            shared_task_context.task_data["next_plan_step_index"] = 0
-                    
-                    # Check for task completion
-                    if fragment_success and fragment_result.get("task_complete", False):
-                        final_status = STATUS_SUCCESS
-                        final_answer = fragment_result.get("answer") or fragment_result.get("result") or "Task completed successfully."
-                        task_completed_successfully = True
-                        self.logger.info(f"{log_prefix} Task marked as complete by '{component_executed}'. Final answer: {final_answer}")
-                        shared_task_context.result = final_answer
-                        shared_task_context.status = "completed"
-                        # Don't break yet, check for action intent below
-                    
-                    # <<< Check for Action Intent (after processing result) >>>
-                    action_intent_obj = shared_task_context.action_intent
-                    if action_intent_obj:
-                        self.logger.info(f"{log_prefix} Detected Action Intent from '{component_executed}': Skill='{action_intent_obj.skill_target}'")
-                        shared_task_context.action_intent = None 
-                        action_was_executed = True 
-                        
-                        action_result = await self.action_executor.execute_intent(intent=action_intent_obj, shared_task_context=shared_task_context)
-                        
-                        action_summary = json.dumps(action_result)
-                        orchestration_history.append((f"ActionExecutor ({action_intent_obj.skill_target})", action_summary))
-                        await notify_task_update(shared_task_context.task_id, f"Executed action '{action_intent_obj.skill_target}'. Status: {action_result.get('status')}")
-                        self.logger.debug(f"{log_prefix} Action result: {action_summary}")
-
-                        if action_result.get("status") != STATUS_SUCCESS:
-                            self.logger.error(f"{log_prefix} Action Intent execution failed: {action_result}")
-                            shared_task_context.error_info = {"stage": "action_execution", "details": action_result}
-                            final_status = STATUS_ERROR
-                            final_reason = action_result.get("reason", REASON_ACTION_EXECUTION_FAILED)
-                            final_answer = f"Orchestration failed during action execution: {action_result.get('message')}"
-                            task_completed_successfully = False 
-                            break 
-
-                # --- Handle Fragment Failure --- 
-                if not fragment_success:
-                    self.logger.error(f"{log_prefix} Step {current_step} failed due to fragment/executor error.")
-                    final_status = fragment_result.get("status", STATUS_ERROR)
-                    final_reason = fragment_result.get("reason", REASON_FRAGMENT_FAILED)
-                    final_answer = fragment_result.get("message", f"Task failed during execution of {component_executed}.")
-                    shared_task_context.error_info = {"stage": f"execution_{component_executed}", "details": fragment_result}
-                    shared_task_context.status = "failed"
-                    await notify_task_error(shared_task_context.task_id, final_reason, shared_task_context.error_info)
-                    break 
-
-                # --- Loop Completion Check --- 
-                if task_completed_successfully:
-                     self.logger.info(f"{log_prefix} Task completed successfully after step {current_step}.")
-                     break 
 
             # --- End of Orchestration Loop --- #
 
@@ -562,24 +323,46 @@ class TaskOrchestrator:
             # --- Clean up --- #
             self.logger.info(f"{log_prefix} Orchestration loop finished. Final Status: {final_status}")
             if self.monitor_task and not self.monitor_task.done():
-                self.monitor_task.cancel(); await asyncio.sleep(0) # Allow cancellation to propagate
-                try: await self.monitor_task
-                except asyncio.CancelledError: self.logger.info(f"{log_prefix} Chat monitor task successfully cancelled.")
-                except Exception as monitor_cancel_err: self.logger.error(f"{log_prefix} Error waiting for monitor task cancellation: {monitor_cancel_err}")
-            else: self.logger.info(f"{log_prefix} Monitor task was already done or not started.")
+                self.monitor_task.cancel()
+                await asyncio.sleep(0) # Allow cancellation to propagate
+                try:
+                    await self.monitor_task
+                except asyncio.CancelledError:
+                    self.logger.info(f"{log_prefix} Chat monitor task successfully cancelled.")
+                except Exception as monitor_cancel_err:
+                    self.logger.error(f"{log_prefix} Error waiting for monitor task cancellation: {monitor_cancel_err}")
+            else:
+                self.logger.info(f"{log_prefix} Monitor task was already done or not started.")
+
+            # Ensure shared_task_context and main_history are defined for this scope
+            local_shared_task_context = locals().get('shared_task_context', None)
+            local_main_history = locals().get('main_history', [])
 
             # --- Invoke Learning Cycle --- #
-            await self._invoke_learning_cycle(objective, orchestration_history, final_status, shared_task_context)
+            if local_shared_task_context is not None:
+                await self._invoke_learning_cycle(objective, local_main_history, final_status, local_shared_task_context)
+            else:
+                self.logger.warning(f"[Orchestrator] Skipping learning cycle: shared_task_context is None.")
 
             # --- Notify Task Completion/Error --- #
-            if final_status == STATUS_SUCCESS: await notify_task_completion(shared_task_context.task_id, final_answer)
-            elif final_status != "stopped_by_user" and shared_task_context.status not in ["failed", "failed_critical", "failed_max_steps"]:
-                 await notify_task_error(shared_task_context.task_id, final_reason if 'final_reason' in locals() else REASON_UNKNOWN, {"details": final_answer})
+            if local_shared_task_context is not None:
+                if final_status == STATUS_SUCCESS:
+                    await notify_task_completion(local_shared_task_context.task_id, final_answer)
+                elif final_status != "stopped_by_user" and getattr(local_shared_task_context, 'status', None) not in ["failed", "failed_critical", "failed_max_steps"]:
+                    await notify_task_error(local_shared_task_context.task_id, final_reason if 'final_reason' in locals() else REASON_UNKNOWN, {"details": final_answer})
 
         # --- Return Final Result --- #
+        safe_final_answer = locals().get('final_answer', None)
+        safe_final_reason = locals().get('final_reason', None)
+        safe_shared_task_context = locals().get('shared_task_context', None)
+        safe_orchestration_history = locals().get('orchestration_history', [])
+        safe_task_id = locals().get('task_id', None)
         return {
-            "status": final_status, "answer": final_answer, "task_id": task_id,
-            "history": orchestration_history, "final_context": shared_task_context.to_dict()
+            "status": final_status,
+            "answer": safe_final_answer,
+            "task_id": safe_task_id,
+            "history": safe_orchestration_history,
+            "final_context": safe_shared_task_context.to_dict() if safe_shared_task_context else None
         }
 
     async def shutdown(self):

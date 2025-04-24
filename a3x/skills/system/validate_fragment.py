@@ -113,11 +113,18 @@ async def skill_validate_fragment(context: Any, action_input: Dict[str, Any]) ->
                 logger.debug(f"Found exactly one fragment class: {fragment_class.__name__}")
 
                 # 5. Check for 'execute' method
-                if hasattr(fragment_class, 'execute') and callable(getattr(fragment_class, 'execute')):
+                execute_method = getattr(fragment_class, 'execute', None)
+                base_execute_method = getattr(BaseFragment, 'execute', None)
+                has_own_execute = (
+                    execute_method is not None and
+                    callable(execute_method) and
+                    execute_method is not base_execute_method
+                )
+                if has_own_execute:
                     validation_steps["has_execute_method"] = True
-                    logger.debug(f"Fragment class '{fragment_class.__name__}' has an 'execute' method.")
+                    logger.debug(f"Fragment class '{fragment_class.__name__}' has its own 'execute' method.")
                 else:
-                    msg = f"Validation failed: Fragment class '{fragment_class.__name__}' is missing an 'execute' method."
+                    msg = f"Validation failed: Fragment class '{fragment_class.__name__}' is missing a specific 'execute' method (or only inherits the base one)."
                     logger.error(msg)
                     messages.append(msg)
             elif len(fragment_classes) == 0:

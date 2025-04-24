@@ -12,7 +12,7 @@ import asyncio # Added import
 import time # <<< ADDED for timing execution
 
 # Import base agent and other necessary core components
-from a3x.core.agent import ReactAgent, is_introspective_query
+from a3x.core.agent import is_introspective_query
 from a3x.core.skills import get_skill_descriptions, get_skill_registry
 from a3x.core.tool_executor import ToolExecutor
 
@@ -35,10 +35,10 @@ from a3x.fragments.registry import FragmentRegistry
 from a3x.fragments.base import BaseFragment # Import base class for type hinting
 
 # Initialize logger for this module
-cerebrumx_logger = logging.getLogger(__name__) # <<< Rename logger? agent_logger already exists in ReactAgent
+cerebrumx_logger = logging.getLogger(__name__) # <<< Rename logger? agent_logger already exists in 
 
 # <<< ADDED Import >>>
-from .agent import _is_simple_list_files_task, ReactAgent # <<< ADD ReactAgent import
+from .agent import _is_simple_list_files_task
 
 # Helper to create context for direct execution calls
 # _ToolExecutionContext = namedtuple("_ToolExecutionContext", ["logger", "workspace_root", "llm_url", "tools_dict"])
@@ -59,7 +59,7 @@ from a3x.core.config import LLAMA_SERVER_URL
 # from a3x.core.config import Config
 from a3x.core.context import SharedTaskContext
 
-class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
+class CerebrumXAgent:
     """
     Agente Autônomo Adaptável Experimental com ciclo cognitivo unificado.
     Incorpora percepção, planejamento, execução ReAct, reflexão e aprendizado em um único fluxo.
@@ -82,7 +82,7 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         max_iterations: int = MAX_REACT_ITERATIONS, # <<< ADDED max_iterations
     ):
         """Inicializa o Agente CerebrumX."""
-        # Initialize ReactAgent first
+        # Initialize  first
         llm_interface_instance = None
         if llm_url: # If URL is explicitly passed to CerebrumX
             llm_interface_instance = LLMInterface(llm_url=llm_url)
@@ -90,30 +90,41 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
             effective_llm_url = LLAMA_SERVER_URL or DEFAULT_LLM_URL 
             llm_interface_instance = LLMInterface(llm_url=effective_llm_url)
 
-        # <<< CORRECTED super().__init__ call >>>
-        super().__init__(
-            agent_id=agent_id,
-            llm_interface=llm_interface_instance,
-            # ReactAgent expects skill_registry (dict mapping name -> schema)
-            skill_registry=tool_registry.list_tools(), # <<< Use list_tools()
-            tool_registry=tool_registry,
-            fragment_registry=fragment_registry,
-            memory_manager=memory_manager,
-            workspace_root=workspace_root,
-            max_iterations=max_iterations, # Pass max_iterations
-            logger=cerebrumx_logger # Pass specific logger if desired
-        )
-        # <<< END CORRECTION >>>
-
-        # Store system_prompt locally as ReactAgent's init doesn't seem to take it
+        self.agent_id = agent_id
+        self.agent_logger = cerebrumx_logger
         self.system_prompt = system_prompt
-
-        self.agent_logger.info(f"[CerebrumX INIT] Agente CerebrumX inicializado (ID: {agent_id}).")
         self.config = agent_config or {}
-
-        # MemoryManager is now initialized in ReactAgent via super().__init__
-        # self.memory_manager = memory_manager
-
+        self.memory_manager = memory_manager
+        self.fragment_registry = fragment_registry
+        self.tool_registry = tool_registry
+        self.workspace_root = workspace_root
+        self.llm_url = llm_url or LLAMA_SERVER_URL or DEFAULT_LLM_URL
+        self._history = []
+        self._memory: Dict[str, Any] = {}
+        self.orchestrator = None
+        # Initialize LLM interface
+        self.llm_interface = LLMInterface(llm_url=self.llm_url)
+        self.orchestrator = TaskOrchestrator(
+            fragment_registry=self.fragment_registry,
+            tool_registry=self.tool_registry,
+            memory_manager=self.memory_manager,
+            llm_interface=self.llm_interface,
+            workspace_root=self.workspace_root,
+            agent_logger=self.agent_logger,
+            config=self.config,
+        )
+        # Load agent state if exists
+        from a3x.core.db_utils import load_agent_state
+        loaded_state = load_agent_state(agent_id=self.agent_id)
+        if loaded_state:
+            self._history = loaded_state.get("history", [])
+            self._memory = loaded_state.get("memory", {})
+            self.agent_logger.info(
+                f"[CerebrumX INIT] Estado do agente carregado para ID '{self.agent_id}'. Memória: {list(self._memory.keys())}"
+            )
+        self.agent_logger.info(
+            f"[CerebrumX INIT] Agent initialized. LLM URL: {'Default' if not self.llm_url else self.llm_url}. Memória carregada: {list(self._memory.keys())}"
+        )
         # ExceptionPolicy configurável
         if exception_policy is None:
             from a3x.core.exception_policy import ExceptionPolicy
@@ -121,11 +132,28 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         else:
             self.exception_policy = exception_policy
 
-        # FragmentRegistry is now initialized in ReactAgent via super().__init__
-        # self.fragment_registry = fragment_registry
 
-        # Agent logger is also set in super
-        # self.agent_logger = logging.getLogger(__name__) # Use logger passed to ReactAgent
+    def add_history_entry(self, role: str, content: str):
+        """Adiciona uma entrada de dicionário {"role": ..., "content": ...} ao histórico."""
+        role_lower = role.lower()
+        if role_lower not in ["user", "assistant", "system", "tool", "human"]:
+            self.agent_logger.warning(f"[History] Received unexpected role: '{role}'. Using 'assistant'.")
+            role_lower = "assistant"
+        if role_lower == "human":
+            role_lower = "user"
+        history_entry = {"role": role_lower, "content": content}
+        self._history.append(history_entry)
+        self.agent_logger.debug(f"[History] Added entry: {history_entry}")
+
+    def get_history(self):
+        """Retorna o histórico interno para possível inspeção ou passagem para outros componentes."""
+        return self._history
+
+    def _save_state(self):
+        from a3x.core.db_utils import save_agent_state
+        state = {"history": self._history, "memory": self._memory}
+        save_agent_state(agent_id=self.agent_id, state=state)
+        self.agent_logger.info("[CerebrumXAgent] Agent state saved for ID '{}'.".format(self.agent_id))
 
     # --- Novo Ciclo Cognitivo Unificado (Delegado ao Orchestrator) ---
     async def run(self, objective: str, max_steps: Optional[int] = None) -> Dict[str, Any]: # Pass max_steps
@@ -139,7 +167,7 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
 
         # 1. Percepção (Simplificado - Adiciona ao histórico do agente base)
         perception = self._perceive(objective)
-        self.add_history_entry(role="user", content=perception["processed"]) # Use method from ReactAgent
+        self.add_history_entry(role="user", content=perception["processed"]) # Usa método local
         self.agent_logger.info(f"Percepção processada e adicionada ao histórico: {perception}")
 
         # 2. Recuperação de Contexto (Opcional - Pode ser feito pelo Orchestrator/Fragment se necessário)
@@ -153,7 +181,7 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         final_result = {}
         try:
             self.agent_logger.info(f"Delegando execução para TaskOrchestrator...")
-            # self.orchestrator foi inicializado no __init__ do ReactAgent
+            # self.orchestrator foi inicializado no __init__ do 
             final_result = await self.orchestrator.orchestrate(objective, max_steps=max_steps)
             self.agent_logger.info(f"TaskOrchestrator finalizou. Status: {final_result.get('status')}")
 
@@ -183,7 +211,7 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         # auto_evaluate_task(...)
 
         # 6. Salvar estado final do agente (incluindo histórico acumulado)
-        # O histórico é gerenciado pela classe base ReactAgent (self._history)
+        # O histórico é gerenciado pela classe base  (self._history)
         # O orchestrator pode adicionar ao contexto, mas o histórico final deve estar em self._history?
         # Precisamos garantir que o histórico do orchestrator seja integrado em self._history
         # TODO: Revisar como o histórico é passado entre orchestrator e agente.
@@ -194,7 +222,7 @@ class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
         if final_content:
             self.add_history_entry(role="assistant", content=str(final_content))
 
-        self._save_state() # Save state including history additions
+        self._save_state() # Salva estado incluindo histórico
 
         # 7. Retornar Resultado Final do Orchestrator
         final_status_str = str(final_result.get('status', 'unknown')) # Ensure outcome is a string

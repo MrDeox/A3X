@@ -5,7 +5,7 @@ import uuid
 import datetime as dt
 
 # Assuming these are available in the environment
-from a3x.a3net.core.memory_bank import MemoryBank
+from a3x.core.memory.memory_manager import MemoryManager
 from a3x.a3net.core.context_store import ContextStore
 from a3x.a3net.trainer.dataset_builder import get_embedding_model
 from a3x.a3net.core.neural_language_fragment import NeuralLanguageFragment
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def handle_ask(
     directive: Dict[str, Any],
-    memory_bank: MemoryBank,
+    memory_manager: MemoryManager,
     context_store: Optional[ContextStore]
 ) -> Optional[Dict[str, Any]]:
     """Handles the 'ask' directive logic."""

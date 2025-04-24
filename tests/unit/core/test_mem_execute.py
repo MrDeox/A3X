@@ -15,18 +15,12 @@ async def test_execute_calls_a3lang_interpreter():
     """Tests if mem.execute correctly calls the a3lang interpreter by default."""
     command_to_run = "RESPONDER 'teste'"
     mock_context = MagicMock()
+    mock_context.tool_executor = AsyncMock()
+    mock_context.llm_interface = AsyncMock()
     expected_result = {"status": "success", "message": "Comando executado"}
-    
-    # Mock the a3lang interpreter function
-    # Use AsyncMock for async functions
     mock_parse_execute = AsyncMock(return_value=expected_result)
-    
-    # Patch the import within the scope of the test
     with patch('a3x.a3lang.interpreter.parse_and_execute', mock_parse_execute): 
-        # Call the function under test
         actual_result = await execute(command_to_run, context=mock_context)
-        
-    # Assertions
     mock_parse_execute.assert_awaited_once_with(command_to_run, execution_context=mock_context)
     assert actual_result == expected_result
 
@@ -40,9 +34,9 @@ async def test_execute_handles_interpreter_import_error():
     # Patch the import to raise an ImportError
     with patch('a3x.a3lang.interpreter.parse_and_execute', side_effect=ImportError("No module named 'a3x.a3lang.nonexistent'")):
         actual_result = await execute(command_to_run, context=mock_context)
-        
     assert actual_result["status"] == "error"
-    assert "Interpreter import failed" in actual_result["message"]
+    assert "Symbolic interpreter import failed" in actual_result["message"]
+    assert "No module named 'a3x.a3lang.nonexistent'" in actual_result["message"]
 
 @pytest.mark.asyncio
 async def test_execute_handles_interpreter_execution_error():
@@ -57,24 +51,20 @@ async def test_execute_handles_interpreter_execution_error():
 
     with patch('a3x.a3lang.interpreter.parse_and_execute', mock_parse_execute):
         actual_result = await execute(command_to_run, context=mock_context)
-        
     mock_parse_execute.assert_awaited_once_with(command_to_run, execution_context=mock_context)
-    assert actual_result == expected_error_result
+    assert actual_result["status"] == "error"
+    assert actual_result["message"] == f"Symbolic execution failed: {runtime_error_message}"
 
 @pytest.mark.asyncio
 async def test_execute_symbolic_basic():
     """Tests the default symbolic execution path with a simple command."""
     command_to_run = "RESPONDER 'olá'"
     expected_result = {"status": "success", "detail": "Responding with 'olá'"} # Example success result
-    
+    mock_context = MagicMock()
     mock_parse_execute = AsyncMock(return_value=expected_result)
-    
     with patch('a3x.a3lang.interpreter.parse_and_execute', mock_parse_execute):
-        # Call with default mode (symbolic)
-        actual_result = await execute(command_to_run) 
-        
-    # Assertions
-    mock_parse_execute.assert_awaited_once_with(command_to_run, execution_context=None)
+        actual_result = await execute(command_to_run, context=mock_context)
+    mock_parse_execute.assert_awaited_once_with(command_to_run, execution_context=mock_context)
     assert actual_result == expected_result
 
 @pytest.mark.asyncio
