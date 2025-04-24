@@ -49,7 +49,7 @@ DEFAULT_PAYLOAD = {
         "target_audience": {"type": str, "description": "O público-alvo do e-book."}
     }
 )
-async def generate_ebook_cover(title: str, description: str, target_audience: str, ctx: Optional[Context] = None) -> str:
+async def generate_ebook_cover(title: str, description: str, target_audience: str, ctx: Optional[Any] = None) -> str:
     """
     Generates an ebook cover image using the Stable Diffusion WebUI API based on the
     provided title, description, and target audience.

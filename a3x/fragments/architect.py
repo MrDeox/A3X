@@ -2,13 +2,14 @@ import asyncio
 import logging
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 # Use the fragment decorator if available in your project structure
-# from a3x.fragments.registry import fragment 
+from a3x.fragments.registry import fragment
 from .base import BaseFragment, FragmentDef
 from a3x.core.context import FragmentContext
 from a3x.core.tool_registry import ToolRegistry
+from a3x.core.memory.memory_manager import MemoryManager
 
 # Attempt to get PROJECT_ROOT, fallback if needed
 try:
@@ -19,17 +20,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# @fragment( # Uncomment if using the decorator
-#     name="Architect",
-#     description="Listens for 'create_fragment' directives and generates/writes the corresponding fragment code.",
-#     category="Meta",
-#     skills=["generate_module_from_directive", "write_file"],
-# )
+@fragment(
+    name="architect",
+    description="Designs and evolves the system architecture",
+    category="system",
+    skills=["design_architecture", "analyze_dependencies", "optimize_structure"]
+)
 class ArchitectFragment(BaseFragment):
     """Listens for 'create_fragment' directives and attempts to generate and write the new fragment code."""
 
-    def __init__(self, fragment_def: FragmentDef, tool_registry: Optional[ToolRegistry] = None):
-        super().__init__(fragment_def, tool_registry)
+    def __init__(self, ctx: FragmentContext):
+        super().__init__(ctx)
+        self.memory_manager = MemoryManager()
         self._logger.info(f"[{self.get_name()}] Initialized.")
 
     async def get_purpose(self, context: Optional[Dict] = None) -> str:
@@ -192,4 +194,37 @@ class ArchitectFragment(BaseFragment):
             )
             self._logger.info(f"[{self.get_name()}] Broadcasted architect_result for target '{result_message_content['target']}': {status}")
         except Exception as e:
-            self._logger.error(f"[{self.get_name()}] Failed to broadcast architect_result via chat: {e}") 
+            self._logger.error(f"[{self.get_name()}] Failed to broadcast architect_result via chat: {e}")
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        try:
+            # Analyze current architecture
+            current_arch = await self._analyze_current_architecture()
+            
+            # Identify improvement opportunities
+            improvements = await self._identify_improvements(current_arch)
+            
+            # Generate new architecture design
+            new_design = await self._generate_new_design(improvements)
+            
+            return {
+                "current_architecture": current_arch,
+                "improvements": improvements,
+                "new_design": new_design
+            }
+            
+        except Exception as e:
+            self.ctx.logger.error(f"Error in ArchitectFragment: {str(e)}")
+            raise
+
+    async def _analyze_current_architecture(self) -> Dict[str, Any]:
+        # TODO: Implement architecture analysis logic
+        pass
+
+    async def _identify_improvements(self, current_arch: Dict[str, Any]) -> List[Dict[str, Any]]:
+        # TODO: Implement improvement identification logic
+        pass
+
+    async def _generate_new_design(self, improvements: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # TODO: Implement design generation logic
+        pass 

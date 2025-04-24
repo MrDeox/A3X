@@ -56,7 +56,6 @@ REFLECTION_PROMPT_TEMPLATE_FAILURE = """
         "failed_step": {"type": str, "description": "A descrição da ação/skill que falhou."},
         "error_message": {"type": str, "description": "A mensagem de erro ou o resultado detalhado da falha."},
         "plan_executed": {"type": List[str], "description": "A sequência de passos executados até a falha."},
-        "final_task_context": {"type": Optional[SharedTaskContext], "description": "The final state of the shared task context at the time of failure.", "default": None}
     }
 )
 async def reflect_on_failure(
@@ -65,10 +64,11 @@ async def reflect_on_failure(
     failed_step: str,
     error_message: str,
     plan_executed: List[str],
-    final_task_context: Optional[SharedTaskContext] = None
 ) -> Dict[str, Any]:
     """Reflects on a failed execution to extract corrective heuristics."""
     reflect_logger.info(f"Reflecting on failure for objective: {objective[:100]}...")
+
+    shared_task_context = getattr(ctx, 'shared_task_context', None)
 
     # Prepare input for the LLM
     plan_str = "\n".join([f"- {step}" for step in plan_executed])
@@ -76,9 +76,9 @@ async def reflect_on_failure(
     errors_str = f"- Falha no passo: {failed_step}\n- Mensagem de erro: {error_message}"
 
     # Prepare shared context summary for prompt
-    context_summary = "(No shared context provided or empty)"
-    if final_task_context:
-        all_context_entries = final_task_context.get_all_entries()
+    context_summary = "(No shared context available or empty)"
+    if shared_task_context:
+        all_context_entries = shared_task_context.get_all_entries()
         if all_context_entries:
             summary_lines = ["Shared Context Snapshot:"]
             for key, entry in all_context_entries.items():

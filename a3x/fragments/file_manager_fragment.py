@@ -7,12 +7,12 @@ from pathlib import Path
 import time
 
 # <<< Import base and decorator >>>
-from .base import ManagerFragment, FragmentContext # Correct import from base
+from .base import FragmentContext # Keep FragmentContext if needed
+from .manager_fragment import ManagerFragment # <<< UPDATED IMPORT
 from ..core.context import _ToolExecutionContext # Keep this for tool context
 from .registry import fragment
 from ..core.llm_interface import LLMInterface # Import LLMInterface if not already
 from ..core.tool_registry import ToolRegistry, ToolInfo # Use ..core
-from ..core.tool_executor import execute_tool
 # from a3x.core.logging_config import get_logger # <<< REMOVE INCORRECT IMPORT
 
 # logger = get_logger(__name__) # <<< OLD INCORRECT USAGE
@@ -208,39 +208,18 @@ Example for 'list_directory' from objective "list files in /data": {{"path": "/d
         # 3. Execute the chosen skill with extracted arguments
         logger.info(f"Executing skill '{chosen_skill_name}' with args: {extracted_args}")
 
-        # Create the _ToolExecutionContext needed by execute_tool
-        # Use context passed to this fragment execute method
-        tool_exec_context = _ToolExecutionContext(
-            logger=context.logger,
-            workspace_root=context.workspace_root,
-            # <<< MODIFICATION: Safely access llm_url >>>
-            llm_url=context.llm_interface.llm_url if hasattr(context.llm_interface, 'llm_url') else None,
-            tools_dict=context.tool_registry, # Pass the registry as tools_dict
-            llm_interface=context.llm_interface,
-            fragment_registry=context.fragment_registry,
-            shared_task_context=context.shared_task_context,
-            allowed_skills=managed_skills, # Only allow managed skills?
-            skill_instance=None, # execute_tool finds the instance
-            memory_manager=context.memory_manager # Ensure memory_manager is last or correctly positioned
-        )
-
         try:
-            # <<< Ensure execute_tool is awaited if it's async >>>
-            # Check if execute_tool is async (it likely is based on previous context)
-            if inspect.iscoroutinefunction(execute_tool):
-                 tool_result_wrapped = await execute_tool(
-                    tool_name=chosen_skill_name,
-                    action_input=extracted_args,
-                    tools_dict=tool_registry, # execute_tool expects this as 'tools_dict'
-                    context=tool_exec_context
-                )
-            else: # If for some reason it's sync (unlikely)
-                 tool_result_wrapped = execute_tool(
-                    tool_name=chosen_skill_name,
-                    action_input=extracted_args,
-                    tools_dict=tool_registry,
-                    context=tool_exec_context
-                )
+            # Ensure tool_executor exists in context
+            if not hasattr(context, 'tool_executor'):
+                logger.error(f"ToolExecutor not found in context.")
+                return {"status": "error", "message": "Internal error: ToolExecutor missing from context."}
+            
+            # Use the tool_executor instance from the context
+            tool_result_wrapped = await context.tool_executor.execute_tool(
+                tool_name=chosen_skill_name,
+                tool_input=extracted_args, # Changed action_input to tool_input
+                context=context # Pass FragmentContext for the skill
+            )
 
             # Unwrap the result from execute_tool
             final_result = tool_result_wrapped.get('result', {})
@@ -255,9 +234,6 @@ Example for 'list_directory' from objective "list files in /data": {{"path": "/d
             
             return final_result
 
-        except Exception as exec_err:
-            logger.exception(f"Error executing skill '{chosen_skill_name}': {exec_err}")
-            return {
-                "status": "error",
-                "message": f"Failed to execute skill '{chosen_skill_name}': {exec_err}"
-            }
+        except Exception as e:
+            logger.exception(f"Error executing skill '{chosen_skill_name}':")
+            return {"status": "error", "message": f"Failed to execute skill '{chosen_skill_name}': {e}"}

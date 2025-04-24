@@ -235,7 +235,7 @@ def _select_representative(cluster_indices: Set[int], heuristics_subset: List[Di
         "similarity_threshold": {"type": Optional[float], "description": "O limiar de similaridade para considerar heurísticas como redundantes.", "default": DEFAULT_SIMILARITY_THRESHOLD}
     }
 )
-async def consolidate_heuristics(ctx: Context, similarity_threshold: Optional[float] = None) -> Dict[str, Any]:
+async def consolidate_heuristics(ctx: Any, similarity_threshold: Optional[float] = None) -> Dict[str, Any]:
     """Consolidates learned heuristics by identifying and marking semantic duplicates."""
     log_prefix = "[ConsolidateHeuristics Skill]"
     threshold = similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD

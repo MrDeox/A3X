@@ -4,7 +4,7 @@ from typing import Dict, Optional, Any
 from a3x.core.skills import skill
 from a3x.core.context import SharedTaskContext, Context
 from a3x.core.context_accessor import ContextAccessor
-from a3x.skills.execute_code import execute_code
+from a3x.skills.code.execute_code import execute_code
 
 # Initialize logger
 logger = logging.getLogger(__name__)

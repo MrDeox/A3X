@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
         "required": [] # module_path is optional, defaults to 'a3x'
     }
 )
-async def evaluate_architecture(context: SkillContext, module_path: str = "a3x") -> str:
+async def evaluate_architecture(context: Any, module_path: str = "a3x") -> str:
     """Executa uma análise arquitetural semântica em um módulo do projeto.
 
     Args:

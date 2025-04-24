@@ -26,14 +26,14 @@ TARGET_DIR = Path(\"a3x/fragments/auto_generated\")
     }
 )
 async def criar_fragmento(
-    action_input: Dict[str, Any], context: Optional[Context] = None
+    action_input: Dict[str, Any], context: Optional[Any] = None
 ) -> Dict[str, Any]:
     \"\"\"
     Creates a new basic fragment file in a3x/fragments/auto_generated/.
 
     Args:
         action_input (Dict[str, Any]): Dictionary containing 'nome' and 'descricao'.
-        context (Optional[Context]): The execution context (unused here but good practice).
+        context (Optional[Any]): The execution context (unused here but good practice).
 
     Returns:
         Dict[str, Any]: A dictionary with status and the path of the created file, or an error message.
@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 class {class_name}(BaseFragment):
     \\\"\\\"\\\"Fragmento que faz: {fragment_description}.\\\"\\\"\\\"
 
-    async def execute(self, context: Optional[Context] = None, **kwargs: Any) -> Any:
+    async def execute(self, context: Optional[Any] = None, **kwargs: Any) -> Any:
         logger.info(f\"Executing {class_name}...\")
         # TODO: Implement fragment logic here
         result = f\\\"Resultado da execução de {class_name}\\\"

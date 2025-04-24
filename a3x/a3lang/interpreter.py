@@ -21,10 +21,13 @@ DEFAULT_PATTERNS = (
     (r"^executar grafo ['\"]?(?P<graph_id>[a-zA-Z0-9_.-]+)['\"]?(?: com entrada ['\"]?(?P<input_data>.+?)['\"]?)?$", "run_graph"),
     (r"^comparar desempenho entre ['\"]?(?P<fragment_id1>[a-zA-Z0-9_.-]+)['\"]? e ['\"]?(?P<fragment_id2>[a-zA-Z0-9_.-]+)['\"]? na tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]?$", "compare_performance"),
 
-    # === Training / Adaptation Directives ===
+    # === Training / Adaptation / Evolution Directives ===
+    (r"^mutar fragmento ['\"]?(?P<fragment_name>[a-zA-Z0-9_.-]+)['\"]?(?: gerando (?P<num_variations>\\d+))?(?: usando ['\"]?(?P<strategy>.+?)['\"]?)?$", "mutar_fragmento"),
     (r"^treinar fragmento ['\"]?(?P<fragment_id>[a-zA-Z0-9_.-]+)['\"]? na tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]?(?: por (?P<epochs>\\d+) epocas)?(?: com contexto (?P<context_id>\\d+))?(?: com precisao alvo (?P<target_accuracy>\\d+(?:\\.\\d+)?))?$", "train_fragment"),
     (r"^criar fragmento neural ['\"]?(?P<fragment_id>[a-zA-Z0-9_.-]+)['\"]? para tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]?(?: baseado em ['\"]?(?P<base_fragment_id>[a-zA-Z0-9_.-]+)['\"]?)?(?: com tipo ['\"]?(?P<fragment_type>[a-zA-Z0-9_.-]+)['\"]?)?$", "create_neural_fragment"),
-    (r"^avaliar fragmento ['\"]?(?P<fragment_id>[a-zA-Z0-9_.-]+)['\"]? na tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]?(?: com contexto (?P<context_id>\\d+))?$", "evaluate_fragment"),
+    (r"^avaliar fragmento ['\"]?(?P<fragment_id>[a-zA-Z0-9_.-]+)['\"]?(?: na tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]?)?(?: com contexto (?P<context_id>\\d+))?$", "evaluate_fragment"),
+    (r"^promover fragmento ['\"]?(?P<fragment_name>[a-zA-Z0-9_.-]+)['\"]?$", "promover_fragmento"),
+    (r"^arquivar fragmento ['\"]?(?P<fragment_name>[a-zA-Z0-9_.-]+)['\"]?$", "arquivar_fragmento"),
 
 
     # === Memory / Knowledge Management Directives ===
@@ -37,6 +40,8 @@ DEFAULT_PATTERNS = (
     (r"^adicionar exemplo para tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]? com entrada ['\"](?P<input_text>.+)['\"] e saida ['\"](?P<output_text>.+)['\"]$", "add_example"),
     (r"^listar exemplos para tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]?$", "list_examples"),
     (r"^associar fragmento ['\"]?(?P<fragment_id>[a-zA-Z0-9_.-]+)['\"]? a tarefa ['\"]?(?P<task_name>[a-zA-Z0-9_.-]+)['\"]?$", "associate_fragment_task"),
+    # NEW: Consult Professor directive
+    (r"^consultar professor sobre ['\"]?(?P<query_text>.+)['\"]?$", "consult_professor"),
 
 
     # === Planning / Goal Management Directives ===
@@ -217,6 +222,12 @@ if __name__ == '__main__':
         "ajuda",
         "verificar conhecimento do fragmento 'ner_model_v2' com ajuda do professor 'prof_especialista'",
         "verificar conhecimento de 'sumarizador_bart'", # Test without explicit professor
+        "mutar fragmento 'MyFrag' usando 'improve_errors' gerando 2",
+        "mutar fragmento AnotherFrag",
+        "avaliar fragmento 'MyFrag_mut_1'",
+        "promover fragmento 'MyFrag_mut_1'",
+        "arquivar fragmento 'MyFrag'",
+        "consultar professor sobre 'Como posso melhorar o desempenho do modelo?'",
     ]
 
     for command in test_commands:

@@ -262,7 +262,9 @@ class ReflectorFragment(BaseFragment):
 ReflectorFragmentDef = FragmentDef(
     name="Reflector",
     description="Analyzes recent messages and system state to generate reflections.",
-    # category="Analysis", # Optional category
-    fragment_class=ReflectorFragment
+    fragment_class=ReflectorFragment,
+    skills=["refletir_mensagens"],
+    managed_skills=["refletir_mensagens"],
+    prompt_template="Analise as mensagens recentes e o estado do sistema para gerar reflexões."
 )
 # <<< END FRAGMENT DEFINITION >>> 

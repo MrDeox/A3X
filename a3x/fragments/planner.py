@@ -433,7 +433,9 @@ class PlannerFragment(BaseFragment):
 PlannerFragmentDef = FragmentDef(
     name="Planner",
     description="Analyzes reflections and learning summaries to generate action plans.",
-    # category="Planning", # Optional category
-    fragment_class=PlannerFragment # <<< USE CLASS DIRECTLY >>>
+    fragment_class=PlannerFragment,
+    skills=["gerar_plano"],
+    managed_skills=["gerar_plano"],
+    prompt_template="Analise os aprendizados e gere um plano de ação."
 )
 # <<< END FRAGMENT DEFINITION >>>

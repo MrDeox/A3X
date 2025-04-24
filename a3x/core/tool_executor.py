@@ -17,7 +17,7 @@ from a3x.core.context import SharedTaskContext, FragmentContext, _ToolExecutionC
 
 # Import SKILL_REGISTRY and PROJECT_ROOT for instantiation and context
 from a3x.core.registry_instance import SKILL_REGISTRY
-from a3x.core.skills import load_all_skills
+from a3x.core.skills import discover_skills
 from a3x.core.config import PROJECT_ROOT
 
 # --- Import State Update Hooks ---
@@ -87,10 +87,10 @@ class ToolExecutor:
                 try:
                     # TODO: Make this configurable
                     default_skill_packages = ['a3x.skills.core', 'a3x.skills.auto_generated'] 
-                    load_all_skills(default_skill_packages)
+                    discover_skills()
                     logger.info(f"Skills loaded successfully into global registry from {default_skill_packages}.")
                     if not resolved_registry.list_tools():
-                        logger.warning("load_all_skills completed but global skill registry still seems empty.")
+                        logger.warning("discover_skills completed but global skill registry still seems empty.")
                 except Exception as e:
                     logger.exception("Failed to load default skills automatically during ToolExecutor fallback initialization.")
                     # Continuing with potentially empty registry

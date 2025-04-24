@@ -6,7 +6,7 @@ import sys
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Type
 
-from a3x.skills.base import skill, SkillContext  # Assuming SkillContext exists for context passing
+from a3x.core.skills import skill, SkillContext  # Use correct import for skill decorator and context
 from a3x.fragments.base import BaseFragment  # To check inheritance
 
 logger = logging.getLogger(__name__)
@@ -17,9 +17,14 @@ class ValidateFragmentParams(BaseModel):
 @skill(
     name="validate_fragment",
     description="Validates a newly created fragment file for basic correctness (existence, importability, class structure).",
-    parameters_schema=ValidateFragmentParams
+    parameters={
+        "fragment_path": {
+            "type": "string",
+            "description": "The relative path to the Python file containing the fragment class.",
+        }
+    }
 )
-async def skill_validate_fragment(context: SkillContext, action_input: Dict[str, Any]) -> Dict[str, Any]:
+async def skill_validate_fragment(context: Any, action_input: Dict[str, Any]) -> Dict[str, Any]:
     """
     Validates a fragment Python file based on path.
 

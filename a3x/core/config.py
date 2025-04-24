@@ -61,12 +61,12 @@ MULTIMODAL_STORAGE_DIR = MEMORY_DIR / "multimodal"
 
 # <<< ADDED Server Binaries/Modules >>>
 # <<< CORRECTED Default Path >>>
-LLAMA_SERVER_BINARY = os.getenv("LLAMA_SERVER_BINARY", str(PROJECT_ROOT / "llama.cpp" / "build" / "bin" / "llama-server"))
+LLAMA_SERVER_BINARY = os.getenv("LLAMA_SERVER_BINARY", str(PROJECT_ROOT / "tools" / "llama-server"))
 SD_SERVER_MODULE = os.getenv("SD_SERVER_MODULE", "a3x.servers.sd_api_server")
 # TODO: Adicionar mais configs de servidor (paths, args) aqui
-LLAMA_CPP_DIR = os.getenv("LLAMA_CPP_DIR", str(PROJECT_ROOT / "llama.cpp"))
+LLAMA_CPP_DIR = os.getenv("LLAMA_CPP_DIR", str(PROJECT_ROOT / "deps" / "llama.cpp"))
 # <<< CORRECTED: Use absolute path for default model in args >>>
-default_model_path = str(PROJECT_ROOT / "models" / "google_gemma-3-4b-it-Q4_K_S(1).gguf")
+default_model_path = str(PROJECT_ROOT / "models" / "third_party" / "google_gemma-3-4b-it-Q4_K_S(1).gguf")
 LLAMA_SERVER_ARGS = os.getenv(
     "LLAMA_SERVER_ARGS",
     f"-m {default_model_path} -c 4096 -ngl 24 --host 0.0.0.0 --port 8000 --log-disable" # Changed port to 8000

@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPANSION_PROMPT = "How can I expand my capabilities to better achieve my goals? Suggest a new, simple function or skill I could create, described in a single sentence. Then, provide an A3L command using 'criar_fragmento' to create it. Example response format: Suggestion: Create a fragment to analyze sentiment. A3L: criar_fragmento nome='sentiment_analyzer' descricao='Analyzes the sentiment of a given text.'"
 
 class AutonomousSelfStarterFragment(BaseFragment):
-    \"\"\"
+    """
     A fragment that attempts to autonomously expand the system's capabilities.
     It queries an LLM for suggestions, interprets them, and tries to execute
     commands like 'criar_fragmento' to add new skills/fragments.
-    \"\"\"
+    """
 
     def __init__(self, fragment_id: str = "autonomous_self_starter", llm_interface: Optional[LLMInterface] = None):
         super().__init__(fragment_id=fragment_id)

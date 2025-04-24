@@ -8,11 +8,14 @@ from dataclasses import dataclass, field
 from collections import namedtuple # Ensure namedtuple is imported
 import uuid # <<< ADDED import >>>
 
+# Import the new types
+from a3x.core.types import ActionIntent, PendingRequest # <<< ADDED IMPORT >>>
+
 # <<< ADDED Forward references if needed by FragmentContext >>>
 if TYPE_CHECKING:
     from a3x.core.llm_interface import LLMInterface
     from a3x.core.tool_registry import ToolRegistry
-    from a3x.fragments.registry import FragmentRegistry # Assuming FragmentRegistry lives here
+    from a3x.fragments.registry import FragmentRegistry, FragmentDef # Assuming FragmentRegistry lives here
     from a3x.core.memory.memory_manager import MemoryManager # Added
     from a3x.fragments.base import BaseFragment # <<< ADDED for active_fragments typing >>>
 
@@ -30,6 +33,11 @@ _ToolExecutionContext = namedtuple("ToolExecutionContext", [
     "memory_manager"
 ])
 
+# <<< ADDED: Fragment Definition type hint >>>
+if TYPE_CHECKING:
+    from a3x.fragments.registry import FragmentDef # Assuming FragmentDef is defined here
+
+# Updated FragmentContext definition and __new__ method
 class FragmentContext(namedtuple('FragmentContext', [
     'logger', 
     'llm_interface', 
@@ -37,21 +45,39 @@ class FragmentContext(namedtuple('FragmentContext', [
     'fragment_registry',
     'shared_task_context',
     'workspace_root',
-    'memory_manager'
+    'memory_manager',
+    # <<< ADDED Fields >>>
+    'fragment_id', 
+    'fragment_name', 
+    'fragment_class', 
+    'fragment_def', 
+    'config' 
 ])):
-    # Adding __new__ with default for optional field
+    # Adding __new__ with default for optional field and new fields
     def __new__(cls, logger: logging.Logger, llm_interface: 'LLMInterface', 
                 tool_registry: 'ToolRegistry', fragment_registry: 'FragmentRegistry', 
                 shared_task_context: Optional[Dict[str, Any]], workspace_root: Path,
+                # <<< ADDED Parameters >>>
+                fragment_id: str, 
+                fragment_name: str, 
+                fragment_class: Type, 
+                fragment_def: 'FragmentDef', 
+                # <<< ADDED config parameter >>>
+                config: Dict[str, Any], # Assuming config is a required Dict
                 memory_manager: Optional['MemoryManager'] = None): # Default to None
         return super().__new__(cls, logger, llm_interface, tool_registry, 
                                fragment_registry, shared_task_context, workspace_root,
-                               memory_manager)
+                               memory_manager, 
+                               # <<< ADDED Arguments >>>
+                               fragment_id, fragment_name, fragment_class, fragment_def,
+                               # <<< ADDED config argument >>>
+                               config
+                               )
 
 class Context:
     """
     Context object passed to skills, providing access to shared resources.
-    Now includes direct access to LLMInterface.
+    Now includes direct access to LLMInterface and ToolExecutor.
     """
     def __init__(self,
                  logger: Optional[logging.Logger] = None,
@@ -60,6 +86,7 @@ class Context:
                  llm_url: Optional[str] = None, # Can be derived from llm_interface if provided
                  llm_interface: Optional['LLMInterface'] = None, # <<< ADDED >>>
                  tools: Optional[Dict[str, Any]] = None, # Available tools
+                 tool_executor: Optional[Any] = None, # Explicit ToolExecutor instance
                  # Add other necessary attributes as identified
                  ):
         self.logger = logger or logging.getLogger(__name__)
@@ -69,6 +96,7 @@ class Context:
         # Derive llm_url from interface if not provided directly
         self.llm_url = llm_url or (llm_interface.llm_url if llm_interface else None)
         self.tools = tools if tools is not None else {}
+        self.tool_executor = tool_executor # <<< ADDED >>>
         # Potentially add execute_tool method reference if needed by skills
 
     # Add methods if Context needs specific functionality 
@@ -103,6 +131,45 @@ class ContextEntry:
 @dataclass
 class SharedTaskContext:
     """
+    Contexto compartilhado de task entre fragments, com suporte robusto a execução simbólica real.
+    Inclui propagação automática do ToolExecutor real para comandos simbólicos.
+    """
+    # --- Campos obrigatórios ---
+    task_id: str
+    initial_objective: Optional[str] = None
+    task_data: Dict[str, Any] = field(default_factory=dict)
+    execution_history: List[Tuple[str, str]] = field(default_factory=list)
+    # --- Chat and Active Fragment Fields ---
+    internal_chat_queue: asyncio.Queue = field(default_factory=asyncio.Queue) # <<< CHANGED to Queue >>>
+    active_fragments: Dict[str, 'BaseFragment'] = field(default_factory=dict) # <<< ADDED active fragments tracker >>>
+    # --- ADDED Fields for structured requests and actions ---
+    pending_request: Optional[PendingRequest] = None
+    action_intent: Optional[ActionIntent] = None
+    # --- End ADDED Fields ---
+    # --- Other Fields ---
+    sandbox_dialogue_queue: List[Tuple[str, Dict]] = field(default_factory=list) # Kept for sandbox mode
+    error_info: Optional[Any] = None
+    result: Optional[Any] = None
+    # --- Campo opcional para execução simbólica real ---
+    tool_executor: Optional[Any] = None  # Executor real de skills/tools
+    async def run_symbolic_command(self, command: str, **kwargs):
+        """
+        Executa um comando simbólico real usando o executor do A3X, com contexto persistente e recursos reais.
+        Propaga automaticamente o ToolExecutor real se estiver presente.
+        """
+        from a3x.core.mem import execute as symbolic_execute
+        from a3x.core.context import Context
+        context = Context(
+            logger=getattr(self, 'logger', None),
+            workspace_root=getattr(self, 'workspace_root', None),
+            mem=getattr(self, 'task_data', {}),
+            llm_interface=getattr(self, 'llm_interface', None),
+            tools=getattr(self, 'tools', None),
+            tool_executor=self.tool_executor if hasattr(self, 'tool_executor') else None
+        )
+        return await symbolic_execute(command, context=context, mode="symbolic")
+
+    """
     Manages shared state and intermediate results for a single agent task execution,
     now with support for metadata and tagging.
     
@@ -121,9 +188,15 @@ class SharedTaskContext:
     # --- Chat and Active Fragment Fields ---
     internal_chat_queue: asyncio.Queue = field(default_factory=asyncio.Queue) # <<< CHANGED to Queue >>>
     active_fragments: Dict[str, 'BaseFragment'] = field(default_factory=dict) # <<< ADDED active fragments tracker >>>
+    # --- ADDED Fields for structured requests and actions ---
+    pending_request: Optional[PendingRequest] = None
+    action_intent: Optional[ActionIntent] = None
+    # --- End ADDED Fields ---
     # --- Other Fields ---
     sandbox_dialogue_queue: List[Tuple[str, Dict]] = field(default_factory=list) # Kept for sandbox mode
     _context_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+    error_info: Optional[Dict[str, Any]] = None # <<< ADDED field for error info >>>
+    result: Any = None # <<< ADDED field for final result >>>
 
     async def update_data(self, key: str, value: Any):
         async with self._context_lock:
@@ -218,14 +291,19 @@ class SharedTaskContext:
     def to_dict(self) -> Dict[str, Any]:
         """Returns a serializable dictionary representation of the context."""
         # Note: asyncio.Lock is not serializable, so we exclude it.
+        # ActionIntent and PendingRequest are dataclasses and should be serializable
+        # if their contents are.
         # We also might need to handle non-serializable items in task_data if they exist.
         return {
             "task_id": self.task_id,
             "initial_objective": self.initial_objective,
             "task_data": self.task_data, # Consider deep copying or filtering non-serializable items
             "execution_history": self.execution_history,
+            "pending_request": self.pending_request, # Added
+            "action_intent": self.action_intent,   # Added
+            "error_info": self.error_info,       # Added
+            "result": self.result,             # Added
             "sandbox_dialogue_queue": self.sandbox_dialogue_queue,
-            # internal_chat_queue and active_fragments are NOT included as they are not easily serializable
             # Relevant info might be extracted if needed for specific logging/saving
         }
 

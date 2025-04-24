@@ -1,85 +1,176 @@
-# A³X - Agente Autônomo Adaptável Experimental
+# A³X - Sistema de Inteligência Artificial Simbiótica
 
-A³X é um projeto experimental para construir um sistema de agente de IA modular, localmente executado e adaptável, com foco em transparência e controle do usuário. Ele utiliza uma arquitetura baseada em ReAct (Reasoning and Acting) e é projetado para ser extensível com novas skills e capacidades.
+O A³X é um sistema de IA que integra processamento simbólico (A3L) e neural (A3Net) em uma arquitetura modular e evolutiva.
 
-## Visão Geral
+## Características Principais
 
-O sistema consiste em:
+- **Integração Simbólico-Neural**: Combina o poder do processamento simbólico com redes neurais
+- **Evolução Autônoma**: Capacidade de aprender e evoluir através de ciclos autônomos
+- **Arquitetura Modular**: Sistema baseado em fragments especializados e independentes
+- **Memória Semântica**: Sistema de memória que permite aprendizado contínuo
+- **LLM como Mentor**: Uso de LLMs como professores, não como executores
 
-*   **Core:** Componentes centrais que gerenciam o ciclo ReAct, estado do agente, comunicação com o LLM e despacho de skills (`core/`).
-*   **Skills:** Módulos independentes que fornecem funcionalidades específicas ao agente (ex: executar código, buscar na web, gerenciar arquivos, acessar memória) (`skills/`).
-*   **Memória:** Persistência de estado e memória semântica usando SQLite com extensão VSS (`memory.db`).
-*   **LLM Local:** Interage com um servidor de LLM local (como `llama.cpp` rodando um modelo GGUF) para raciocínio e geração.
-*   **CLI:** Uma interface de linha de comando (`assistant_cli.py`) para interagir com o agente.
+## Instalação
 
-## Configuração
+1. Clone o repositório:
+```bash
+git clone https://github.com/seu-usuario/A3X.git
+cd A3X
+```
 
-1.  **Clone o Repositório:**
-    ```bash
-    git clone <url_do_repositorio>
-    cd A3X
-    ```
-2.  **Crie e Ative um Ambiente Virtual:**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate # Linux/macOS
-    # ou venv\\Scripts\\activate # Windows
-    ```
-3.  **Instale as Dependências:**
-    ```bash
-    pip install . # Ou use 'pip install -e .' para modo editável
-    ```
-4.  **Configure o LLM Local:**
-    *   Baixe um modelo GGUF compatível (ex: Google Gemma 2B) e coloque-o no diretório `models/`.
-    *   Compile ou baixe o servidor `llama.cpp`. Coloque o executável `llama-server` (ou o nome correspondente) na raiz do projeto ou ajuste o caminho em `core/config.py`.
-    *   *Opcional:* Rode o benchmark (`python tests/benchmark_ngl.py --ngl-values "..."`) para encontrar o melhor valor de `-ngl` para seu hardware e atualize `LLAMA_SERVER_ARGS` em `core/config.py`.
-5.  **Variáveis de Ambiente:**
-    *   Crie um arquivo `.env` na raiz do projeto (copiando `.env.example` se existir).
-    *   Adicione sua chave da API Tavily:
-        ```dotenv
-        TAVILY_API_KEY="sua_chave_tavily_aqui"
-        ```
-    *   Certifique-se que `TAVILY_ENABLED=True` em `core/config.py` se quiser usar a busca Tavily.
-6.  **Inicialize o Banco de Dados:**
-    *   A primeira execução do agente (via CLI ou testes) geralmente inicializa o `memory.db` e as tabelas necessárias (incluindo as de VSS se a extensão estiver carregada corretamente pelo SQLite).
+2. Crie e ative um ambiente virtual:
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# ou
+.venv\Scripts\activate  # Windows
+```
 
-## Execução
+3. Instale as dependências:
+```bash
+pip install -r requirements.txt
+```
 
-1.  **Inicie o Servidor LLM:** Execute o `llama-server` em um terminal separado com as configurações desejadas (modelo, `-ngl`, etc.). Exemplo:
-    ```bash
-    ./llama-server -m models/mistral-7b-instruct-v0.1.Q4_K_M.gguf -c 2048 -ngl 25 --host 127.0.0.1 --port 8080
-    ```
-    (Ajuste os parâmetros conforme necessário e de acordo com `core/config.py`).
-2.  **Execute o Agente CLI:**
-    *   Para um comando único:
-        ```bash
-        python assistant_cli.py -c "Qual a capital do Brasil?"
-        ```
-    *   Para comandos interativos ou de um arquivo:
-        ```bash
-        python assistant_cli.py # Modo interativo
-        # python assistant_cli.py -i caminho/para/arquivo_de_comandos.txt
-        ```
+4. Configure as variáveis de ambiente (copie e edite o exemplo):
+```bash
+cp .env.example .env
+```
 
-## Arquitetura (Visão Simplificada)
+## Uso Básico
 
-1.  `assistant_cli.py`: Recebe o input do usuário.
-2.  `core/agent.py` (ReactAgent): Gerencia o loop ReAct:
-    *   Constrói o prompt com o objetivo, histórico e ferramentas disponíveis.
-    *   Chama o LLM (`_call_llm`) via `core/config.py` (LLAMA_SERVER_URL).
-    *   Parseia a resposta do LLM para extrair "Thought" e "Action".
-    *   Se "Action":
-        *   Identifica a skill e os parâmetros.
-        *   Chama a skill correspondente do diretório `skills/` (listadas em `core/tools.py`).
-        *   Recebe a "Observation" (resultado da skill).
-    *   Repete o ciclo até obter "Final Answer" ou atingir limite de iterações.
-3.  `skills/*.py`: Executam tarefas específicas (web search, file I/O, code execution, memory R/W).
-4.  `memory.db`: Armazena o estado e a memória semântica.
+O A³X pode ser usado de duas formas principais:
 
-## Próximos Passos / Roadmap (Exemplos)
+### 1. Sistema Unificado (Recomendado)
 
-*   Expandir cobertura de testes.
-*   Implementar novas skills (ex: interação com APIs específicas, browser automation).
-*   Refinar o processo de extração de "Action" e "Action Input".
-*   Explorar mecanismos de planejamento mais avançados.
-*   Desenvolver o loop de evolução do meta-prompt do Executor.
+```python
+from a3x.core.a3x_unified import create_a3x_system
+
+async def main():
+    # Criar e inicializar o sistema
+    system = await create_a3x_system()
+    
+    try:
+        # Executar uma tarefa
+        result = await system.execute_task(
+            "Analisar este código e sugerir melhorias."
+        )
+        print(f"Resultado: {result}")
+        
+        # Iniciar ciclo autônomo
+        await system.start_autonomous_cycle()
+        
+    finally:
+        # Limpar recursos
+        await system.cleanup()
+
+# Rodar
+asyncio.run(main())
+```
+
+### 2. Componentes Individuais
+
+```python
+from a3x.fragments.registry import FragmentRegistry
+from a3x.core.tool_registry import ToolRegistry
+from a3x.core.orchestrator import TaskOrchestrator
+
+# Inicializar componentes
+fragment_registry = FragmentRegistry()
+tool_registry = ToolRegistry()
+
+# Registrar fragments e skills
+fragment_registry.discover_and_register_fragments()
+tool_registry.discover_skills()
+
+# Criar orquestrador
+orchestrator = TaskOrchestrator(
+    fragment_registry=fragment_registry,
+    tool_registry=tool_registry
+)
+
+# Executar tarefa
+result = await orchestrator.orchestrate(
+    "Analisar este código e sugerir melhorias."
+)
+```
+
+## Exemplos
+
+Veja a pasta `examples/` para mais exemplos de uso, incluindo:
+
+- Análise de código
+- Ciclos autônomos
+- Integração com outros sistemas
+- Uso de skills personalizadas
+
+## Arquitetura
+
+O A³X é composto por vários subsistemas integrados:
+
+### Core
+- **Orchestrator**: Coordena a execução de tarefas
+- **FragmentRegistry**: Gerencia fragments disponíveis
+- **ToolRegistry**: Gerencia skills e ferramentas
+- **MemoryManager**: Sistema de memória e contexto
+
+### Fragments
+- **ProfessorLLM**: Interface com modelos de linguagem
+- **KnowledgeInterpreter**: Tradução entre linguagem natural e A3L
+- **AutonomousStarter**: Inicia ciclos autônomos
+- **MetaLearner**: Gerencia evolução do sistema
+
+### Skills
+- Módulos de funcionalidade específica
+- Facilmente extensíveis
+- Integração com APIs externas
+
+## Desenvolvimento
+
+### Adicionando Novos Fragments
+
+1. Crie um novo arquivo em `a3x/fragments/`:
+```python
+from a3x.fragments.base import BaseFragment
+
+@fragment(name="meu_fragment")
+class MeuFragment(BaseFragment):
+    async def execute(self, ctx, args):
+        # Implementação
+        pass
+```
+
+### Adicionando Novas Skills
+
+1. Crie um novo arquivo em `a3x/skills/`:
+```python
+from a3x.core.skills import skill
+
+@skill(name="minha_skill")
+async def minha_skill(ctx, parametro: str):
+    # Implementação
+    pass
+```
+
+## Contribuindo
+
+1. Fork o repositório
+2. Crie uma branch para sua feature (`git checkout -b feature/MinhaFeature`)
+3. Commit suas mudanças (`git commit -am 'Adiciona MinhaFeature'`)
+4. Push para a branch (`git push origin feature/MinhaFeature`)
+5. Crie um Pull Request
+
+## Licença
+
+Este projeto está licenciado sob a licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## Contato
+
+- **Autor**: Seu Nome
+- **Email**: seu.email@exemplo.com
+- **Website**: https://seu-site.com
+
+## Agradecimentos
+
+- Contribuidores do projeto
+- Comunidade de IA
+- Frameworks e bibliotecas utilizadas

@@ -24,4 +24,11 @@ class SkillNotFoundError(A3XError):
 
 class SkillRegistrationError(A3XError):
     """Exception raised during the registration of a skill."""
-    pass 
+    pass
+
+class FragmentExecutionError(A3XError):
+    """Exception raised when a Fragment fails during execution."""
+    def __init__(self, message, status="error", reason="fragment_execution_failed"):
+        super().__init__(message)
+        self.status = status
+        self.reason = reason 

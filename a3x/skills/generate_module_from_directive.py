@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
         "example_code": {"type": str, "optional": True, "description": "Optional example code snippet to guide generation."}
     }
 )
-async def generate_module_from_directive(context: Context, directive: str, target_path: str, example_code: Optional[str] = None) -> Dict[str, Any]:
+async def generate_module_from_directive(context: Any, directive: str, target_path: str, example_code: Optional[str] = None) -> Dict[str, Any]:
     """
     Generates Python code for a new module based on a directive using an LLM.
 

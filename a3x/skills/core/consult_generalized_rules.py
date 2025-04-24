@@ -133,7 +133,7 @@ async def _load_index_and_metadata(index_path: Path, metadata_path: Path) -> Tup
         {"name": "ctx", "type": "Context", "description": "Objeto de contexto da execução.", "optional": True}
     ]
 )
-async def consult_generalized_rules(objective: str, top_k: int = 3, ctx: Optional[Context] = None) -> Dict[str, Any]:
+async def consult_generalized_rules(objective: str, top_k: int = 3, ctx: Optional[Any] = None) -> Dict[str, Any]:
     """Searches for relevant generalized rules using semantic vector search."""
     log_prefix = "[ConsultGeneralizedRules Skill]"
     logger.info(f"{log_prefix} Consultando regras gerais para objetivo '{objective[:50]}...' (top_k={top_k})" )

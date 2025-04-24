@@ -26,7 +26,7 @@ MIN_KEYWORD_MATCH_SCORE = 1 # Minimum overlap to consider a heuristic relevant
     }
 )
 # <<< RESTORED async def and ctx parameter >>>
-async def consult_learned_heuristics(ctx: Context, objective: str, top_k: int = 3) -> Dict[str, Any]:
+async def consult_learned_heuristics(ctx: Any, objective: str, top_k: int = 3) -> Dict[str, Any]:
     """Busca heurísticas relevantes (sucesso e falha) no log consolidado."""
 
     log_prefix = "[ConsultHeuristics Skill]"

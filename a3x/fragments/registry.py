@@ -7,7 +7,8 @@ from typing import Dict, Optional, Type, List, Callable
 from pathlib import Path
 
 # Importações base
-from .base import BaseFragment, FragmentDef, ManagerFragment
+from .base import BaseFragment, FragmentDef, FragmentContext
+from .manager_fragment import ManagerFragment
 from a3x.core.llm_interface import LLMInterface # Assumindo que LLMInterface está aqui
 from a3x.core.config import PROJECT_ROOT # Para path discovery
 
@@ -19,7 +20,8 @@ def fragment(
     description: str,
     category: str = "Execution",
     skills: Optional[List[str]] = None,
-    managed_skills: Optional[List[str]] = None
+    managed_skills: Optional[List[str]] = None,
+    capabilities: Optional[List[str]] = None
 ) -> Callable[[Type[BaseFragment]], Type[BaseFragment]]:
     """
     Decorator to mark and provide metadata for Fragment classes.
@@ -36,6 +38,7 @@ def fragment(
         skills: A list of skill names that this fragment directly uses (for Execution fragments).
         managed_skills: A list of skill names that this fragment coordinates or manages
             (primarily for Management fragments).
+        capabilities: A list of string identifiers for capabilities this fragment provides.
 
     Returns:
         A decorator function that attaches metadata to the decorated class.
@@ -50,7 +53,8 @@ def fragment(
             "description": description,
             "category": category,
             "skills": skills or [],
-            "managed_skills": managed_skills or []
+            "managed_skills": managed_skills or [],
+            "capabilities": capabilities or []
         }
         logger.debug(f"Metadata attached to fragment class {cls.__name__}: {cls._fragment_metadata}")
         return cls
@@ -100,7 +104,8 @@ class FragmentRegistry:
         description: str,
         category: str = "Execution",
         skills: Optional[List[str]] = None,
-        managed_skills: Optional[List[str]] = None
+        managed_skills: Optional[List[str]] = None,
+        capabilities: Optional[List[str]] = None
     ):
         """Registers the metadata (definition) of a discovered or explicitly provided fragment class.
 
@@ -114,6 +119,7 @@ class FragmentRegistry:
             category: Category ('Execution' or 'Management').
             skills: List of skills used by the fragment.
             managed_skills: List of skills managed by the fragment.
+            capabilities: List of capabilities provided by the fragment.
         """
         if not inspect.isclass(fragment_class) or not issubclass(fragment_class, BaseFragment):
             self.logger.error(f"Attempted to register invalid class for fragment '{name}'. Must be a subclass of BaseFragment.")
@@ -132,7 +138,8 @@ class FragmentRegistry:
             description=description,
             category=category,
             skills=skills or [],
-            managed_skills=managed_skills or []
+            managed_skills=managed_skills or [],
+            capabilities=capabilities or []
         )
 
         if registration_name in self._fragment_defs:
@@ -140,7 +147,7 @@ class FragmentRegistry:
 
         self._fragment_defs[registration_name] = fragment_def
         self._fragment_classes[registration_name] = fragment_class # Cache the class directly
-        self.logger.info(f"Registered Fragment/Manager Definition: '{registration_name}' (Category: {category})")
+        self.logger.info(f"Registered Fragment/Manager Definition: '{registration_name}' (Category: {category}, Caps: {fragment_def.capabilities})")
 
     # --- MODIFIED: Now uses decorator metadata --- 
     def discover_and_register_fragments(self, force_reload: bool = False):
@@ -213,8 +220,9 @@ class FragmentRegistry:
                                 fragment_class=attribute,
                                 description=metadata["description"],
                                 category=metadata["category"],
-                                skills=metadata["skills"],
-                                managed_skills=metadata["managed_skills"]
+                                skills=metadata.get("skills", []),
+                                managed_skills=metadata.get("managed_skills", []),
+                                capabilities=metadata.get("capabilities", [])
                             )
 
                 except ImportError as e:
@@ -253,7 +261,8 @@ class FragmentRegistry:
                  description=metadata["description"],
                  category=metadata["category"],
                  skills=metadata["skills"],
-                 managed_skills=metadata["managed_skills"]
+                 managed_skills=metadata["managed_skills"],
+                 capabilities=metadata["capabilities"]
              )
              self.logger.info(f"Dynamically registered fragment class and definition: '{metadata['name']}'")
              return True
@@ -264,83 +273,55 @@ class FragmentRegistry:
              category = "Management" if issubclass(fragment_cls, ManagerFragment) else "Execution"
              skills = getattr(fragment_cls, 'DEFAULT_SKILLS', [])
              managed_skills = getattr(fragment_cls, 'MANAGED_SKILLS', [])
-             self.register_fragment_definition(name, fragment_cls, description, category, skills, managed_skills)
+             self.register_fragment_definition(name, fragment_cls, description, category, skills, managed_skills, [])
              self.logger.info(f"Dynamically registered fragment (fallback): '{name}'")
              return True
 
 
-    def load_fragment(self, name: str) -> Optional[BaseFragment]:
-        """
-        Instantiates a fragment based on its registered definition.
-
-        If the fragment is already instantiated, returns the existing instance.
-        Otherwise, it finds the class definition, prepares necessary dependencies
-        (like LLMInterface, SkillRegistry, etc., based on the fragment's needs),
-        and instantiates it.
-
-        Args:
-            name: The name of the fragment to load.
-
-        Returns:
-            An instance of the requested fragment, or None if instantiation fails.
-        """
-        if name in self._fragments:
-            self.logger.debug(f"Returning cached instance for fragment '{name}'.")
-            return self._fragments[name]
-
-        if name not in self._fragment_classes or name not in self._fragment_defs:
-            self.logger.error(f"Fragment '{name}' class or definition not found in registry. Cannot load.")
-            return None
-
-        fragment_cls = self._fragment_classes[name]
-        fragment_def = self._fragment_defs[name]
-        self.logger.info(f"Attempting to instantiate Fragment '{name}' (Class: {fragment_cls.__name__}).")
-
-        # --- Prepare dependencies --- 
-        # Gather potential dependencies the fragment might need
-        # The fragment's __init__ signature will determine which ones are actually passed
-        all_possible_kwargs = {
-            "fragment_def": fragment_def,
-            "llm_interface": self.llm_interface,
-            "skill_registry": self.skill_registry, 
-            "tool_registry": self.skill_registry, # Pass skill registry as tool_registry
-            "config": self.config, 
-            # Add other potential dependencies here
-        }
-
+    def load_fragment(self, fragment_name: str) -> Optional[BaseFragment]:
+        """Loads a fragment by name."""
         try:
-            # --- Inspect __init__ and Filter kwargs --- 
-            init_sig = inspect.signature(fragment_cls.__init__)
-            init_params = init_sig.parameters
-            
-            actual_init_kwargs = {}
-            for param_name, param in init_params.items():
-                if param_name == 'self': # Skip self
-                    continue
-                if param_name in all_possible_kwargs:
-                    actual_init_kwargs[param_name] = all_possible_kwargs[param_name]
-                # If param has a default, it's optional, don't raise error if not provided
-                elif param.default == inspect.Parameter.empty:
-                    self.logger.warning(f"Required __init__ parameter '{param_name}' for {fragment_cls.__name__} not found in registry dependencies.")
-                    # Decide if this should be a hard error or just a warning
-                    # raise ValueError(f"Missing dependency for {fragment_cls.__name__}: {param_name}")
-            
-            self.logger.debug(f"Filtered kwargs for {fragment_cls.__name__}.__init__: {list(actual_init_kwargs.keys())}")
+            # Check if fragment is already loaded
+            if fragment_name in self._fragments:
+                return self._fragments[fragment_name]
 
-            # --- Instantiate with filtered args --- 
-            instance = fragment_cls(**actual_init_kwargs)
-            
-            self._fragments[name] = instance
-            self.logger.info(f"Successfully instantiated and cached Fragment '{name}'.")
-            return instance
-        except TypeError as e:
-            # Catch TypeErrors specifically related to instantiation (wrong args)
-            self.logger.error(f"Failed to instantiate Fragment '{name}' ({fragment_cls.__name__}): {e}", exc_info=True)
+            # Get fragment class
+            fragment_cls = self._fragment_classes.get(fragment_name)
+            if not fragment_cls:
+                logger.warning(f"Fragment '{fragment_name}' not found in registry")
+                return None
+
+            # Get fragment definition
+            fragment_def = self._fragment_defs.get(fragment_name)
+            if not fragment_def:
+                logger.warning(f"Fragment definition not found for '{fragment_name}'")
+                return None
+
+            # Instantiate fragment with definition and tool registry
+            ctx = FragmentContext(
+                fragment_id=fragment_name,
+                fragment_name=fragment_name,
+                fragment_class=fragment_cls,
+                fragment_def=fragment_def,
+                config=self.config,
+                logger=self.logger.getChild(f"fragment.{fragment_name}"),
+                llm_interface=self.llm_interface,
+                tool_registry=self.skill_registry,
+                fragment_registry=self,
+                shared_task_context={},
+                workspace_root=Path.cwd(),
+                memory_manager=None
+            )
+
+            # Instantiate the fragment using its class and the context
+            fragment_instance = fragment_cls(ctx=ctx)
+            self._fragments[fragment_name] = fragment_instance
+            self.logger.info(f"Successfully loaded and instantiated fragment: '{fragment_name}'")
+            return fragment_instance
+
         except Exception as e:
-            # Catch other potential errors during instantiation
-            self.logger.error(f"An unexpected error occurred during instantiation of Fragment '{name}' ({fragment_cls.__name__}): {e}", exc_info=True)
-        
-        return None # Return None if instantiation failed
+            logger.error(f"Failed to load fragment '{fragment_name}': {str(e)}")
+            return None
 
     def get_fragment(self, name: str) -> Optional[BaseFragment]:
         """

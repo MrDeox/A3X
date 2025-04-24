@@ -141,7 +141,7 @@ logger = logging.getLogger(__name__)
         "param_opcional": {"type": Optional[int], "default": None, "description": "Descrição."}
     }
 )
-async def nome_da_nova_skill(context: Context, param1: str, param_opcional: Optional[int] = None) -> Dict[str, Any]:
+async def nome_da_nova_skill(context: Any, param1: str, param_opcional: Optional[int] = None) -> Dict[str, Any]:
     logger = context.logger
     logger.info(f"Executando skill 'nome_da_nova_skill' com param1: {{param1}}")
     try:

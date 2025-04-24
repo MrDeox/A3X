@@ -9,6 +9,10 @@ from a3x.core.context import Context, SharedTaskContext
 import os
 from pathlib import Path
 
+# <<< ADDED Imports for type resolution >>>
+from a3x.fragments.base import BaseFragment
+from a3x.fragments.manager_fragment import ManagerFragment
+
 reflect_logger = logging.getLogger(__name__)
 
 HEURISTIC_LOG_PATH = os.path.join(LEARNING_LOGS_DIR, HEURISTIC_LOG_FILE)
@@ -53,7 +57,6 @@ REFLECTION_PROMPT_TEMPLATE_SUCCESS = """
         "objective": {"type": str, "description": "O objetivo geral da tarefa que foi executada."},
         "plan": {"type": List[str], "description": "A sequência de passos (ações/skills) que foram executadas."},
         "execution_results": {"type": List[Dict[str, Any]], "description": "Uma lista de dicionários, cada um representando o resultado de um passo do plano."},
-        "final_task_context": {"type": Optional[SharedTaskContext], "description": "The final state of the shared task context for analysis.", "default": None}
     }
 )
 async def reflect_on_success(
@@ -61,19 +64,21 @@ async def reflect_on_success(
     objective: str,
     plan: List[str],
     execution_results: List[Dict[str, Any]],
-    final_task_context: Optional[SharedTaskContext] = None
 ) -> Dict[str, Any]:
     """Reflects on a successful execution to extract heuristics."""
     reflect_logger.info(f"Reflecting on success for objective: {objective[:100]}...")
+
+    # Access SharedTaskContext from ctx
+    shared_task_context = getattr(ctx, 'shared_task_context', None)
 
     # Prepare input for the LLM
     plan_str = "\n".join([f"- {step}" for step in plan])
     results_str = "\n".join([f"- Passo {i+1}: Status={res.get('status')}, Saída={str(res.get('output', 'N/A'))[:100]}..." for i, res in enumerate(execution_results)])
 
     # Prepare shared context summary for prompt
-    context_summary = "(No shared context provided or empty)"
-    if final_task_context:
-        all_context_entries = final_task_context.get_all_entries()
+    context_summary = "(No shared context available or empty)"
+    if shared_task_context:
+        all_context_entries = shared_task_context.get_all_entries()
         if all_context_entries:
             summary_lines = ["Shared Context Snapshot:"]
             for key, entry in all_context_entries.items():
@@ -171,8 +176,7 @@ async def main_test():
         ctx=mock_ctx,
         objective=test_objective,
         plan=test_plan,
-        execution_results=test_results,
-        final_task_context=mock_ctx.shared_task_context
+        execution_results=test_results
     )
 
     print("\n--- Test Result ---")

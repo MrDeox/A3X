@@ -9,6 +9,8 @@ from pathlib import Path
 from collections import namedtuple
 
 from rich.console import Console
+import typer
+from a3x.core.tool_executor import ToolExecutor
 
 # Use relative imports for modules within the same package (cli)
 from .display import handle_agent_interaction, stream_direct_llm
@@ -21,8 +23,6 @@ from .llm_utils import create_skill_execution_context
 try:
     from a3x.core.cerebrumx import CerebrumXAgent
     from a3x.core.skills import get_skill, SKILL_REGISTRY
-    from a3x.core.tool_executor import execute_tool
-    from a3x.core.llm_interface import LLMInterface
     # from a3x.training.trainer import run_qlora_finetuning # REMOVED Import - Training is external
     from a3x.core.config import PROJECT_ROOT
 except ImportError as e:
@@ -31,8 +31,6 @@ except ImportError as e:
     CerebrumXAgent = None # Define as None to avoid runtime errors later
     get_skill = None
     SKILL_REGISTRY = {}
-    execute_tool = None
-    LLMInterface = None
     PROJECT_ROOT = "."
 
 logger = logging.getLogger(__name__)

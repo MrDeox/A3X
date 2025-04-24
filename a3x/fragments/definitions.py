@@ -4,6 +4,11 @@ from .basic_fragments import PlannerFragment, FinalAnswerProvider
 from .file_manager_fragment import FileOpsManager
 from .code_execution_fragment import CodeExecutionManager
 from .debugger import DebuggerFragment
+from .meta_reflector_fragment import MetaReflectorFragment
+from .evolution_orchestrator_fragment import EvolutionOrchestratorFragment
+from .generative_mutator_fragment import GenerativeMutatorFragment
+from .aggregate_evaluator_fragment import AggregateEvaluatorFragment
+from .performance_manager_fragment import PerformanceManagerFragment
 
 # Define os conjuntos de skills permitidas para cada Fragment Worker
 # Os nomes das skills devem corresponder aos registrados no agente

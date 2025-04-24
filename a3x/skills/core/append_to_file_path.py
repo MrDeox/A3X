@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
         "text": {"type": str, "description": "The text content to append."}
     }
 )
-async def append_to_file_path(context: Context, path: str, text: str) -> Dict[str, str]:
+async def append_to_file_path(context: Any, path: str, text: str) -> Dict[str, str]:
     """
     Appends a line of text to a specified file, creating parent directories if needed.
 

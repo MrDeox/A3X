@@ -5,498 +5,439 @@ import logging
 import importlib
 import inspect
 import pkgutil  # <<< ADDED IMPORT >>>
-from typing import Dict, Any, Callable, Optional, Union, Type, List, get_origin, get_args # Added List, get_origin, get_args
-from pydantic import BaseModel, create_model, ConfigDict # <<< ADDED ConfigDict >>>
+from typing import Dict, Any, Callable, Optional, Union, Type, List, get_origin, get_args, TYPE_CHECKING # Added List, get_origin, get_args, TYPE_CHECKING
+from pydantic import BaseModel, create_model, ConfigDict, Field, ValidationError # <<< ADDED ConfigDict, Field, ValidationError >>>
 from collections import namedtuple
 from pathlib import Path
 from pydantic import PydanticUserError # Import the specific error
+import json
+import asyncio
+
+# <<< Moved Imports into TYPE_CHECKING block >>>
+if TYPE_CHECKING:
+    from a3x.fragments.base import BaseFragment
+    from a3x.fragments.manager_fragment import ManagerFragment
+    from a3x.core.context import _ToolExecutionContext, SharedTaskContext, FragmentContext # Added contexts
+    import a3x # Import the top-level package for type eval
+
+# Placeholder if Context isn't defined/importable easily
+# class ContextPlaceholder:
+#    pass
+# Context = ContextPlaceholder
+# <<< Use specific contexts defined >>>
+_ToolExecutionContext = namedtuple("_ToolExecutionContext", ["logger", "workspace_root", "llm_url", "tools_dict", "llm_interface", "fragment_registry", "shared_task_context", "allowed_skills", "skill_instance", "memory_manager"]) # Re-declare for runtime resolution if needed?
+SkillContext = _ToolExecutionContext # Alias for common usage
 
 # Initialize logger before potentially using it in print statements
 logger = logging.getLogger(__name__)
 
 # <<< ADDED: Base class for Context-Aware Skills >>>
-class ContextAwareSkill:
-    """Base class for skills that need access to a specific execution context ID."""
-    def __init__(self, context_id: str):
-        self._context_id = context_id
+# class ContextAwareSkill:
+#     """Base class for skills that need access to a specific execution context ID."""
+#     def __init__(self, context_id: str):
+#         self._context_id = context_id
 
-    @property
-    def context_id(self) -> str:
-        return self._context_id
-# <<< END ADDED >>>
+#     @property
+#     def context_id(self) -> str:
+#         return self._context_id
 
-# <<< ADDED: Define SkillContext centrally >>>
-SkillContext = namedtuple(
-    "SkillContext",
-    ["logger", "llm_call", "is_test", "workspace_root", "task"]
-)
+# Global skill registry (Dictionary to store skills)
+SKILL_REGISTRY: Dict[str, Dict[str, Any]] = {}
+# <<< Global Pydantic Model Registry >>>
+PYDANTIC_MODEL_REGISTRY: Dict[str, Type[BaseModel]] = {}
 
-# <<< LOG HERE >>>
-print(f"\n*** Executing module: a3x.core.skills (ID: {id(sys.modules.get('a3x.core.skills'))}) ***\n")
 
-# <<< START PROJECT ROOT PATH CORRECTION >>>
-# Calculate the project root (two levels up from core/tools.py)
-_current_file_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(_current_file_dir)  # /home/arthur/Projects/A3X
+def get_skill_registry() -> Dict[str, Dict[str, Any]]:
+    """Returns the global skill registry."""
+    return SKILL_REGISTRY
 
-# Add project root to sys.path if not already present
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-# Clean up temporary variables
-del _current_file_dir
-# Keep 'project_root' as it might be useful elsewhere in this module, like in load_skills
-# <<< END PROJECT ROOT PATH CORRECTION >>>
-
-# <<< IMPORT ToolRegistry for type hint >>>
-from .tool_registry import ToolRegistry, ToolInfo
-# <<< IMPORT the singleton instance >>>
-from .registry_instance import SKILL_REGISTRY
-# <<< ADDED IMPORT for BaseFragment needed by model_rebuild >>>
-from a3x.fragments.base import BaseFragment
-
-# <<< REMOVED: Instantiation moved to registry_instance.py >>>
-# SKILL_REGISTRY = ToolRegistry()
-
-# --- Novo Registro de Skills e Decorador ---
-
-class SkillInputSchema(BaseModel):
-    """Classe base para schemas de input de skill, agora com config.
-
-    Permite tipos arbitrários (como Context) para serem usados nos parâmetros das skills.
+def get_skill(name: str) -> Optional[Dict[str, Any]]:
     """
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-def skill(name: str, description: str, parameters: Dict[str, Dict[str, Any]]):
-    """
-    Decorator to register a function as a skill available to the agent.
+    Retrieves a skill definition from the registry by name.
 
     Args:
-        name: The unique name of the skill (used by the LLM).
-        description: A clear description of what the skill does.
-        parameters: A dictionary where keys are parameter names and values are
-                    dictionaries containing 'type', 'description', and optionally 'default'.
-                    Example:
-                    {
-                        "path": {"type": str, "description": "Path to the file"}, # Required
-                        "content": {"type": str, "default": "", "description": "Content to write"} # Optional
-                    }
+        name: The name of the skill to retrieve.
+
+    Returns:
+        The skill definition dictionary if found, otherwise None.
     """
+    return SKILL_REGISTRY.get(name)
+
+
+def get_skill_descriptions(indent: int = 0, include_params: bool = True) -> str:
+    """
+    Generates a formatted string describing all registered skills,
+    including their parameters and descriptions.
+
+    Args:
+        indent: The number of spaces to indent the output.
+        include_params: Whether to include parameter details in the description.
+
+    Returns:
+        A formatted string listing all skills and their details.
+    """
+    prefix = " " * indent
+    output = ""
+    for name, skill_info in SKILL_REGISTRY.items():
+        output += f"{prefix}- Name: {name}\n"
+        output += f"{prefix}  Description: {skill_info['description']}\n"
+        if include_params and 'parameters' in skill_info:
+            output += f"{prefix}  Parameters:\n"
+            for param_name, param_info in skill_info['parameters'].items():
+                param_type = param_info.get('type', 'Any')
+                # Format complex types like Optional[str] or List[Dict[str, Any]] better
+                param_type_str = str(param_type).replace('typing.', '')
+                desc = param_info.get('description', '')
+                default_val = param_info.get('default', inspect.Parameter.empty)
+                default_str = f" (default: {default_val})" if default_val is not inspect.Parameter.empty else ""
+                optional_str = " (optional)" if param_info.get('optional') else "" # Mark optional params clearly
+                output += f"{prefix}    - {param_name}: {param_type_str}{optional_str}{default_str} - {desc}\n"
+        output += "\n"  # Add a newline between skills
+    return output
+
+
+def skill(name: str, description: str, parameters: Optional[Dict[str, Dict[str, Any]]] = None):
+    """
+    Decorator to register a function as a skill.
+
+    Args:
+        name: The unique name of the skill (used for calling it).
+        description: A clear description of what the skill does.
+        parameters: A dictionary describing the parameters the skill accepts.
+                    Each key is the parameter name.
+                    The value is a dictionary with:
+                        - 'type': The expected type (e.g., str, int, bool, list, dict, Optional[str]). Use strings for complex/forward refs.
+                        - 'description': A clear description of the parameter.
+                        - 'optional': (Optional) Boolean, True if the parameter is not required.
+                        - 'default': (Optional) The default value if the parameter is optional.
+    """
+    if parameters is None:
+        parameters = {} # Ensure parameters is always a dict
 
     def decorator(func: Callable):
         logger.debug(f"Registering skill: {name}")
 
-        # <<< ADDED IMPORT INSIDE DECORATOR >>>
-        from typing import Union, get_args, get_origin
-
-        # Validate function signature against declared parameters
+        # --- Enhanced Parameter Introspection ---
         sig = inspect.signature(func)
         func_params = sig.parameters
+        processed_params = {} # Store detailed param info for registry and schema
 
-        # <<< CORRECTED AGAIN: Handle both direct param dict and JSON schema structure >>>
-        if "properties" in parameters and isinstance(parameters.get("properties"), dict):
-            # Assume JSON Schema structure
-            declared_param_names = set(parameters["properties"].keys())
-        else:
-            # Assume direct parameter dictionary structure
-            declared_param_names = set(parameters.keys())
-        # <<< END CORRECTION >>>
+        # 1. Align defined parameters with function signature
+        for param_name, param_def in parameters.items():
+            if param_name not in func_params:
+                logger.warning(f"Skill '{name}': Parameter '{param_name}' defined in decorator but not in function signature. Skipping.")
+                continue
 
-        func_param_names = set(func_params.keys())
+            func_param = func_params[param_name]
+            # Prioritize decorator definition for type and description
+            processed_params[param_name] = {
+                'type': param_def.get('type', func_param.annotation if func_param.annotation != inspect.Parameter.empty else Any),
+                'description': param_def.get('description', ''),
+                'optional': param_def.get('optional', func_param.default != inspect.Parameter.empty),
+                'default': param_def.get('default', func_param.default if func_param.default != inspect.Parameter.empty else inspect.Parameter.empty)
+            }
 
-        # Define parameters to ignore during signature validation
-        ignored_params = {
-            "self",
-            "agent_memory",
-            "agent_history",
-            "resolved_path",
-            "original_path_str",
-            "kwargs",
-            "ctx",
-        }
+        # 2. Add parameters from signature not explicitly defined in decorator (excluding context)
+        first_param_name = next(iter(func_params)) if func_params else None
+        for param_name, func_param in func_params.items():
+            # Skip the first parameter if it's likely context (heuristic)
+            if param_name == first_param_name and param_name not in parameters:
+                 logger.debug(f"Skill '{name}': Assuming first parameter '{param_name}' is context, skipping explicit registration.")
+                 continue
+            if param_name not in processed_params:
+                # Skip parameters starting with _ (convention for internal/unused)
+                if param_name.startswith('_'):
+                     logger.debug(f"Skill '{name}': Skipping parameter '{param_name}' starting with underscore from signature.")
+                     continue
+                
+                param_type = func_param.annotation if func_param.annotation != inspect.Parameter.empty else Any
+                is_optional = func_param.default != inspect.Parameter.empty
+                default_val = func_param.default if is_optional else inspect.Parameter.empty
+                processed_params[param_name] = {
+                    'type': param_type,
+                    'description': '', # No description available from signature alone
+                    'optional': is_optional,
+                    'default': default_val
+                }
+                logger.debug(f"Skill '{name}': Parameter '{param_name}' added from function signature.")
 
-        func_params_to_validate = func_param_names - ignored_params
-        if not declared_param_names.issubset(func_params_to_validate):
-            missing_in_func = declared_param_names - func_params_to_validate
-            raise TypeError(
-                f"Skill '{name}': Parameters {missing_in_func} declared in decorator but not found in function signature (excluding {ignored_params})."
-            )
 
-        extra_in_func = func_params_to_validate - declared_param_names
-        if extra_in_func:
-            # Allow the first parameter (usually context) implicitly
-            first_param_name = next(iter(sig.parameters)) if sig.parameters else None
-            extra_in_func_filtered = {p for p in extra_in_func if p != first_param_name}
-
-            if extra_in_func_filtered: # Check if there are still unexpected params after excluding context
-                # Allow extra function params ONLY if they have defaults
-                has_defaults = all(func_params[p].default != inspect.Parameter.empty for p in extra_in_func_filtered)
-                if not has_defaults:
-                    params_without_defaults = {p for p in extra_in_func_filtered if func_params[p].default == inspect.Parameter.empty}
-                    raise TypeError(
-                        f"Skill '{name}': Parameters {params_without_defaults} found in function signature without default values but not declared in decorator (excluding {ignored_params} and first param '{first_param_name}')."
-                    )
-                else:
-                    logger.debug(f"Skill '{name}': Extra parameters {extra_in_func_filtered} found in function signature with defaults but not in decorator. Allowed.")
-
+        # <<< ADDED DYNAMIC IMPORTS HERE >>>
+        # Import types needed for Pydantic model_rebuild resolution dynamically
+        # This avoids top-level circular imports but makes the types available at decoration time.
+        try:
+            from a3x.fragments.base import BaseFragment, FragmentContext
+            from a3x.fragments.manager_fragment import ManagerFragment
+            from a3x.core.context import Context # Import base Context as it might be used
+            # <<< REMOVED AgentContext from dynamic import >>>
+            from a3x.core.context import SharedTaskContext, _ToolExecutionContext
+            # Add any other types that might appear in skill parameter annotations
+            # and cause UndefinedAnnotation errors during rebuild
+        except ImportError as e:
+            logger.warning(f"Skill '{name}': Could not dynamically import types needed for Pydantic rebuild. Forward references might fail. Error: {e}")
+            # Define placeholders if imports fail to prevent crashes later, though functionality might be limited
+            BaseFragment = type('BaseFragmentPlaceholder', (), {})
+            FragmentContext = type('FragmentContextPlaceholder', (), {})
+            ManagerFragment = type('ManagerFragmentPlaceholder', (), {})
+            Context = type('ContextPlaceholder', (), {}) # Add placeholder for Context too
+            SharedTaskContext = type('SharedTaskContextPlaceholder', (), {})
+            # AgentContext = type('AgentContextPlaceholder', (), {}) # Removed
+            _ToolExecutionContext = type('ToolExecutionContextPlaceholder', (), {})
+        # <<< END ADDED DYNAMIC IMPORTS >>>
 
         # Create Pydantic schema dynamically
-        pydantic_fields: Dict[str, tuple[Type[Any], Any]] = {} # Type hint for clarity
+        pydantic_fields: Dict[str, tuple[Any, Any]] = {} # Use Any for type hint flexibility
         # param_details_for_registry = {} # No longer needed for separate storage
 
         # <<< REVISED SCHEMA GENERATION LOGIC (handle direct dict vs. schema object) >>>
-        params_to_process = {}
-        if "properties" in parameters and isinstance(parameters.get("properties"), dict):
-            # JSON Schema structure
-            params_to_process = parameters["properties"]
-        else:
-            # Direct parameter dictionary structure
-            params_to_process = parameters
+        params_to_process = processed_params # Use the merged params
 
-        for param_name, param_config in params_to_process.items(): # Iterate over actual params
-            # <<< ADD CHECK TO SKIP CONTEXT PARAMS >>>
-            if param_name in ['ctx', 'context']:
-                logger.debug(f"Skipping context parameter '{param_name}' for Pydantic model generation in skill '{name}'.")
-                continue
-            # <<< END CHECK >>>
-            
-            if not isinstance(param_config, dict) or "type" not in param_config or "description" not in param_config:
-                raise TypeError(f"Skill '{name}': Invalid parameter config for '{param_name}'. Expected dict with 'type' and 'description'.")
-
-            param_type = param_config["type"]
-            param_desc = param_config["description"]
-            is_optional = param_config.get("optional", False)
-            # Use provided default if exists, otherwise sentinel (...) if required, or None if optional
-            param_default_value = param_config.get("default", ...) if not is_optional else param_config.get("default", None)
-
-            # Store details for the registry
-            # param_details_for_registry[param_name] = {
-            #      "type_obj": param_type,
-            #      "type_str": str(param_type.__name__) if hasattr(param_type, '__name__') else str(param_type),
-            #      "required": param_default_value is ... and not is_optional,
-            #      "default": None if (param_default_value is ...) else param_default_value, # Store None if required, else the default
-            #      "description": param_desc,
-            #      "optional_flag": is_optional # Store the explicit optional flag
-            # }
-
-            # --- Prepare for Pydantic model --- # <-- MODIFIED BLOCK
-            pydantic_type = param_type
-            pydantic_default = param_default_value
-
-            # If the parameter is explicitly marked as optional, ensure Pydantic type is Optional
-            # and the default is None (unless a different default was provided)
-            if is_optional:
-                # Check if the type is already Optional
-                origin = getattr(param_type, '__origin__', None)
-                if origin is not Optional and origin is not Union:
-                     try:
-                        # Attempt to wrap the type in Optional
-                        # Handle Union types as well, check if None is already part of it
-                        if get_origin(param_type) is Union:
-                             args = get_args(param_type)
-                             if type(None) not in args:
-                                 pydantic_type = Union[param_type, type(None)]
-                             else:
-                                 pydantic_type = param_type # Already includes None
-                        else:
-                             # Simple type, wrap in Optional
-                             pydantic_type = Optional[param_type]
-
-                     except TypeError as e:
-                         logger.warning(f"Skill '{name}': Could not wrap type '{param_type}' in Optional for param '{param_name}'. Type might not support it (e.g., complex alias). Error: {e}. Proceeding with original type.")
-                         pydantic_type = param_type # Fallback to original type
-
-                # Set default to None if no other default was specified for an optional field
-                if pydantic_default is ...:
-                    pydantic_default = None
-
-            pydantic_fields[param_name] = (pydantic_type, pydantic_default)
-            # --- End Pydantic Preparation --- #
-
-        # <<< END REVISED SCHEMA GENERATION LOGIC >>>
-
-        # Dynamic schema name
-        schema_name = f"{name.capitalize()}SkillSchema"
-        dynamic_schema: Optional[Type[BaseModel]] = None
-        json_schema_properties = {}
-        json_schema = {}
-        try:
-            dynamic_schema = create_model(
-                schema_name,
-                __base__=SkillInputSchema,
-                __module__=func.__module__,
-                **pydantic_fields
-            )
-            
-            # <<< ADDED: Attempt to rebuild the model to resolve forward refs >>>
-            try:
-                dynamic_schema.model_rebuild(force=True) # Force rebuild
-                logger.debug(f"Successfully rebuilt Pydantic model for skill '{name}'.")
-            except PydanticUserError as rebuild_err:
-                # Log specific Pydantic errors during rebuild but try to continue
-                logger.warning(f"PydanticUserError during model_rebuild for skill '{name}': {rebuild_err}. Schema generation might be incomplete.")
-            except Exception as rebuild_generic_err:
-                # Catch other potential errors during rebuild
-                logger.error(f"Unexpected error during model_rebuild for skill '{name}': {rebuild_generic_err}", exc_info=True)
-                # Decide if we should raise here or try to continue
-            
-            # <<< Generate JSON schema AFTER rebuild attempt >>>
-            json_schema = dynamic_schema.model_json_schema()
-            json_schema_properties = json_schema.get('properties', {})
-
-        except Exception as e:
-            # This catches errors during create_model primarily
-            logger.error(f"Failed to create Pydantic/JSON schema for skill '{name}'. Error: {e}")
-            raise TypeError(f"Invalid Pydantic schema definition for skill '{name}'.") from e
-
-        # <<< MODIFIED: Use SKILL_REGISTRY.register_tool with explicit dict >>>
-        instance = None # Assume function
-        # TODO: Add logic to detect if func belongs to a class
-
-        takes_context = False
-        if func_params:
-            first_param_name = next(iter(func_params))
-            first_param = func_params[first_param_name]
-            if first_param_name in ['ctx', 'context'] or first_param.annotation is SkillContext:
-                 takes_context = True
-                 logger.debug(f"Skill '{name}' identified as context-aware.")
-
-        # Create the schema dictionary expected by ToolRegistry.register_tool
-        tool_schema_for_registry = {
-            "name": name,
-            "description": description,
-            "parameters": json_schema_properties # Pass only the properties
-            # Add other top-level schema info if needed, e.g., required fields:
-            # "required": list(dynamic_schema.model_fields_set) if dynamic_schema else [] 
-            # Or get required fields from the generated json_schema dict if preferred
+        # Map string type names to actual types (handle common cases and complex types)
+        type_mapping = {
+            'str': str, 'string': str,
+            'int': int, 'integer': int,
+            'float': float,
+            'bool': bool, 'boolean': bool,
+            'list': List, 'array': List,
+            'dict': Dict, 'object': Dict,
+            'any': Any,
+             # Add mappings for types imported dynamically if needed by string refs
+            'BaseFragment': BaseFragment,
+            'FragmentContext': FragmentContext,
+            'ManagerFragment': ManagerFragment,
+            'SharedTaskContext': SharedTaskContext,
+            # 'AgentContext': AgentContext, # Removed
+            '_ToolExecutionContext': _ToolExecutionContext,
+            'Context': Context # Map the base Context class
         }
-        # Add optional 'required' list from JSON schema if available
-        if dynamic_schema and 'required' in json_schema:
-             tool_schema_for_registry['required'] = json_schema['required']
 
-        # Register using the correct method and the structured dictionary
-        SKILL_REGISTRY.register_tool(
-            name=name, # Pass name separately for potential validation/lookup
-            instance=instance,
-            tool=func,
-            schema=tool_schema_for_registry # Pass the structured dict
-        )
-        # <<< END MODIFIED REGISTRATION >>>
+        for param_name, details in params_to_process.items():
+            param_type_repr = details.get('type', Any)
+            is_optional = details.get('optional', False)
+            default_value = details.get('default', inspect.Parameter.empty)
 
-        logger.info(f"Successfully registered skill: {name}")
-        func._skill_name = name
-        func._skill_description = description
-        return func
+            actual_type = Any # Default to Any
+            try:
+                # Try evaluating string annotations (carefully)
+                if isinstance(param_type_repr, str):
+                     # Simple mapping first
+                     if param_type_repr.lower() in type_mapping:
+                         actual_type = type_mapping[param_type_repr.lower()]
+                     else:
+                         # Attempt to evaluate more complex types like Optional[str], List[Dict[str, Any]]
+                         # This requires the types (Optional, List, Dict, etc.) and potential custom types
+                         # to be available in the evaluation scope.
+                         try:
+                             # Define a local scope with common types + dynamically imported ones
+                             # <<< ADDED a3x to eval_scope >>>
+                             eval_scope = {
+                                 'Optional': Optional, 'List': List, 'Dict': Dict, 'Any': Any, 'Union': Union,
+                                 'str': str, 'int': int, 'float': float, 'bool': bool, 'dict': dict, 'list': list,
+                                 'BaseFragment': BaseFragment, 'FragmentContext': FragmentContext,
+                                 'ManagerFragment': ManagerFragment, 'SharedTaskContext': SharedTaskContext,
+                                 '_ToolExecutionContext': _ToolExecutionContext,
+                                 'Context': Context,
+                                 'a3x': sys.modules.get('a3x') # Add top-level module if needed
+                                 # Add other necessary types here
+                             }
+                             # Ensure a3x module is actually loaded
+                             if 'a3x' not in sys.modules:
+                                 try:
+                                     import a3x
+                                     eval_scope['a3x'] = a3x
+                                 except ImportError:
+                                      logger.warning("Could not import top-level 'a3x' package for type evaluation.")
+                                      eval_scope['a3x'] = None # Set to None if import fails
+                             
+                             # Only evaluate if a3x is needed and available, or if not needed
+                             if 'a3x.' not in param_type_repr or eval_scope.get('a3x'):
+                                 actual_type = eval(param_type_repr, globals(), eval_scope)
+                             else:
+                                 logger.warning(f"Skill '{name}', Param '{param_name}': Cannot evaluate type string '{param_type_repr}' because 'a3x' module is required but not loaded. Defaulting to Any.")
+                                 actual_type = Any # Fallback if a3x needed but not loaded
+
+                         except (NameError, SyntaxError, TypeError, AttributeError) as eval_err: # Added AttributeError
+                              logger.warning(f"Skill '{name}', Param '{param_name}': Failed to evaluate type string '{param_type_repr}'. Defaulting to Any. Error: {eval_err}")
+                              actual_type = Any # Fallback
+                elif inspect.isclass(param_type_repr) or get_origin(param_type_repr): # Handle actual types or typing generics (List, Optional)
+                    actual_type = param_type_repr
+                else:
+                     logger.warning(f"Skill '{name}', Param '{param_name}': Unhandled type representation '{param_type_repr}'. Defaulting to Any.")
+                     actual_type = Any # Fallback for unknown representations
+
+            except Exception as e:
+                logger.error(f"Skill '{name}', Param '{param_name}': Unexpected error processing type '{param_type_repr}'. Defaulting to Any. Error: {e}")
+                actual_type = Any
+
+            # <<< ADDED: Explicitly check if the resolved type is a Context class >>>
+            # <<< This MUST run AFTER actual_type is resolved >>>
+            is_context_type = False
+            if inspect.isclass(actual_type):
+                try:
+                    # Check against the dynamically imported context types
+                    if issubclass(actual_type, (Context, FragmentContext, SharedTaskContext, _ToolExecutionContext)):
+                        is_context_type = True
+                except TypeError: # Handle cases where issubclass gets non-class types (like Any, Optional)
+                    pass
+                except NameError: # Handle if context types weren't imported successfully
+                    logger.warning(f"Skill '{name}', Param '{param_name}': Could not check context type due to missing definitions.")
+                    pass # Assume not context if definitions are missing
+
+            # <<< MODIFIED: Skip adding to pydantic_fields if it's a context type >>>
+            if is_context_type:
+                logger.debug(f"Skill '{name}', Param '{param_name}': Skipping context parameter of type '{actual_type.__name__}' from Pydantic schema.")
+                continue # Skip to the next parameter
+            # <<< END MODIFICATION >>>
+
+            # --- Construct Pydantic Field ---
+            field_args = {
+                'description': details.get('description', ''),
+                 # Include default only if one was provided and it's not 'empty sentinel'
+                **({'default': default_value} if default_value is not inspect.Parameter.empty else {})
+            }
+            # If optional and no default, use Pydantic's Optional handling
+            if is_optional and default_value is inspect.Parameter.empty:
+                 final_type = Optional[actual_type]
+                 # Pydantic handles Optional[...] implicitly having a default of None
+                 pydantic_field = Field(**field_args)
+            elif default_value is not inspect.Parameter.empty:
+                 final_type = actual_type # Type hint remains the base type
+                 # Pydantic infers optionality from the presence of a default value
+                 pydantic_field = Field(**field_args)
+            else:
+                 # Required field (not optional, no default)
+                 final_type = actual_type
+                 pydantic_field = Field(...) # Ellipsis indicates required field
+
+            pydantic_fields[param_name] = (final_type, pydantic_field)
+
+        # Dynamically create the Pydantic model for input validation
+        DynamicInputModel = None
+        model_name = f"{func.__name__.capitalize()}InputModel"
+        if pydantic_fields:
+            try:
+                DynamicInputModel = create_model(
+                    model_name,
+                    **pydantic_fields,
+                    # <<< ADDED arbitrary_types_allowed=True >>>
+                    __config__=ConfigDict(extra='forbid', arbitrary_types_allowed=True) 
+                )
+                PYDANTIC_MODEL_REGISTRY[name] = DynamicInputModel
+                logger.debug(f"Skill '{name}': Created Pydantic input model '{model_name}'.")
+            except (PydanticUserError, TypeError, NameError, Exception) as model_err:
+                logger.error(f"Skill '{name}': Failed to create Pydantic model '{model_name}'. Input validation may not work correctly. Error: {model_err}")
+                DynamicInputModel = None # Ensure it's None if creation failed
+        else:
+            logger.debug(f"Skill '{name}': No parameters requiring validation. Skipping Pydantic model creation.")
+
+
+        # Store skill information in the registry
+        SKILL_REGISTRY[name] = {
+            'function': func,
+            'async': asyncio.iscoroutinefunction(func),
+            'description': description,
+            'parameters': processed_params, # Store the processed parameters
+            'input_schema': DynamicInputModel, # Store the Pydantic model (or None)
+            'signature': sig # Store original signature for reference
+        }
+
+        logger.info(f"Skill '{name}' registered successfully.")
+        return func # Return the original function
 
     return decorator
 
 
-# <<< RENOMEADO: Função para carregar um único pacote de skills >>>
-def _load_single_skill_package(skill_package_name: str):
-    """Loads skills from all modules within a specified package."""
-    try:
-        if not all(part.isidentifier() for part in skill_package_name.split('.')):
-            logger.error(f"Invalid skill package name: {skill_package_name}")
-            return
+# --- Skill Discovery ---
 
-        count_before = len(SKILL_REGISTRY.list_tools())
-
-        spec = importlib.util.find_spec(skill_package_name)
-
-        # <<< REMOVED RELOAD LOGIC - Only import >>>
-        if spec is None:
-            logger.warning(f"Could not find skill package '{skill_package_name}'. Skipping.")
-            return
-            
-        # Check if already imported (simplest way to avoid re-running module code)
-        if skill_package_name in sys.modules:
-             logger.info(f"Skills package '{skill_package_name}' already imported. Skipping module re-execution.")
-             # NOTE: This assumes skills register on first import via @skill decorator.
-             # If re-registration or updates are needed, a different mechanism
-             # than simple import/reload is required.
-             return # Skip walking and importing modules again
-        else:
-            logger.info(f"Importing skills package for the first time: {skill_package_name}")
-            # Try importing the top-level package itself first
-            try:
-                 module = importlib.import_module(skill_package_name)
-                 # Now iterate through its modules if it's a package
-                 if spec.submodule_search_locations:
-                     package_path = spec.submodule_search_locations[0]
-                     logger.debug(f"Walking package: {skill_package_name} at {package_path}")
-                     for _, module_name, is_pkg in pkgutil.iter_modules([package_path]):
-                         full_module_name = f"{skill_package_name}.{module_name}"
-                         if is_pkg:
-                              # Optionally recurse into sub-packages
-                              logger.debug(f"Found sub-package '{full_module_name}', loading recursively...")
-                              _load_single_skill_package(full_module_name) # Recursive call
-                         else:
-                             if full_module_name not in sys.modules:
-                                 try:
-                                     logger.debug(f"---> Importing submodule: {full_module_name}")
-                                     importlib.import_module(full_module_name)
-                                     logger.debug(f"<--- Imported submodule: {full_module_name}")
-                                 except ImportError as e:
-                                     logger.error(f"Failed to import skill submodule '{full_module_name}': {e}", exc_info=True)
-                                 except Exception as e:
-                                     logger.error(f"Error loading submodule '{full_module_name}': {e}", exc_info=True)
-                             else:
-                                 logger.debug(f"Submodule '{full_module_name}' already imported. Skipping.")
-                 else:
-                     logger.debug(f"'{skill_package_name}' is a single module, not a package. Skills loaded (if any)." )
-
-            except ImportError as e:
-                logger.error(f"Failed to import skill package/module '{skill_package_name}': {e}", exc_info=True)
-            except Exception as e:
-                logger.error(f"Error during skill loading process for '{skill_package_name}':", exc_info=True)
-
-        # <<< END REMOVED RELOAD LOGIC >>>
-
-        count_after = len(SKILL_REGISTRY.list_tools())
-        newly_registered = count_after - count_before
-        logger.info(f"Finished processing package '{skill_package_name}'. Newly registered: {newly_registered}. Total in registry: {count_after}")
-
-    except Exception as e:
-        logger.error(f"Unexpected error in _load_single_skill_package for '{skill_package_name}': {e}", exc_info=True)
-
-# <<< NOVA FUNÇÃO: Para carregar skills de MÚLTIPLOS pacotes >>>
-def load_all_skills(skill_package_list: list[str]) -> Dict[str, Dict[str, Any]]:
+def discover_skills(skill_directory: Union[str, Path] = "a3x/skills") -> None:
     """
-    Loads or reloads skills dynamically from a LIST of Python packages.
-    Calls _load_single_skill_package for each package in the list.
+    Dynamically discovers and imports skills from subdirectories.
+
+    Assumes skills are defined in Python files within subdirectories
+    (e.g., a3x/skills/core/, a3x/skills/file_management/).
+    It imports the modules to trigger the @skill decorators.
 
     Args:
-        skill_package_list (list[str]): A list of Python package names (e.g., ['a3x.skills.core', 'a3x.skills.web']).
-
-    Returns:
-        Dict[str, Dict[str, Any]]: The final skill registry after loading all packages.
+        skill_directory: The root directory containing skill subdirectories.
+                         Defaults to "a3x/skills".
     """
-    logger.info(f"Loading skills from multiple packages: {skill_package_list}")
-    initial_count = len(SKILL_REGISTRY.list_tools())
+    root_dir = Path(skill_directory).resolve()
+    if not root_dir.is_dir():
+        logger.error(f"Skill directory not found: {root_dir}")
+        return
+            
+    logger.info(f"Starting skill discovery in: {root_dir}")
+    # Ensure the root skills directory is treated as a package (might need __init__.py)
+    # sys.path.insert(0, str(root_dir.parent)) # Add parent to path if needed
 
-    for package_name in skill_package_list:
-        logger.debug(f"--->>> About to load package: {package_name}") # Log antes
-        _load_single_skill_package(package_name)
-        logger.debug(f"--->>> Finished loading package: {package_name}") # Log depois
+    # <<< Ensure parent directory of skill_directory is in path for correct prefix >>>
+    module_prefix = root_dir.name + "."
+    package_path = str(root_dir.parent)
+    if package_path not in sys.path:
+        sys.path.insert(0, package_path)
+        logger.debug(f"Added {package_path} to sys.path for skill discovery.")
+        path_added = True
+    else:
+        path_added = False
+        logger.debug(f"{package_path} already in sys.path.")
 
-    final_count = len(SKILL_REGISTRY.list_tools())
-    total_new = final_count - initial_count
-    logger.info(f"Finished loading all skill packages. Total newly registered: {total_new}. Final registry size: {final_count}")
-    logger.debug(f"--->>> Returning final SKILL_REGISTRY from load_all_skills (size: {final_count})") # Log antes de retornar
-    return SKILL_REGISTRY
+    # Iterate through subdirectories and files
+    # Use root_dir directly as path, prefix handles the 'a3x.skills.' part
+    for module_info in pkgutil.walk_packages(path=[str(root_dir)], prefix=module_prefix):
+        if not module_info.ispkg: # Only import modules, not packages themselves initially
+            # <<< Construct full module name correctly >>>
+            # Example: prefix='a3x.skills.', module_info.name='core.basic_math'
+            # Needs to import 'a3x.skills.core.basic_math'
+            full_module_name = f"a3x.skills.{module_info.name.split('.', 1)[-1]}" if '.' in module_info.name else f"a3x.skills.{module_info.name}" # Heuristic adjustment
+            # Alternative: full_module_name = module_info.name # If prefix already includes the top package?
+            # Let's stick to the prefix adding the base 'a3x.skills.' if needed
+            # Example: root_dir = /path/to/A3X/a3x/skills -> prefix = 'skills.' -> module_info.name = 'core.basic_math'
+            # Need 'a3x.skills.core.basic_math'
+            # Let's try prefixing with 'a3x.'
+            full_module_name = f"a3x.{module_info.name}"
 
+            try:
+                 logger.debug(f"Attempting to import skill module: {full_module_name}")
+                 importlib.import_module(full_module_name)
+                 logger.debug(f"Successfully imported {full_module_name}")
+            except ModuleNotFoundError:
+                 # Try original name from pkgutil if the adjusted one fails
+                 original_module_name = module_info.name
+                 logger.warning(f"Import failed for adjusted name '{full_module_name}', trying original name '{original_module_name}'...")
+                 try:
+                      importlib.import_module(original_module_name)
+                      logger.debug(f"Successfully imported original name {original_module_name}")
+                 except Exception as inner_e:
+                      logger.error(f"Failed to import skill module using original name {original_module_name} either: {inner_e}")
+            except ImportError as e:
+                 logger.error(f"Failed to import skill module {full_module_name}: {e}")
+            except Exception as e:
+                 logger.error(f"Error importing skill module {full_module_name}: {e}", exc_info=True)
 
-# --- Funções para acessar informações das Skills ---
+    # Clean up path modification if done
+    if path_added:
+         try:
+             sys.path.remove(package_path)
+             logger.debug(f"Removed {package_path} from sys.path after skill discovery.")
+         except ValueError:
+             pass # Path might have been removed elsewhere
 
+    logger.info(f"Skill discovery finished. Total skills registered: {len(SKILL_REGISTRY)}")
 
-def get_skill_registry() -> ToolRegistry:
-    """Returns the global skill registry instance."""
-    # Returns the imported singleton instance
-    return SKILL_REGISTRY
+# Example usage (Optional: Could be called during application startup)
+# if __name__ == "__main__":
+#     logging.basicConfig(level=logging.DEBUG)
+#     # Assume skills are in a directory structure like 'a3x/skills/core', 'a3x/skills/web'
+#     # The path should be relative to where this script is run or absolute.
+#     # If running from project root, 'a3x/skills' should work if 'a3x' is the package name.
+#     script_dir = Path(__file__).parent.parent.resolve() # Go up two levels from core to project root potentially
+#     skills_path = script_dir / 'skills'
+#     discover_skills(skills_path)
+#     print("\n--- Registered Skills ---")
+#     print(get_skill_descriptions(include_params=True))
 
-
-def get_skill_descriptions() -> str:
-    """
-    Retorna uma string formatada descrevendo todas as skills registradas,
-    incluindo seus parâmetros e suas descrições do docstring.
-    """
-    tools = SKILL_REGISTRY.list_tools() # Use the imported instance
-
-    if not tools:
-        return "No skills are currently registered."
-
-    descriptions = []
-    for name, skill_info in SKILL_REGISTRY.items():
-        func = skill_info.get("function")
-        desc = skill_info.get("description", "No description.")
-        params_dict = skill_info.get("parameters", {})
-
-        # --- Extract Parameter Descriptions from Docstring --- START
-        param_docs = {}
-        if func and func.__doc__:
-            docstring = inspect.getdoc(func)
-            if docstring:
-                lines = docstring.split('\n')
-                in_args_section = False
-                for line in lines:
-                    stripped_line = line.strip()
-                    if stripped_line.lower().startswith("args:"):
-                        in_args_section = True
-                        continue
-                    if in_args_section:
-                        if not stripped_line: # End of Args section
-                            break
-                        if ":" in stripped_line:
-                            # Simple parse: Assume format 'param_name (type): Description.'
-                            # or 'param_name: Description.' (if type is omitted in docstring)
-                            parts = stripped_line.split(':', 1)
-                            param_part = parts[0].strip()
-                            param_desc_text = parts[1].strip()
-                            # Extract just the name (handle potential type hints in docstring like 'param (str)')
-                            param_name_from_doc = param_part.split('(')[0].strip()
-                            param_docs[param_name_from_doc] = param_desc_text
-        # --- Extract Parameter Descriptions from Docstring --- END
-
-        # Obter docstring como descrição alternativa para a *skill* (se não houver no decorator)
-        if desc == "No description." and func and func.__doc__:
-            desc = inspect.getdoc(func).split('\n')[0] if inspect.getdoc(func) else "No description."
-
-        param_strs = []
-        if params_dict:
-            for param_name, param_info in params_dict.items():
-                param_type_str = "Any"
-                default_desc = ""
-                is_required = False
-
-                if isinstance(param_info, (list, tuple)):
-                    if len(param_info) == 1:
-                        param_type = param_info[0]
-                        is_required = True
-                    elif len(param_info) == 2:
-                        param_type, default_value = param_info
-                        is_required = (default_value is inspect.Parameter.empty)
-                        default_desc = f" (default: {default_value})" if not is_required else ""
-                    else:
-                        continue
-
-                    if hasattr(param_type, '__name__'):
-                        param_type_str = param_type.__name__
-                    else:
-                        param_type_str = str(param_type)
-                else:
-                    continue
-
-                required_str = " (required)" if is_required else default_desc
-                # <<< Include Parameter Description >>>
-                param_desc = param_docs.get(param_name, "") # Get extracted description
-                desc_str = f" - {param_desc}" if param_desc else ""
-                param_strs.append(f"{param_name}: {param_type_str}{required_str}{desc_str}")
-
-        param_section = ", ".join(param_strs)
-        if param_section:
-            descriptions.append(f"- {name}({param_section}): {desc}")
-        else:
-            descriptions.append(f"- {name}(): {desc}")
-
-    return "\n".join(descriptions)
-
-
-def get_skill(skill_name: str) -> Optional[ToolInfo]:
-    """
-    Retrieves the details (ToolInfo) for a specific skill by name.
-    """
-    try:
-        # Use the imported instance
-        return SKILL_REGISTRY.get_tool(skill_name)
-    except KeyError:
-        logger.warning(
-            f"Skill '{skill_name}' not found in registry even after attempting load."
-        )
-        return None
-
-
-# É crucial chamar load_skills() no ponto de entrada principal da aplicação
-# (provavelmente na inicialização do Agent) para garantir que todas as
-# skills sejam registradas antes de serem necessárias.
-# Exemplo: remover a chamada automática daqui
+#     # Example of getting a specific skill's schema
+#     # math_skill = get_skill("basic_math")
+#     # if math_skill and math_skill['input_schema']:
+#     #     print("\n--- Basic Math Input Schema ---")
+#     #     print(math_skill['input_schema'].model_json_schema())

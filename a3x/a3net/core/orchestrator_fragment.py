@@ -1,107 +1,239 @@
 import torch.nn as nn
 import logging
+import json
 from typing import List, Dict, Any, Optional, Tuple
+from collections import defaultdict, Counter
+import re # For task categorization heuristic
 
 # Import necessary components for registration
 from a3x.fragments.base import BaseFragment, FragmentDef
 from a3x.fragments.registry import fragment
-from a3x.core.context import SharedTaskContext
+from a3x.core.context import SharedTaskContext, FragmentContext
 from a3x.core.constants import STATUS_SUCCESS, STATUS_ERROR, REASON_DELEGATION_FAILED
+# Assume MemoryManager might be needed
+try:
+    from a3x.core.memory.memory_manager import MemoryManager
+except ImportError:
+    MemoryManager = None # Handle gracefully if import fails
+    logging.getLogger(__name__).warning("Could not import MemoryManager in a3net_orchestrator")
 
 logger = logging.getLogger(__name__)
+
+# Constants for adaptive logic
+HISTORY_ANALYSIS_EPISODE_COUNT = 50
+MIN_EXECUTIONS_FOR_STATS = 3
+DEFAULT_FALLBACK_FRAGMENT = "PlannerFragment" # Safer fallback
 
 # Decorator for automatic registration
 @fragment(
     name="a3net_orchestrator",
-    description="Decide o próximo fragmento a ser executado usando lógica simbólica.",
-    category="Management", # Orquestração é uma tarefa de gerenciamento
-    skills=[], # Não executa skills diretamente
-    managed_skills=[] # Não gerencia skills diretamente
+    description="Decide o próximo fragmento a ser executado usando lógica adaptativa baseada em histórico e sugestões.",
+    category="Management",
+    skills=[],
+    managed_skills=[],
+    capabilities=["task_delegation", "orchestration_decision"]
 )
-class OrchestratorFragment(BaseFragment): # Use BaseFragment
+class OrchestratorFragment(BaseFragment):
     """
     Fragmento A³Net responsável por decidir qual fragmento deve
-    executar a próxima sub-tarefa, baseado no objetivo e contexto.
-    Utiliza lógica simbólica/heurística.
+    executar a próxima sub-tarefa, baseado no objetivo, contexto, histórico,
+    e sugestões do MetaLearner.
+    Utiliza lógica adaptativa e heurísticas de fallback.
     """
-    def __init__(self, fragment_def: FragmentDef): # <<< ADD fragment_def parameter
+    def __init__(self, ctx: FragmentContext):
         """Inicializa o OrchestratorFragment."""
-        # TODO: Define specific skills/metadata if needed, or rely on BaseFragment defaults
-        # fragment_def = FragmentDef(name="OrchestratorFragment", fragment_class=OrchestratorFragment, description=self.get_purpose(), category="Orchestration")
-        super().__init__(fragment_def=fragment_def) # <<< Pass fragment_def to super
-        # Initialize neural network components if this fragment uses them
-        # Example: self.decision_network = DecisionNetwork(...)
-        self._logger.info(f"OrchestratorFragment '{self.get_name()}' initialized.") # Use get_name() from BaseFragment
+        super().__init__(ctx=ctx)
+        # Get MemoryManager from context
+        if MemoryManager and hasattr(ctx, 'memory_manager') and isinstance(ctx.memory_manager, MemoryManager):
+            self.memory_manager = ctx.memory_manager
+        else:
+            self._logger.error("MemoryManager not available in context for OrchestratorFragment. Adaptive logic disabled.")
+            self.memory_manager = None
+            
+        # Placeholder for potential future NN components
+        # self.decision_network = ... 
+        self._logger.info(f"OrchestratorFragment '{self.get_name()}' initialized. Adaptive: {self.memory_manager is not None}")
 
     async def get_purpose(self, context: Optional[Dict] = None) -> str:
-        return "Decides the next fragment or skill to delegate a task to based on objective, history, and available components."
+        return "Decides the next fragment or skill to delegate a task to based on objective, history, available components, and meta-learning suggestions."
 
-    async def execute(self, *, # Use keyword-only arguments for clarity
+    def _categorize_objective(self, objective: str) -> str:
+        """Simple heuristic to categorize objectives for history analysis."""
+        objective_lower = objective.lower()
+        # Prioritize more specific keywords
+        if re.search(r'(código|codigo|code|arquivo|file).*(gerar|criar|escrever|write|generate|create)', objective_lower): return "code_generation"
+        if re.search(r'(código|codigo|code|arquivo|file).*(analisar|revisar|debug|corrigir|refatorar|analyze|review|fix|refactor)', objective_lower): return "code_analysis"
+        if re.search(r'(mutar|evoluir|melhorar|adaptar|mutate|evolve|improve|adapt)', objective_lower): return "evolution"
+        if re.search(r'(avaliar|desempenho|performance|evaluate)', objective_lower): return "evaluation"
+        if re.search(r'(planejar|plano|plan)', objective_lower): return "planning"
+        if re.search(r'(executar|rodar|execute|run)', objective_lower): return "execution"
+        if re.search(r'(sumarizar|resumir|summarize)', objective_lower): return "summarization"
+        if re.search(r'(traduzir|translate)', objective_lower): return "translation"
+        # Generic fallback category
+        return "general"
+
+    async def _get_historical_performance(self, task_category: str, available_fragments: List[str]) -> Optional[str]:
+        """Analyzes recent history to find the best performing fragment for a task category."""
+        if not self.memory_manager:
+            return None
+            
+        self._logger.info(f"Analyzing historical performance for task category: '{task_category}'...")
+        try:
+            episodes = await self.memory_manager.get_recent_episodes(limit=HISTORY_ANALYSIS_EPISODE_COUNT)
+            if not episodes:
+                self._logger.info("No recent episodes found for historical analysis.")
+                return None
+
+            # Calculate success rates per fragment for the target category
+            fragment_perf = defaultdict(lambda: {"success": 0, "total": 0})
+            
+            for episode in episodes:
+                try:
+                    # Extract fragment name and objective/context
+                    metadata_str = episode.get('metadata', '{}')
+                    metadata = json.loads(metadata_str) if isinstance(metadata_str, str) else (metadata_str if isinstance(metadata_str, dict) else {})
+                    fragment_name = metadata.get("fragment_name") or episode.get('action')
+                    episode_objective = metadata.get("objective") or episode.get('context') # Check both
+                    
+                    if not fragment_name or not episode_objective or fragment_name not in available_fragments:
+                        continue # Skip if data missing or fragment unavailable
+                        
+                    # Check if episode matches target category
+                    episode_category = self._categorize_objective(str(episode_objective))
+                    if episode_category == task_category:
+                        stats = fragment_perf[fragment_name]
+                        stats["total"] += 1
+                        if episode.get('outcome', 'unknown').lower() == 'success':
+                            stats["success"] += 1
+                except Exception as e:
+                    self._logger.warning(f"Error processing episode ID {episode.get('id')} during historical analysis: {e}")
+                    
+            # Find the best fragment based on success rate (if enough data)
+            best_fragment = None
+            best_rate = -1.0
+            for name, stats in fragment_perf.items():
+                if stats["total"] >= MIN_EXECUTIONS_FOR_STATS:
+                    rate = stats["success"] / stats["total"]
+                    if rate > best_rate:
+                        best_rate = rate
+                        best_fragment = name
+                        
+            if best_fragment:
+                self._logger.info(f"Historical analysis suggests '{best_fragment}' (rate: {best_rate:.2f}) for category '{task_category}'.")
+                return best_fragment
+            else:
+                self._logger.info(f"No fragment found with sufficient historical data for category '{task_category}'.")
+                return None
+                 
+        except Exception as e:
+            self._logger.error(f"Error during historical performance analysis: {e}", exc_info=True)
+            return None
+
+    async def execute(self, *, 
                 objective: str,
                 history: List[Dict[str, str]],
                 available_fragments: List[str],
                 available_skills: List[str],
                 task_context: Dict[str, Any]
                 ) -> Dict[str, Any]:
-        """
-        Decide o próximo passo de forma simbólica.
-
-        Args:
-            objective: O objetivo geral da tarefa.
-            history: O histórico da orquestração até o momento.
-            available_fragments: Lista de IDs dos fragmentos disponíveis.
-            available_skills: Lista de IDs das skills disponíveis.
-            task_context: Dicionário com o contexto compartilhado da tarefa.
-
-        Returns:
-            Um dicionário com 'component_name' e 'sub_task'.
-        """
-        fragment_id = self.get_name() # Get assigned name
-        self._logger.info(f"[{fragment_id}] Executing decision logic for objective: '{objective[:100]}...'")
+        fragment_id = self.get_name()
+        self._logger.info(f"[{fragment_id}] Executing ADAPTIVE decision logic for objective: '{objective[:100]}...'")
         self._logger.debug(f"[{fragment_id}] Available Fragments: {available_fragments}")
         self._logger.debug(f"[{fragment_id}] Available Skills: {available_skills}")
         self._logger.debug(f"[{fragment_id}] History length: {len(history)}")
         self._logger.debug(f"[{fragment_id}] Task Context Keys: {list(task_context.keys())}")
 
-        # Lógica heurística simples
-        objective_lower = objective.lower()
-        component_name = "default_fragment" # Fallback
-        sub_task = "analisar objetivo e contexto" # Fallback task
+        component_name = None
+        sub_task = "Process objective: " + objective # Default subtask
+        decision_reason = "No specific strategy applied."
 
-        # TODO: Use available_fragments list to validate choices
-        planner_id = "PlannerFragment" # Standard ID?
-        executor_id = "ToolExecutorFragment" # Standard ID?
-        # default_id = "CodeExecutionFragment" # Example default
+        # Ensure available_fragments is a set for faster lookups
+        available_fragments_set = set(available_fragments)
 
-        if "planejar" in objective_lower or "plan" in objective_lower:
-            component_name = planner_id
-            sub_task = "Gerar um plano detalhado para alcançar o objetivo."
-            self._logger.info(f"[{fragment_id}] Heuristic: Objective mentions planning. Delegating to {component_name}.")
+        # --- Decision Logic --- 
+        task_category = self._categorize_objective(objective)
+        self._logger.info(f"[{fragment_id}] Objective categorized as: '{task_category}'")
 
-        elif "executar" in objective_lower or "execute" in objective_lower or "run" in objective_lower:
-            # Se existe um plano, o ToolExecutor provavelmente deve ser chamado.
-            # Se não, talvez o Planner devesse ter sido chamado antes?
-            # Por enquanto, vamos delegar ao ToolExecutor se a palavra estiver presente.
-            component_name = executor_id
-            sub_task = "Executar a próxima etapa da tarefa ou plano."
-            self._logger.info(f"[{fragment_id}] Heuristic: Objective mentions execution. Delegating to {component_name}.")
+        # 1. Check Meta-Learner Suggestions
+        meta_suggestions = task_context.get('orchestration_suggestions', [])
+        if isinstance(meta_suggestions, list):
+            for suggestion in meta_suggestions:
+                if isinstance(suggestion, dict) and \
+                   suggestion.get('task_category') == task_category and \
+                   suggestion.get('preferred_fragment') in available_fragments_set:
+                    component_name = suggestion['preferred_fragment']
+                    decision_reason = f"Meta-Learner suggestion for category '{task_category}'"
+                    self._logger.info(f"[{fragment_id}] Applying Meta-Learner suggestion: Use '{component_name}'.")
+                    break # Use the first matching suggestion
 
-        # Add more heuristics based on history, context, available fragments/skills later
-        # Example: Check last step in history for errors -> delegate to DebuggerFragment
+        # 2. Check Historical Performance (if no Meta-Learner suggestion applied)
+        if not component_name:
+            historical_best = await self._get_historical_performance(task_category, available_fragments)
+            if historical_best: # historical_best is already validated against available_fragments
+                component_name = historical_best
+                decision_reason = f"Historical performance for category '{task_category}'"
+                self._logger.info(f"[{fragment_id}] Using historically best fragment: '{component_name}'.")
 
-        else:
-            self._logger.info(f"[{fragment_id}] Heuristic: No specific keyword matched. Using fallback delegation to {component_name}.")
-            # Maybe delegate to Planner if no other rule matches?
-            # component_name = planner_id
-            # sub_task = "Analisar o objetivo e criar um plano inicial."
+        # 3. Fallback Heuristics (if no suggestion or history)
+        if not component_name:
+            decision_reason = "Fallback heuristic"
+            objective_lower = objective.lower()
+            planner_id = "PlannerFragment"
+            executor_id = "tool_executor" # This likely refers to a skill executor, not a fragment
+            evolution_planner_id = "evolution_planner"
 
+            if "planejar" in objective_lower or "plan" in objective_lower:
+                component_name = planner_id if planner_id in available_fragments_set else DEFAULT_FALLBACK_FRAGMENT
+                sub_task = "Gerar um plano detalhado para alcançar o objetivo."
+            elif "executar" in objective_lower or "execute" in objective_lower or "run" in objective_lower:
+                if task_context.get("current_plan") and isinstance(task_context.get("current_plan"), list) and len(task_context["current_plan"]) > 0:
+                    # Plan exists: Needs an executor. tool_executor isn't a fragment.
+                    # Which fragment *uses* tool_executor? Maybe a dedicated 'PlanExecutorFragment'?
+                    # Or perhaps the logic resides directly in the main TaskOrchestrator?
+                    # For now, let's assume a hypothetical executor fragment exists or use Planner as fallback.
+                    plan_executor_id = "PlanExecutorFragment" # Hypothetical
+                    component_name = plan_executor_id if plan_executor_id in available_fragments_set else (executor_id if executor_id in available_fragments_set else planner_id) # Trying executor_id just in case
+                    
+                    # Generate specific sub_task from plan
+                    next_step_index = task_context.get("current_step_index", 0)
+                    current_plan = task_context["current_plan"]
+                    if isinstance(next_step_index, int) and 0 <= next_step_index < len(current_plan):
+                        plan_step = current_plan[next_step_index]
+                        step_desc = plan_step.get("description") if isinstance(plan_step, dict) else str(plan_step)
+                        sub_task = f"Executar etapa {next_step_index + 1} do plano: {step_desc}"
+                    else:
+                        sub_task = "Executar próxima etapa do plano (índice inválido?)."
+                else:
+                    # No plan: Delegate to a planner
+                    chosen_planner = evolution_planner_id if evolution_planner_id in available_fragments_set and "evolucao" in objective_lower else planner_id
+                    component_name = chosen_planner if chosen_planner in available_fragments_set else DEFAULT_FALLBACK_FRAGMENT
+                    sub_task = f"Gerar um plano para o objetivo: '{objective}'"
+            else:
+                # Default fallback if no keywords match
+                component_name = DEFAULT_FALLBACK_FRAGMENT if DEFAULT_FALLBACK_FRAGMENT in available_fragments_set else (planner_id if planner_id in available_fragments_set else None)
+                sub_task = f"Analisar objetivo e contexto: '{objective}'"
+                decision_reason = "Default fallback strategy"
+            
+            self._logger.info(f"[{fragment_id}] Applied fallback heuristic ({objective_lower[:20]}...): Delegate to '{component_name}'.")
+
+        # Final Validation and Default
+        if not component_name or component_name not in available_fragments_set:
+            self._logger.warning(f"[{fragment_id}] Chosen component '{component_name}' is invalid or unavailable. Using default fallback '{DEFAULT_FALLBACK_FRAGMENT}'.")
+            component_name = DEFAULT_FALLBACK_FRAGMENT
+            sub_task = f"Analisar objetivo e contexto (fallback): '{objective}'"
+            decision_reason = "Final fallback (component unavailable)"
+            # Ensure the default fallback is actually available
+            if DEFAULT_FALLBACK_FRAGMENT not in available_fragments_set:
+                self._logger.error(f"[{fragment_id}] CRITICAL: Default fallback fragment '{DEFAULT_FALLBACK_FRAGMENT}' is not in available_fragments! Cannot make decision.")
+                return {"status": STATUS_ERROR, "reason": REASON_DELEGATION_FAILED, "message": "Fallback fragment indisponível."}
 
         decision = {
             "component_name": component_name,
             "sub_task": sub_task,
-            "status": "success" # Indicate successful decision making
+            "status": STATUS_SUCCESS,
+            "decision_reason": decision_reason # Add reason for transparency
         }
-        self._logger.info(f"[{fragment_id}] Decision made: {decision}")
+        self._logger.info(f"[{fragment_id}] Adaptive decision made: Delegate to '{component_name}'. Reason: {decision_reason}")
         return decision
 
 # Example of how it might be registered (actual registration happens elsewhere)

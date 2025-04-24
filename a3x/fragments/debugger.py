@@ -6,7 +6,6 @@ from typing import Dict, Any, List, Optional
 from .base import BaseFragment, FragmentContext # Import FragmentContext
 from .registry import fragment # Import the decorator
 from a3x.core.llm_interface import LLMInterface # Assuming it needs LLM
-from a3x.core.tool_executor import _ToolExecutionContext, execute_tool # Import execute_tool
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +32,7 @@ class DebuggerFragment(BaseFragment): # Inherit from BaseFragment
 
     async def execute(
         self,
-        context: FragmentContext, # Changed from ctx: _ToolExecutionContext
+        context: FragmentContext,
         sub_task: Optional[str] = None, # Added sub_task as optional
         objective: Optional[str] = None, # Made optional
         failed_sub_task: Optional[str] = None, # Made optional
@@ -100,14 +99,20 @@ class DebuggerFragment(BaseFragment): # Inherit from BaseFragment
                 }
             }
 
-            # --- Call llm_error_diagnosis Skill --- 
+            # --- Call llm_error_diagnosis Skill via ToolExecutor --- 
             try:
                 logger.info(f"{log_prefix} Calling llm_error_diagnosis skill...")
-                diagnosis_result_wrapped = await execute_tool(
+                
+                # Ensure tool_executor exists in context
+                if not hasattr(context, 'tool_executor'):
+                    logger.error(f"{log_prefix} ToolExecutor not found in context.")
+                    return {"status": "error", "data": {"message": "Internal error: ToolExecutor missing from context."}}
+                
+                # Use the tool_executor instance from the context
+                diagnosis_result_wrapped = await context.tool_executor.execute_tool(
                     tool_name="llm_error_diagnosis",
-                    action_input=diagnosis_input,
-                    tools_dict=context.tool_registry, # Use context.tool_registry
-                    context=context # Pass FragmentContext
+                    tool_input=diagnosis_input, # Changed action_input to tool_input
+                    context=context # Pass the context for the skill
                 )
                 
                 diagnosis_result = diagnosis_result_wrapped.get("result", {})

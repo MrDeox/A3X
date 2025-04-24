@@ -2,13 +2,14 @@ import logging
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 
 # <<< Import base and decorator >>>
-from .base import BaseFragment, ManagerFragment, FragmentDef, FragmentContext
+from .base import BaseFragment, FragmentDef, FragmentContext
+from .manager_fragment import ManagerFragment
 from .registry import fragment
 from a3x.core.context import SharedTaskContext, _ToolExecutionContext, Context
 from a3x.core.tool_registry import ToolRegistry
 from a3x.core.context_accessor import ContextAccessor
 from a3x.core.llm_interface import LLMInterface
-from a3x.core.tool_executor import execute_tool
+from a3x.core.tool_executor import ToolExecutor
 from a3x.core.skills import skill
 from a3x.core.models import PlanStep
 from a3x.core.constants import STATUS_SUCCESS, STATUS_ERROR, REASON_LLM_ERROR, REASON_ACTION_FAILED
@@ -21,7 +22,9 @@ PLANNER_FRAGMENT_DEF = FragmentDef(
     fragment_class="PlannerFragment",
     description="Plans the approach to solve a given task or problem.",
     category="Planning",
-    skills=["plan_task", "break_down_problem"]
+    skills=["plan_task", "break_down_problem"],
+    managed_skills=["plan_task", "break_down_problem"],
+    prompt_template="Quebre o problema e gere um plano detalhado."
 )
 
 FINAL_ANSWER_FRAGMENT_DEF = FragmentDef(
@@ -29,7 +32,9 @@ FINAL_ANSWER_FRAGMENT_DEF = FragmentDef(
     fragment_class="FinalAnswerProvider",
     description="Formats and delivers the final answer to the user's query.",
     category="Execution",
-    skills=["format_answer", "summarize_solution"]
+    skills=["format_answer", "summarize_solution"],
+    managed_skills=["format_answer", "summarize_solution"],
+    prompt_template="Formate e entregue a resposta final ao usuário."
 )
 
 # --- Planner Fragment --- 
@@ -37,7 +42,8 @@ FINAL_ANSWER_FRAGMENT_DEF = FragmentDef(
     name="PlannerFragment",
     description="Generates a step-by-step plan to achieve an objective.",
     category="Execution",
-    skills=["hierarchical_planner"]
+    skills=["hierarchical_planner"],
+    capabilities=["planning"]
 )
 class PlannerFragment(BaseFragment):
     """Fragment responsible for generating plans."""
@@ -46,6 +52,7 @@ class PlannerFragment(BaseFragment):
     def __init__(self, tool_registry: Optional[ToolRegistry] = None):
         super().__init__(PLANNER_FRAGMENT_DEF, tool_registry)
         self._internal_replan_request = False
+        self.tool_executor = ToolExecutor()
 
     async def get_purpose(self, context: Optional[Dict] = None) -> str:
         return "Break down complex tasks into manageable steps and create a plan."
@@ -157,10 +164,9 @@ class PlannerFragment(BaseFragment):
             }
             # <<< MODIFICATION END >>>
 
-            plan_result_wrapped = await execute_tool(
+            plan_result_wrapped = await self.tool_executor.execute_tool(
                 tool_name="hierarchical_planner", 
-                action_input=planner_action_input, # <<< Use the new correct input dict >>>
-                tools_dict=context.tool_registry,    # Still needed by execute_tool itself
+                tool_input=planner_action_input, # <<< Use the new correct input dict >>>
                 context=skill_exec_context        # <<< Pass the newly created context >>>
             )
 
@@ -282,6 +288,7 @@ class FinalAnswerProvider(BaseFragment):
     """Fragment responsible for delivering the final answer."""
     def __init__(self, tool_registry: Optional[ToolRegistry] = None):
         super().__init__(FINAL_ANSWER_FRAGMENT_DEF, tool_registry)
+        self.tool_executor = ToolExecutor()
 
     async def get_purpose(self, context: Optional[Dict] = None) -> str:
         return "Provide the final formatted answer to the user's request."
@@ -342,10 +349,9 @@ class FinalAnswerProvider(BaseFragment):
 
         # Use execute_tool to call the underlying final_answer skill
         try:
-            result_wrapped = await execute_tool(
+            result_wrapped = await self.tool_executor.execute_tool(
                 tool_name="final_answer", # Make sure skill name matches
-                action_input=final_answer_input,
-                tools_dict=context.tool_registry,
+                tool_input=final_answer_input,
                 context=tool_execution_context # <<< CHANGED: Pass the correct context type >>>
             )
             context.logger.info(f"{log_prefix} Final answer skill completed.")

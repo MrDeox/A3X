@@ -35,7 +35,7 @@ Resultado Simulado:
         "current_state": {"type": Optional[Dict[str, Any]], "default": None, "description": "Optional dictionary representing the current world/system state."}
     }
 )
-async def simulate_step(context: Context, step: str, current_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def simulate_step(context: Any, step: str, current_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Simulates the likely outcome of executing a plan step given the current context.
     Uses the LLMInterface from the execution context.

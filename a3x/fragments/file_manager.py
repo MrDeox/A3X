@@ -1,11 +1,14 @@
 import logging
 from typing import Dict, Any, List, Optional, Tuple
+import json
 
 # Importações Corretas
-from .base import ManagerFragment # Base para o Manager
-from a3x.core.tool_executor import execute_tool, _ToolExecutionContext # Para executar a skill escolhida
+from ..core.skills import skill
+from .manager_fragment import ManagerFragment # Base para o Manager
+from a3x.core.tool_executor import ToolExecutor # Para executar a skill escolhida
 from a3x.core.llm_interface import LLMInterface # Interface LLM
 from a3x.core.agent_parser import parse_llm_response # Usar o parser principal que pode extrair JSON de tool calls
+from a3x.core.context import _ToolExecutionContext # Keep this if needed by other parts
 # Removidas importações não utilizadas como ReactAgent, AsyncGenerator, etc.
 
 logger = logging.getLogger(__name__)
@@ -70,6 +73,7 @@ class FileOpsManager(ManagerFragment):
         )
         self._managed_skills = managed_skills
         logger.info(f"{self.name} initialized, managing skills: {self._managed_skills}")
+        self.tool_executor = ToolExecutor() # Placeholder: Instantiate directly for now
 
     async def coordinate_execution(self, sub_task: str, context: _ToolExecutionContext) -> Dict[str, Any]:
         """
@@ -98,7 +102,6 @@ class FileOpsManager(ManagerFragment):
             if skill_name is None:
                  # Try parsing as direct JSON as a fallback for the manager response
                  logger.warning(f"{log_prefix} Failed to parse Action/Input using ReAct parser. Trying direct JSON parse as fallback.")
-                 import json
                  try:
                       parsed_json = json.loads(llm_response_text.strip())
                       if isinstance(parsed_json, dict) and "skill_name" in parsed_json and "parameters" in parsed_json:
@@ -128,15 +131,27 @@ class FileOpsManager(ManagerFragment):
                  logger.error(f"{log_prefix} Skill '{skill_name}' selected by LLM not found in the global tools_dict.")
                  raise ValueError(f"Selected skill '{skill_name}' not found in available tools.")
 
-            tool_result = await execute_tool(
-                tool_name=skill_name,
-                action_input=parameters,
+            tool_exec_context = _ToolExecutionContext(
+                logger=self._logger,
+                workspace_root=PROJECT_ROOT,
+                llm_url=None,
                 tools_dict=context.tools_dict,
-                context=context
+                llm_interface=self.llm_interface,
+                fragment_registry=None,
+                shared_task_context=None,
+                allowed_skills=self._managed_skills,
+                skill_instance=None,
+                memory_manager=None
+            )
+
+            tool_result_dict = await self.tool_executor.execute_tool(
+                tool_name=skill_name,
+                tool_input=parameters,
+                context=tool_exec_context
             )
 
             # 5. Return the result from the executed skill
-            execution_result = tool_result.get("result", {
+            execution_result = tool_result_dict.get("result", {
                 "status": "error",
                 "action": f"{skill_name}_result_missing",
                 "data": {"message": "Tool execution result format was unexpected or missing."}

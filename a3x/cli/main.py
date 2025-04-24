@@ -31,11 +31,12 @@ from a3x.core.tool_registry import ToolRegistry
 # Import core components directly
 # Assuming execution context allows finding 'a3x' package
 try:
+    from a3x.fragments import base # Force definition of BaseFragment
     from a3x.core.config import PROJECT_ROOT, LLAMA_SERVER_URL, LLAVA_API_URL
     from a3x.core.logging_config import setup_logging
     from a3x.core.server_manager import start_all_servers, stop_all_servers
     from a3x.core.cerebrumx import CerebrumXAgent
-    from a3x.core.skills import load_all_skills, SKILL_REGISTRY
+    from a3x.core.skills import discover_skills, SKILL_REGISTRY, PYDANTIC_MODEL_REGISTRY
     from a3x.fragments.registry import FragmentRegistry
     from a3x.core.db_utils import initialize_database, close_db_connection
 except ImportError as e:
@@ -47,7 +48,7 @@ except ImportError as e:
     setup_logging = lambda log_level_str=None, log_file_path=None: None
     start_all_servers = lambda _: None
     stop_all_servers = lambda: None
-    load_all_skills = lambda _: ({}, None)
+    discover_skills = lambda _: None # discover_skills doesn't return anything significant here
     CerebrumXAgent = None # Define fallback type
     SKILL_REGISTRY = {}
     FragmentRegistry = None
@@ -121,13 +122,41 @@ async def main_async():
     # Use function from fs_utils
     system_prompt = load_system_prompt(args.system_prompt_file)
 
-    # --- Load Skills and Register Tools --- #
+    # --- Initialize Registries and Discover Components ---
     logger.info("Initializing ToolRegistry...")
     tool_registry = ToolRegistry()
 
+    logger.info("Initializing FragmentRegistry and discovering fragments...")
+    fragment_registry: Optional[FragmentRegistry] = None
+    try:
+        fragment_registry = FragmentRegistry(skill_registry=tool_registry)
+        fragment_registry.discover_and_register_fragments() # Load fragments
+    except Exception as frag_reg_err:
+        logger.error(f"Failed to initialize or discover fragments: {frag_reg_err}", exc_info=True)
+        # Decide if this is critical - potentially exit if fragments are essential
+        # console.print(f"[bold red]Error:[/bold red] Failed during fragment setup: {frag_reg_err}")
+        # sys.exit(1) 
+
+    # --- Load Skills and Register Tools --- #
     logger.info("Loading skills...")
-    packages = ["a3x.skills.core", "a3x.skills.web"]
-    load_all_skills(skill_package_list=packages)
+    discover_skills() # Assumes default path 'a3x/skills'
+
+    # <<< ADDED: Explicitly rebuild Pydantic models AFTER discovery >>>
+    logger.info("Rebuilding Pydantic models for skills...")
+    # Import the registry where models were stored by the @skill decorator
+    from a3x.core.skills import PYDANTIC_MODEL_REGISTRY 
+    rebuild_errors = 0
+    for skill_name, model_cls in PYDANTIC_MODEL_REGISTRY.items():
+        try:
+            if hasattr(model_cls, 'model_rebuild'):
+                 model_cls.model_rebuild(force=True)
+                 logger.debug(f"Rebuilt Pydantic model for skill '{skill_name}'.")
+        except Exception as rebuild_err:
+            logger.error(f"Error rebuilding Pydantic model for skill '{skill_name}': {rebuild_err}", exc_info=False)
+            rebuild_errors += 1
+    if rebuild_errors > 0:
+        logger.warning(f"Encountered {rebuild_errors} errors during Pydantic model rebuild.")
+    # <<< END Pydantic Rebuild >>>
 
     logger.info("Registering loaded skills into ToolRegistry...")
     registered_count = 0
@@ -138,20 +167,25 @@ async def main_async():
                 continue
 
             tool_callable = skill_info.get("function")
-            pydantic_schema_model = skill_info.get("schema")
+            pydantic_schema_model = skill_info.get("input_schema")
 
-            if not tool_callable or not pydantic_schema_model:
-                logger.warning(f"Skipping incomplete skill info for '{skill_name}': Missing function or schema model.")
+            if not tool_callable:
+                logger.warning(f"Skipping incomplete skill info for '{skill_name}': Missing function.")
                 continue
 
             try:
-                # Generate JSON schema from Pydantic model
-                base_json_schema = pydantic_schema_model.model_json_schema(by_alias=False) 
-                
-                # Ensure base schema is a dict, default to empty if not
-                if not isinstance(base_json_schema, dict):
-                    logger.warning(f"Generated base schema for '{skill_name}' is not a dict: {type(base_json_schema)}. Using empty schema.")
-                    base_json_schema = {}
+                base_json_schema = {}
+                if pydantic_schema_model: # Only generate schema if model exists
+                    # Generate JSON schema from Pydantic model
+                    base_json_schema = pydantic_schema_model.model_json_schema(by_alias=False)
+                    
+                    # Ensure base schema is a dict, default to empty if not
+                    if not isinstance(base_json_schema, dict):
+                        logger.warning(f"Generated base schema for '{skill_name}' is not a dict: {type(base_json_schema)}. Using empty schema.")
+                        base_json_schema = {}
+                else:
+                    logger.debug(f"Skill '{skill_name}' has no input schema (no parameters). Registering without parameters.")
+                    base_json_schema = {"properties": {}} # Empty properties for schema
 
                 # Construct the final schema, guaranteeing name and description
                 final_tool_schema = {
@@ -184,7 +218,7 @@ async def main_async():
             except Exception as reg_err:
                 logger.error(f"Failed to register skill '{skill_name}' in ToolRegistry: {reg_err}", exc_info=True) # Log other errors with traceback
         logger.info(f"Registered {registered_count} skills into ToolRegistry.")
-        logger.debug(f"ToolRegistry contents: {list(tool_registry.list_tools().keys())}")
+        logger.debug(f"ToolRegistry contents: {tool_registry.list_tools()}")
     else:
         logger.warning("SKILL_REGISTRY is empty after loading. ToolRegistry will be empty.")
 
@@ -248,26 +282,23 @@ async def main_async():
         console.print(f"[bold red]Unexpected Error:[/bold red] {main_err}")
     finally:
         logger.info("CLI execution finished. Cleaning up...")
-        await close_db_connection()
-        logger.info("Cleanup complete. Exiting.")
+        close_db_connection() # Close DB connection on exit
+        logger.info("Database connection closed.")
 
 # --- Synchronous Entry Point --- #
 
 def run_cli():
-    """Synchronous entry point that runs the async main function."""
+    """Entry point for the synchronous CLI runner."""
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:
-        console.print("\n[bold yellow]CLI interrupted by user. Exiting.[/bold yellow]")
-        close_db_connection()
-        sys.exit(0)
+        console.print("[bold yellow]\nOperation interrupted by user.[/bold yellow]")
+        # Cleanup (like stopping servers) should be handled by atexit/signal handlers
+        sys.exit(1)
     except Exception as e:
-        try:
-            logger = logging.getLogger(__name__)
-            logger.critical(f"Critical error during CLI setup or teardown: {e}", exc_info=True)
-        except Exception:
-            pass
-        print(f"Critical Error: {e}", file=sys.stderr)
+        # Catch-all for unexpected errors during async execution or setup
+        logger.critical(f"Critical unexpected error in run_cli: {e}", exc_info=True)
+        console.print(f"[bold red]Fatal Error:[/bold red] {e}")
         sys.exit(1)
 
 

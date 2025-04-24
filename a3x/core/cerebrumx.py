@@ -14,7 +14,7 @@ import time # <<< ADDED for timing execution
 # Import base agent and other necessary core components
 from a3x.core.agent import ReactAgent, is_introspective_query
 from a3x.core.skills import get_skill_descriptions, get_skill_registry
-from a3x.core.tool_executor import execute_tool, _ToolExecutionContext
+from a3x.core.tool_executor import ToolExecutor
 
 # Centralized config and memory manager
 from a3x.core import config as a3x_config
@@ -45,7 +45,7 @@ from .agent import _is_simple_list_files_task, ReactAgent # <<< ADD ReactAgent i
 
 # <<< ADDED Imports for Path and Registries/Manager >>>
 from a3x.core.tool_registry import ToolRegistry
-from a3x.fragments.registry import FragmentRegistry
+# from a3x.fragments.registry import FragmentRegistry # Duplicate import, remove?
 from a3x.core.memory.memory_manager import MemoryManager
 # <<< END ADDED Imports >>>
 
@@ -55,6 +55,9 @@ from a3x.core.db_utils import add_episodic_record # <<< EXISTING - Check if this
 # <<< Import config and interface >>>
 from a3x.core.llm_interface import LLMInterface, DEFAULT_LLM_URL
 from a3x.core.config import LLAMA_SERVER_URL
+# <<< REMOVED unused Config import >>>
+# from a3x.core.config import Config
+from a3x.core.context import SharedTaskContext
 
 class CerebrumXAgent(ReactAgent): # Inheriting from ReactAgent
     """

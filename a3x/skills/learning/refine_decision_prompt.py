@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
         # No other explicit parameters needed, uses context/memory internally
     }
 )
-async def refine_decision_prompt(context: Context) -> Dict[str, Any]:
+async def refine_decision_prompt(context: Any) -> Dict[str, Any]:
     """
     Analyzes recent decision reflection logs and asks an LLM to refine the
     original prompt for the 'simulate_decision_reflection' skill based on feedback.

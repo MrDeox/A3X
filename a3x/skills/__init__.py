@@ -8,7 +8,7 @@ import time
 logger = logging.getLogger(__name__)
 
 # Import specific skills directly if needed for type hinting or specific logic
-# from . import specific_skill_module
+from .management import reorganizar_fragmentos_skill  # Register reorganizar_fragmentos skill
 
 # Autodiscover and import all modules in this package
 # This ensures @skill decorators are executed
@@ -136,8 +136,19 @@ def load_skills(reload=False):
     print("*** DEBUG: Finished explicit imports in skills/__init__.py ***", flush=True)
     logger.info("Skills package initialized.")
 
+# This file now primarily serves to mark the 'skills' directory as a Python package.
+# Skill loading and registration logic has been moved to skills.loader
 
-# Initial load when the package is imported
-print("*** DEBUG: Starting initial load_skills() call in skills/__init__.py ***", flush=True)
-load_skills()
-print("*** DEBUG: Finished initial load_skills() call in skills/__init__.py ***", flush=True)
+# Optionally, expose key functions from the loader for convenience
+# from .loader import get_skill, list_skills 
+
+# It's generally better practice to require explicit imports from the loader module, 
+# e.g., from a3x.skills.loader import get_skill
+# rather than re-exporting here.
+
+logger.debug("a3x.skills package initialized. Load skills via skills.loader.load_skills().")
+
+# Remove automatic loading on import:
+# print("*** DEBUG: Starting initial load_skills() call in skills/__init__.py ***", flush=True)
+# load_skills() # <-- REMOVED
+# print("*** DEBUG: Finished initial load_skills() call in skills/__init__.py ***", flush=True)

@@ -1,5 +1,15 @@
 import asyncio
 import logging
+
+# --- Fragment Definition ---
+PerformanceMonitorFragmentDef = FragmentDef(
+    name="PerformanceMonitor",
+    description="Monitora o desempenho dos fragmentos em tempo real e identifica padrões de sucesso ou falha.",
+    fragment_class=PerformanceMonitorFragment,
+    skills=["monitorar_desempenho"],
+    managed_skills=["monitorar_desempenho"],
+    prompt_template="Monitore o desempenho dos fragmentos e identifique padrões de sucesso ou falha."
+)
 from typing import Dict, Any, Optional
 from collections import defaultdict
 import time

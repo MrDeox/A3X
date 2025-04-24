@@ -16,6 +16,7 @@ from a3x.core.tool_registry import ToolRegistry
 from a3x.core.context import SharedTaskContext
 from a3x.core.config import MAX_FRAGMENT_RUNTIME # Only runtime needed
 from a3x.fragments.registry import FragmentRegistry
+from a3x.fragments.base import FragmentContext
 # Import Status Constants
 from a3x.core.constants import (
     STATUS_SUCCESS, STATUS_ERROR, STATUS_TIMEOUT,
@@ -109,6 +110,16 @@ class FragmentExecutor:
                      "data": None
                  }
             
+            # <<< ADDED: Check for fragment context (ctx) >>>
+            if not hasattr(fragment, 'ctx') or not isinstance(fragment.ctx, FragmentContext):
+                 self.logger.error(f"{log_prefix} Fragment '{fragment_name}' instance loaded but missing required FragmentContext (ctx). Cannot execute.")
+                 return {
+                     "status": STATUS_ERROR,
+                     "reason": "fragment_context_missing",
+                     "message": f"Fragment '{fragment_name}' context (ctx) not found after loading.",
+                     "data": None
+                 }
+
             # --- Pass dependencies to Fragment if needed (e.g., logger, registries) ---
             # This assumes the BaseFragment or the specific fragment's __init__ handles
             # receiving necessary context/dependencies when loaded by the registry.
@@ -121,12 +132,14 @@ class FragmentExecutor:
             # Use asyncio.wait_for for timeout
             result_dict = await asyncio.wait_for(
                 fragment.execute(
+                    # <<< ADDED: Pass the fragment's context >>>
+                    ctx=fragment.ctx,
                     objective=objective,
                     sub_task=sub_task,
                     history=fragment_history, # Pass the history
                     shared_context=shared_context,
                     allowed_skills=allowed_skills,
-                    # Pass logger if fragment.execute needs it?
+                    # Pass logger if fragment.execute needs it? <-- ctx.logger should be used by fragment
                 ),
                 timeout=self.max_runtime
             )
