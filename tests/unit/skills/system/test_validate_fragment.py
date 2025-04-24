@@ -8,7 +8,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 sys.path.insert(0, project_root)
 
 from a3x.skills.system.validate_fragment import skill_validate_fragment, ValidateFragmentParams
-from a3x.fragments.fragment_base import BaseFragment
+from a3x.fragments.base import BaseFragment
 
 # Test data directory
 TEST_DATA_DIR = os.path.join(project_root, "tests", "data", "temp", "validate_fragment_tests")
@@ -21,7 +21,7 @@ def setup_test_environment():
     valid_fragment_path = os.path.join(TEST_DATA_DIR, "valid_fragment.py")
     with open(valid_fragment_path, "w") as f:
         f.write("""
-from a3x.fragments.fragment_base import BaseFragment
+from a3x.fragments.base import BaseFragment
 from a3x.context import Context
 
 class ValidTestFragment(BaseFragment):
@@ -33,7 +33,7 @@ class ValidTestFragment(BaseFragment):
     syntax_error_fragment_path = os.path.join(TEST_DATA_DIR, "syntax_error_fragment.py")
     with open(syntax_error_fragment_path, "w") as f:
         f.write("""
-from a3x.fragments.fragment_base import BaseFragment
+from a3x.fragments.base import BaseFragment
 
 class SyntaxErrorFragment(BaseFragment)
     def execute(self, ctx):
@@ -49,7 +49,7 @@ class SyntaxErrorFragment(BaseFragment)
     multiple_classes_fragment_path = os.path.join(TEST_DATA_DIR, "multiple_classes_fragment.py")
     with open(multiple_classes_fragment_path, "w") as f:
         f.write("""
-from a3x.fragments.fragment_base import BaseFragment
+from a3x.fragments.base import BaseFragment
 
 class FirstFragment(BaseFragment):
     def execute(self, ctx):
@@ -73,7 +73,7 @@ class NotAFragment:
     no_execute_fragment_path = os.path.join(TEST_DATA_DIR, "no_execute_fragment.py")
     with open(no_execute_fragment_path, "w") as f:
         f.write("""
-from a3x.fragments.fragment_base import BaseFragment
+from a3x.fragments.base import BaseFragment
 
 class NoExecuteFragment(BaseFragment):
     pass
