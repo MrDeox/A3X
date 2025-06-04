@@ -2,7 +2,10 @@ import logging
 import json
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
-import torch
+try:
+    import torch
+except ImportError:  # Provide lightweight fallback when torch isn't available
+    torch = None
 import zipfile
 import tempfile
 import os
@@ -54,7 +57,11 @@ class MemoryManager:
         Salva o estado neural (.pt) de um fragmento.
         """
         state_file = self.state_dir / f"{fragment_id}.pt"
-        torch.save(state_data, state_file)
+        if torch:
+            torch.save(state_data, state_file)
+        else:
+            with open(state_file, "w") as f:
+                json.dump(state_data, f)
         self.logger.info(f"[MemoryManager] Saved fragment state for '{fragment_id}' at {state_file}")
 
     def load_fragment_state(self, fragment_id: str) -> Optional[Dict[str, Any]]:
@@ -65,7 +72,11 @@ class MemoryManager:
         if not state_file.exists():
             self.logger.warning(f"[MemoryManager] State file not found for fragment '{fragment_id}': {state_file}")
             return None
-        state_data = torch.load(state_file)
+        if torch:
+            state_data = torch.load(state_file)
+        else:
+            with open(state_file, "r") as f:
+                state_data = json.load(f)
         self.logger.info(f"[MemoryManager] Loaded state for fragment '{fragment_id}' from {state_file}")
         return state_data
 
@@ -106,7 +117,11 @@ class MemoryManager:
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmpdir_path = Path(tmpdir)
                 state_path = tmpdir_path / "fragment.pt"
-                torch.save(state_data["state_dict"], state_path)
+                if torch:
+                    torch.save(state_data.get("state_dict", state_data), state_path)
+                else:
+                    with open(state_path, "w") as f:
+                        json.dump(state_data.get("state_dict", state_data), f)
                 meta_path = tmpdir_path / "metadata.json"
                 with open(meta_path, "w") as f:
                     json.dump(metadata, f, indent=4)
@@ -145,7 +160,11 @@ class MemoryManager:
                 if not state_path.exists() or not meta_path.exists():
                     self.logger.error(f"[MemoryManager] Import failed: missing files in archive {a3xfrag_file}")
                     return False
-                state_dict = torch.load(state_path)
+                if torch:
+                    state_dict = torch.load(state_path)
+                else:
+                    with open(state_path, 'r') as f:
+                        state_dict = json.load(f)
                 with open(meta_path, 'r') as f:
                     metadata = json.load(f)
                 fragment_id = metadata.get("fragment_id")
