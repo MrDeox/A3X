@@ -7,7 +7,6 @@ import torch
 
 from PIL import Image
 # Use specific BLIP classes instead of AutoModel
-from transformers import BlipProcessor, BlipForConditionalGeneration
 
 from a3x.core.skills import skill
 from a3x.core.config import PROJECT_ROOT
@@ -33,6 +32,16 @@ async def describe_image_blip(
     prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Describes an image using the BLIP model via transformers."""
+    try:
+        from transformers import BlipProcessor, BlipForConditionalGeneration
+    except ImportError as e:
+        logging.getLogger(__name__).error(
+            f"Error importing transformers: {e}"
+        )
+        return {
+            "status": "error",
+            "message": f"Transformers not available: {e}"
+        }
     # <<< Need to access logger from ctx, assuming it has a .log attribute >>>
     logger = context.log if hasattr(context, 'log') else logging.getLogger(__name__)
 
@@ -81,9 +90,6 @@ async def describe_image_blip(
         caption = processor.decode(out[0], skip_special_tokens=True)
         logger.info(f"Generated caption: {caption}")
 
-    except ImportError as e:
-         logger.error(f"Error importing BlipProcessor/BlipForConditionalGeneration: {e}. Transformers installed?")
-         return f"Error: Missing BLIP classes from transformers ({e})."
     except FileNotFoundError:
         logger.error(f"Image file not found at {image_path}")
         return f"Error: Image file not found at {image_path}"
